@@ -1,7 +1,7 @@
 //! Convenience `codew` alias.
-//!
-//! Forwards argv to the `codewhale` dispatcher silently. This is a
-//! permanent short-form alias — six fewer keystrokes, same binary.
+//! 
+//! 这个文件是 codew 这个快捷命令的入口点。它只是一个转发器（shim），把命令行参数原封不动地传给真正的 codewhale 程序。
+//! 因为 codew 比 codewhale 少打6 个字母，是永久性的短别名。
 
 use std::env;
 use std::path::{Path, PathBuf};

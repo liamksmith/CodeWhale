@@ -1,24 +1,20 @@
-//! Native Anthropic Messages API adapter (#3014).
+//!  Anthropic 原生 Messages API 的适配器 (#3014).
 //!
-//! CodeWhale's internal wire types are already Anthropic-shaped (the harness
-//! speaks Messages internally and translates *out* to OpenAI dialects), so
-//! this adapter is mostly native serialization plus an SSE pass-through:
+//! CodeWhale 内部的通信格式已经是 Anthropic 形状的（内部用 Messages 格式，向外
+//! 翻译成 OpenAI格式），所以这个适配器主要是原生序列化 + SSE 直通。:
 //! `StreamEvent` deserializes Anthropic's `message_start` /
 //! `content_block_*` / `message_delta` / `message_stop` / `ping` events
 //! directly. What the adapter adds on top:
 //!
-//! - request shaping: adaptive thinking + `output_config.effort` from
-//!   CodeWhale's `reasoning_effort` tiers, sampling-parameter rules for
-//!   models that reject them, and `cache_control` breakpoint placement
-//!   aligned with the prefix-zone model in `prefix_cache.rs`;
-//! - usage normalization (#2961): `prompt_cache_hit_tokens` comes from
-//!   `cache_read_input_tokens`, `prompt_cache_miss_tokens` is `input_tokens`
-//!   plus `cache_creation_input_tokens`, and the normalized `input_tokens`
-//!   is the sum of all three (total prompt, the DeepSeek convention);
-//! - signed-thinking handling: `signature_delta` is captured into
-//!   [`crate::models::Delta::SignatureDelta`] and assistant thinking blocks
-//!   replay verbatim (signature included); unsigned thinking blocks are
-//!   dropped from replay because the API rejects them.
+//! - 请求整形（请求整形/格式化）：将 CodeWhale 的 reasoning_effort 分级映射为
+//!   Anthropic 的自适应 thinking + output_config.effort（思维强度）；处理某些
+//!   模型拒绝采样参数的情况；放置 cache_control 断点以对齐前缀缓存模型(`prefix_cache.rs`中)。
+//! - 用量归一化（usage normalization）(#2961)：Anthropic 用三个字段（input_tokens、
+//!   cache_creation_input_tokens、cache_read_input_tokens）表示 token消耗，
+//!   需将它们合并映射成 CodeWhale/DeepSeek 约定的 input_tokens（三者之和）和 
+//! - 签名思维处理：Anthropic 返回带签名（signature）的 thinking 块，需要原样回放
+//!   （replay，即把历史对话中 assistant 的 thinking 块发回给 API让其继续思考）；不
+//!   带签名的 thinking 块在回放时必须丢弃，否则 API 会报错。[`crate::models::Delta::SignatureDelta`] 
 //!
 //! Modeled on `client/responses.rs` (separate file per dialect, no protocol
 //! hacks in the shared paths).

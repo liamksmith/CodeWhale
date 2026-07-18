@@ -1,7 +1,11 @@
-//! Legacy parser for text-based tool calls from DeepSeek models.
+//! 遗留的文本式工具调用解析器，专门用来处理 DeepSeek 模型以"纯文本"形式输出的工具调用。
 //!
-//! Structured tool-call items are preferred, so the engine no longer invokes
-//! this parser. It is kept for reference/debugging.
+//! 现在引擎已经改用结构化的工具调用（即模型原生返回的 JSON 格式），不再调用这个解析器，
+//! 保留只是为了参考和调试。
+//! 
+//! - 核心背景：旧版 DeepSeek 模型不具备原生 JSON 工具调用能力，而是把工具调用作为普通文本输出
+//! （比如在聊天内容中夹杂特殊标记）。这个解析器就是用来把那些标记从文本中"抠"出来，转成结构化的
+//! 工具调用。现在引擎已经直接使用模型返回的原生 tool_calls JSON 字段，本文件不再被调用。
 //!
 //! Some DeepSeek outputs tool calls as text in various formats:
 //! ```text
@@ -10,6 +14,8 @@
 //! [/TOOL_CALL]
 //! ```
 //!
+//! 第二种格式：XML 风格，以自定义标签 `codewhale:tool_call` 包裹，内部用 
+//! `invoke` 标签表示调用，`parameter` 标签表示参数。
 //! Or XML-style format:
 //! ```text
 //! <codewhale:tool_call>
@@ -19,7 +25,7 @@
 //! </codewhale:tool_call>
 //! ```
 //!
-//! This module parses these text patterns into structured tool calls.
+//! This module 把上述文本模式解析成 `ParsedToolCall` 结构体。
 
 use regex::Regex;
 use serde_json::{Value, json};
@@ -28,18 +34,20 @@ use std::sync::OnceLock;
 /// A parsed tool call from text content.
 #[derive(Debug, Clone)]
 pub struct ParsedToolCall {
-    /// Tool name
+    /// 工具的名称，比如 `"read_file"`、`"exec_shell"`。
     pub name: String,
-    /// Tool arguments as JSON
+    /// 工具的参数，用 `serde_json::Value` 表示。因为参数可能是对象（`{"path": "test.txt"}`）、
+    /// 数组等各种 JSON 形态，用动态的 `Value` 比强类型更灵活——毕竟解析器的任务是从任意文本中"猜"出参数结构。
     pub args: Value,
-    /// Generated ID for the tool call
+    /// 解析器自己生成的唯一标识符。为什么需要？因为上游的引擎循环期望每个工具调用都有一个 ID（原生 tool call 
+    /// 是由模型提供的），这里模拟了这个约定。
     pub id: String,
 }
 
-/// Result of parsing text for tool calls.
+/// Result of parsing text for tool calls.整个解析操作的打包返回值。
 #[derive(Debug)]
 pub struct ParseResult {
-    /// The text with tool call markers removed (for display)
+    /// 清洗后的文本——移除原始text中所有工具调用标记（包括 `` 本身）。
     pub clean_text: String,
     /// Parsed tool calls found in the text
     pub tool_calls: Vec<ParsedToolCall>,
@@ -102,14 +110,14 @@ fn get_fake_tool_wrapper_regex() -> &'static Regex {
     })
 }
 
-/// Parse tool calls from text content.
-/// Returns the clean text (with markers removed) and any parsed tool calls.
+/// 从文本内容中解析工具调用。
+/// 返回清理后的文本（移除标记后）以及解析出的任何工具调用。
 pub fn parse_tool_calls(text: &str) -> ParseResult {
     let mut tool_calls = Vec::new();
     let mut clean_text = text.to_string();
     let mut id_counter = 0;
 
-    // First, remove thinking tags
+    // 首先，移除思考标签
     let thinking_regex = get_thinking_regex();
     clean_text = thinking_regex.replace_all(&clean_text, "").to_string();
 

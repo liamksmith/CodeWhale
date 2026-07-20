@@ -124,6 +124,7 @@ pub struct LspManager {
     /// 用户定义的自定义语言服务器每种扩展名的传输层。
     custom_transports: AsyncMutex<HashMap<String, Arc<dyn LspTransport>>>,
     /// 自定义服务器的每种扩展名的"已警告"防护。
+    custom_missing_warned: AsyncMutex<HashSet<String>>,
 }
 
 impl LspManager {

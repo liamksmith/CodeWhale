@@ -193,14 +193,14 @@ fn load_overrides_missing_or_malformed_is_empty() {
     assert!(load_overrides(&malformed).is_empty());
 }
 
-/// The core #3918 regression: a `/plugin disable` must survive the next
-/// launch even though discovery recomputes `enabled` from `!builtin`.
+/// 核心 #3918 回归问题：即使发现过程从 `!builtin` 重新计算 `enabled`，
+/// `/plugin disable` 也必须在下次启动后依然生效。
 #[test]
 fn disable_persists_across_rediscovery() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("overrides.json");
 
-    // First session: a user plugin defaults to enabled, user disables it.
+    // 第一次会话：用户插件默认已启用，用户禁用它。
     let mut first = PluginRegistry::new();
     first.set_overrides_store(path.clone(), load_overrides(&path));
     first.register("demo".to_string(), plugin_named("demo", true));
@@ -209,8 +209,7 @@ fn disable_persists_across_rediscovery() {
     assert!(first.disable("demo"));
     assert!(path.exists(), "disable should persist the override file");
 
-    // Second session: fresh discovery re-registers it enabled, but the
-    // persisted override must win and keep it disabled.
+    // 第二次会话：新的发现过程重新注册为已启用，但持久化的覆盖必须胜出并保持禁用。
     let mut second = PluginRegistry::new();
     second.set_overrides_store(path.clone(), load_overrides(&path));
     second.register("demo".to_string(), plugin_named("demo", true));
@@ -221,7 +220,7 @@ fn disable_persists_across_rediscovery() {
     );
 }
 
-/// Symmetric case: enabling a built-in (default-disabled) plugin sticks.
+/// 对称情况：启用内置（默认禁用）插件后保持生效。
 #[test]
 fn enable_persists_across_rediscovery() {
     let tmp = tempfile::tempdir().expect("tempdir");

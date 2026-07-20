@@ -1,4 +1,4 @@
-//! Queue commands: queue list/edit/drop/clear
+//! 队列命令：queue list/edit/drop/clear
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::{Locale, MessageId, tr};
@@ -270,9 +270,9 @@ mod tests {
             .push_back(QueuedMessage::new("First".to_string(), None));
         app.queued_messages
             .push_back(QueuedMessage::new("Second".to_string(), None));
-        // Start editing
+        // 开始编辑
         queue(&mut app, Some("edit 1"));
-        // Try to edit another
+        // 尝试编辑另一个
         let result = queue(&mut app, Some("edit 2"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();

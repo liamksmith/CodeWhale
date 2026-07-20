@@ -1,19 +1,18 @@
-//! Shell abstraction layer for DeepSeek TUI.
+//! DeepSeek TUI 的 Shell 抽象层。
 //!
-//! Detects the user's shell at startup and provides a single entry point for
-//! all command execution. DeepSeek TUI never calls `Command::new("cmd")` (or
-//! `"sh"`, `"pwsh"`, ...) directly — it asks the [`ShellDispatcher`] to build
-//! a correctly configured [`std::process::Command`].
+//! 启动时检测用户的 shell，并为所有命令执行提供单一入口点。
+//! DeepSeek TUI 从不直接调用 `Command::new("cmd")`（或
+//! `"sh"`、`"pwsh"` 等）——它要求 [`ShellDispatcher`] 构建
+//! 一个正确配置的 [`std::process::Command`]。
 //!
-//! ## Responsibilities
+//! ## 职责
 //!
-//! 1. **Shell detection** — find the user's actual shell (PowerShell, pwsh,
-//!    bash via WSL / Git Bash, cmd.exe fallback on Windows, /bin/sh on Unix).
-//! 2. **Quoting correctness** — each shell's argument-passing convention is
-//!    respected so quoted strings survive the spawn boundary intact.
-//! 3. **Terminal state** — foreground shell execution saves and restores
-//!    crossterm raw-mode so the TUI input pipeline is not broken after a
-//!    child process exits (issue #1690).
+//! 1. **Shell 检测** — 找到用户的实际 shell（PowerShell、pwsh、
+//!    通过 WSL / Git Bash 的 bash、Windows 上的 cmd.exe 回退、Unix 上的 /bin/sh）。
+//! 2. **引号正确性** — 每个 shell 的参数传递约定都得到尊重，
+//!    因此带引号的字符串在 spawn 边界中完整保留。
+//! 3. **终端状态** — 前台 shell 执行保存和恢复 crossterm 原始模式，
+//!    以便子进程退出后 TUI 输入管道不会中断（问题 #1690）。
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -26,29 +25,29 @@ use std::sync::Mutex;
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
-// Shell kind
+// Shell 种类
 // ---------------------------------------------------------------------------
 
-/// The concrete shell that the dispatcher will use.
+/// 分发器将使用的具体 shell。
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellKind {
-    /// PowerShell 7+ (`pwsh.exe`).
+    /// PowerShell 7+（`pwsh.exe`）。
     Pwsh,
-    /// Windows PowerShell 5.1 (`powershell.exe`).
+    /// Windows PowerShell 5.1（`powershell.exe`）。
     WindowsPowerShell,
-    /// Command Prompt (`cmd.exe`).
+    /// 命令提示符（`cmd.exe`）。
     Cmd,
-    /// Unix `/bin/sh` (or `$SHELL`-detected bash/zsh).
+    /// Unix `/bin/sh`（或 `$SHELL` 检测到的 bash/zsh）。
     Sh,
-    /// Bash — detected via `$SHELL` on either Unix or WSL/Git Bash on Windows.
+    /// Bash——在 Unix 上或 Windows 上的 WSL/Git Bash 中通过 `$SHELL` 检测。
     Bash,
-    /// Any other POSIX shell from $SHELL (zsh, fish, dash, ...).
+    /// 来自 $SHELL 的任何其他 POSIX shell（zsh、fish、dash 等）。
     Custom { binary: String, flag: String },
 }
 
 impl ShellKind {
-    /// Binary name for the shell. Appends `.exe` on Windows where needed.
+    /// shell 的二进制文件名。在 Windows 上根据需要附加 `.exe`。
     pub fn binary(&self) -> &str {
         match self {
             #[cfg(windows)]
@@ -72,8 +71,7 @@ impl ShellKind {
         }
     }
 
-    /// Flag that tells the shell to execute the following argument as a
-    /// command string.
+    /// 告诉 shell 将以下参数作为命令字符串执行的标志。
     pub fn command_flag(&self) -> &str {
         match self {
             ShellKind::Pwsh | ShellKind::WindowsPowerShell => "-NoProfile",
@@ -83,26 +81,25 @@ impl ShellKind {
         }
     }
 
-    /// Whether this shell needs an extra `-Command` flag after the profile
-    /// flag (PowerShell-specific).
+    /// 此 shell 是否需要在配置文件标志后再加一个 `-Command` 标志
+    ///（PowerShell 特有）。
     pub fn needs_command_flag(&self) -> bool {
         matches!(self, ShellKind::Pwsh | ShellKind::WindowsPowerShell)
     }
 
     #[cfg(test)]
-    /// Returns true when this is a PowerShell-family shell.
+    /// 当这是 PowerShell 家族 shell 时返回 true。
     pub fn is_powershell(&self) -> bool {
         matches!(self, ShellKind::Pwsh | ShellKind::WindowsPowerShell)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Dispatcher
+// 分发器
 // ---------------------------------------------------------------------------
 
-/// Central shell abstraction. Created once at startup via
-/// [`ShellDispatcher::detect`] and then used everywhere a command needs to
-/// be spawned.
+/// 中央 shell 抽象。通过 [`ShellDispatcher::detect`] 在启动时创建一次，
+/// 然后每当需要生成命令时使用。
 #[derive(Debug, Clone)]
 pub struct ShellDispatcher {
     kind: ShellKind,
@@ -110,27 +107,27 @@ pub struct ShellDispatcher {
 
 #[allow(dead_code)]
 impl ShellDispatcher {
-    /// Detect the user's shell from the environment.
+    /// 从环境检测用户的 shell。
     ///
-    /// ## Detection order (Windows)
+    /// ## 检测顺序（Windows）
     ///
-    /// 1. `$env:SHELL` — WSL interop or Git Bash often set this.
-    /// 2. `pwsh.exe` found on `PATH` — PowerShell 7+.
-    /// 3. `powershell.exe` found on `PATH` — Windows PowerShell 5.1.
-    /// 4. `cmd.exe` — always available, last resort.
+    /// 1. `$env:SHELL` — WSL 互操作或 Git Bash 经常设置此变量。
+    /// 2. `pwsh.exe` 在 `PATH` 上找到 — PowerShell 7+。
+    /// 3. `powershell.exe` 在 `PATH` 上找到 — Windows PowerShell 5.1。
+    /// 4. `cmd.exe` — 始终可用，最后手段。
     ///
-    /// ## Detection order (Unix)
+    /// ## 检测顺序（Unix）
     ///
-    /// 1. `$SHELL` — if it contains `bash`, use `Bash`; otherwise use the
-    ///    actual binary path via `Custom`.
-    /// 2. `/bin/sh` fallback.
+    /// 1. `$SHELL` — 如果包含 `bash`，使用 `Bash`；否则使用
+    ///    通过 `Custom` 的实际二进制路径。
+    /// 2. `/bin/sh` 回退。
     pub fn detect() -> Self {
         let kind = Self::detect_shell();
         Self::log_startup(&kind);
         ShellDispatcher { kind }
     }
 
-    /// Log a shell execution line when `SHELL_DISPATCHER_LOG` is set.
+    /// 当设置了 `SHELL_DISPATCHER_LOG` 时记录 shell 执行行。
     pub fn log_exec(command: &str) {
         if let Ok(path) = std::env::var("SHELL_DISPATCHER_LOG") {
             let _ = Self::append_log_static(&path, command);
@@ -160,22 +157,22 @@ impl ShellDispatcher {
     }
 
     fn append_log_static(path: &str, command: &str) -> std::io::Result<()> {
-        // Resolve kind outside the lock — `global_dispatcher()` may trigger
-        // `detect()` which calls `log_startup()` which also acquires the mutex.
+        // 在锁外部解析种类——`global_dispatcher()` 可能触发
+        // `detect()`，它会调用 `log_startup()`，而后者也会获取互斥锁。
         let kind = global_dispatcher().kind();
         let _lock = LOG_MUTEX.lock();
         let line = format!("[{}] exec via {kind:?}: {command}\n", now_iso());
         Self::append_log(path, &line)
     }
 
-    /// The detected shell kind.
+    /// 已检测到的 shell 种类。
     pub fn kind(&self) -> &ShellKind {
         &self.kind
     }
 
-    // -- Public builders --------------------------------------------------
+    // -- 公共构建器 --------------------------------------------------
 
-    /// Build a `std::process::Command` for the given shell command string.
+    /// 为给定的 shell 命令字符串构建一个 `std::process::Command`。
     pub fn build_command(&self, shell_command: &str) -> Command {
         let mut cmd = Command::new(self.kind.binary());
 
@@ -201,8 +198,8 @@ impl ShellDispatcher {
         cmd
     }
 
-    /// Build the program + args tuple. Useful when the caller needs to
-    /// inspect or modify the args before passing them to `Command`.
+    /// 构建程序 + 参数元组。当调用者需要在将参数传递给 `Command` 之前
+    /// 检查或修改参数时有用。
     pub fn build_command_parts(&self, shell_command: &str) -> (String, Vec<String>) {
         let program = self.kind.binary().to_string();
         let args = if self.kind.needs_command_flag() {
@@ -220,9 +217,9 @@ impl ShellDispatcher {
         (program, args)
     }
 
-    /// Build a `Command` from separate program + args (bypasses the shell).
-    /// Used when the caller already has a resolved executable and argument
-    /// vector — e.g. `ExecEnv` from the sandbox.
+    /// 从单独的程序 + 参数构建 `Command`（绕过 shell）。
+    /// 当调用者已有解析后的可执行文件和参数向量时使用
+    /// ——例如沙箱中的 `ExecEnv`。
     #[cfg(test)]
     pub fn build_direct(&self, program: &str, args: &[String]) -> Command {
         let mut cmd = Command::new(program);
@@ -230,10 +227,10 @@ impl ShellDispatcher {
         cmd
     }
 
-    /// Execute a foreground command with raw-mode save/restore.
+    /// 执行前台命令，保存/恢复原始模式。
     ///
-    /// A scope guard ensures raw mode is restored even if the command fails
-    /// to spawn or returns early (review feedback, issue #1690).
+    /// 作用域守卫确保即使命令生成失败或提前返回，
+    /// 原始模式也会被恢复（审查反馈，问题 #1690）。
     pub fn run_foreground(
         &self,
         shell_command: &str,
@@ -241,7 +238,7 @@ impl ShellDispatcher {
     ) -> Result<String, anyhow::Error> {
         use anyhow::Context;
 
-        // Log the execution
+        // 记录执行
         {
             let _lock = LOG_MUTEX.lock();
             if let Ok(path) = std::env::var("SHELL_DISPATCHER_LOG") {
@@ -251,7 +248,7 @@ impl ShellDispatcher {
             }
         }
 
-        // Disable raw mode; guard restores it only if it was already enabled.
+        // 禁用原始模式；守卫仅在已启用时才恢复它。
         let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
         if raw_mode_was_enabled {
             let _ = crossterm::terminal::disable_raw_mode();
@@ -275,12 +272,12 @@ impl ShellDispatcher {
 
         let output = cmd
             .output()
-            .with_context(|| format!("failed to execute shell command: {shell_command}"))?;
+            .with_context(|| format!("执行 shell 命令失败: {shell_command}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!(
-                "shell command failed (status={}): {}",
+                "shell 命令失败 (status={}): {}",
                 output.status,
                 stderr.trim()
             );
@@ -290,12 +287,12 @@ impl ShellDispatcher {
         Ok(stdout)
     }
 
-    // -- Detection --------------------------------------------------------
+    // -- 检测 --------------------------------------------------------
 
     fn detect_shell() -> ShellKind {
         #[cfg(windows)]
         {
-            // 1. $env:SHELL — WSL interop or Git Bash often set this.
+            // 1. $env:SHELL — WSL 互操作或 Git Bash 经常设置此变量。
             if let Ok(shell) = std::env::var("SHELL") {
                 let lower = shell.to_lowercase();
                 if lower.contains("bash") {
@@ -320,7 +317,7 @@ impl ShellDispatcher {
 
         #[cfg(not(windows))]
         {
-            // 1. $SHELL environment variable (Unix)
+            // 1. $SHELL 环境变量（Unix）
             if let Ok(shell) = std::env::var("SHELL") {
                 let lower = shell.to_lowercase();
                 if lower.contains("bash") {
@@ -342,13 +339,13 @@ impl ShellDispatcher {
         }
     }
 
-    /// Check PATH first, then fall back to well-known install directories.
+    /// 先检查 PATH，然后回退到已知的安装目录。
     #[cfg(windows)]
     fn find_exe(name: &str) -> bool {
         if Self::binary_on_path(name) {
             return true;
         }
-        // Well-known install locations (order by preference).
+        // 已知安装位置（按偏好排序）。
         let known_dirs: &[&str] = &[
             r"C:\Program Files\PowerShell\7",
             r"C:\Windows\System32\WindowsPowerShell\v1.0",
@@ -371,7 +368,7 @@ impl ShellDispatcher {
     }
 }
 
-// -- Helpers ---------------------------------------------------------------
+// -- 辅助函数 ---------------------------------------------------------------
 
 fn now_iso() -> String {
     chrono::Utc::now()
@@ -379,11 +376,10 @@ fn now_iso() -> String {
         .to_string()
 }
 
-/// Global dispatcher instance, detected once at startup.
+/// 全局分发器实例，在启动时检测一次。
 ///
-/// Any code path that needs to spawn a shell command can use
-/// `global_dispatcher()` instead of threading the dispatcher through
-/// every function signature.
+/// 任何需要生成 shell 命令的代码路径都可以使用
+/// `global_dispatcher()`，而不是将分发器穿过每个函数签名。
 pub fn global_dispatcher() -> &'static ShellDispatcher {
     use std::sync::LazyLock;
     static DISPATCHER: LazyLock<ShellDispatcher> = LazyLock::new(ShellDispatcher::detect);
@@ -391,7 +387,7 @@ pub fn global_dispatcher() -> &'static ShellDispatcher {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// 测试
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -530,7 +526,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn find_exe_finds_cmd_on_path() {
-        // cmd.exe is always on PATH on Windows.
+        // cmd.exe 在 Windows 上始终在 PATH 中。
         assert!(ShellDispatcher::find_exe("cmd.exe"));
     }
 
@@ -543,13 +539,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn find_exe_falls_back_to_known_dirs() {
-        // Verify the known-dirs fallback path actually exists on this system.
+        // 验证已知目录回退路径在此系统上实际存在。
         let ps_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
         if std::path::Path::new(ps_path).is_file() {
-            // The fallback directory exists — find_exe should locate it.
+            // 回退目录存在——find_exe 应能找到它。
             assert!(ShellDispatcher::find_exe("powershell.exe"));
         } else {
-            eprintln!("Skipping: {ps_path} not present on this system");
+            eprintln!("跳过: {ps_path} 在此系统上不存在");
         }
     }
 

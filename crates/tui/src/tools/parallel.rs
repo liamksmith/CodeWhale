@@ -1,12 +1,9 @@
-//! Tool wrapper for executing multiple tool calls in parallel.
+//! 用于并行执行多个工具调用的工具包装器。
 //!
-//! NOTE: this meta-tool is intentionally no longer registered with the
-//! agent (see `ToolRegistryBuilder::with_parallel_tool`). DeepSeek-V4
-//! supports native parallel `tool_calls` in a single assistant turn, and
-//! advertising the OpenAI-internal name `multi_tool_use.parallel` made
-//! the model hallucinate ChatGPT-style XML wrappers. The struct stays
-//! around so the engine compatibility dispatcher and historical sessions
-//! still resolve it cleanly.
+//! 注意：此元工具已故意不再向 agent 注册（参见 `ToolRegistryBuilder::with_parallel_tool`）。
+//! DeepSeek-V4 支持在单个 assistant 轮次中的原生并行 `tool_calls`，
+//! 而暴露 OpenAI 内部名称 `multi_tool_use.parallel` 导致模型幻觉式地生成 ChatGPT 风格的 XML 包装器。
+//! 保留该结构体以使引擎兼容性分发器和历史会话仍能正常解析。
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,

@@ -1,7 +1,7 @@
-//! Git history tools: `git_log`, `git_show`, and `git_blame`.
+//! Git 历史工具：`git_log`、`git_show` 和 `git_blame`。
 //!
-//! These tools provide read-only access to commit history and attribution
-//! without exposing arbitrary shell execution.
+//! 这些工具提供对提交历史和归属信息的只读访问，
+//! 而无需暴露任意 shell 执行。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ const DEFAULT_BLAME_START_LINE: u64 = 1;
 const DEFAULT_BLAME_MAX_LINES: u64 = 200;
 const MAX_BLAME_MAX_LINES: u64 = 2_000;
 
-/// Tool for reading recent commit history.
+/// 用于读取最近提交历史的工具。
 pub struct GitLogTool;
 
 #[async_trait]
@@ -142,7 +142,7 @@ impl ToolSpec for GitLogTool {
     }
 }
 
-/// Tool for showing a specific commit with optional patch/stat output.
+/// 用于显示特定提交的工具，可选补丁/统计输出。
 pub struct GitShowTool;
 
 #[async_trait]
@@ -260,7 +260,7 @@ impl ToolSpec for GitShowTool {
     }
 }
 
-/// Tool for attributing lines in a file to commits and authors.
+/// 用于将文件中的行归属到提交和作者的工具。
 pub struct GitBlameTool;
 
 #[async_trait]
@@ -491,8 +491,8 @@ fn run_git_command(working_dir: &Path, args: &[String]) -> Result<Output, ToolEr
     })
 }
 
-/// Async wrapper that offloads the blocking `git` invocation onto a
-/// blocking-capable thread so the tokio worker is not stalled.
+/// 异步包装器，将阻塞的 `git` 调用卸载到可阻塞的线程上，
+/// 以免 tokio 工作线程被阻塞。
 async fn run_git_command_async(
     working_dir: PathBuf,
     args: Vec<String>,

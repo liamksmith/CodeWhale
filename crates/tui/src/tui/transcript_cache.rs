@@ -1,35 +1,32 @@
-//! Wrapped-line cache for the live transcript overlay (#94).
+//! 实时对话覆盖层的换行缓存（#94）。
 //!
-//! Each cell's rendered output is cached under a `(CellId, width, revision)`
-//! key. The revision portion comes from `App.history_revisions` (or the
-//! synthetic active-cell revision); the cache invalidates entries the moment
-//! a cell mutates because the upstream tag changes. Width changes invalidate
-//! everything for that cell because wrap layout depends on width.
+//! 每个单元格的渲染输出以 `(CellId, width, revision)` 键缓存。
+//! 修订版本来自 `App.history_revisions`（或合成的活跃单元格修订版）；
+//! 一旦单元格发生变更（因为上游标签发生变化），缓存就会使条目失效。
+//! 宽度变化会使该单元格的所有条目失效，因为换行布局依赖于宽度。
 //!
-//! Live cells (the streaming assistant body, in-flight tool entries) bump
-//! their revision on every mutation, so the cache always reflects the latest
-//! frame of their output without ever paying for a re-wrap of unrelated
-//! cells. Resize-driven re-wrap is bounded to the cells whose width key just
-//! changed; nothing else is invalidated.
+//! 活跃单元格（流式助手正文、进行中的工具条目）在每次变更时都会
+//! 更新其修订版本，因此缓存始终反映其输出的最新帧，而无需为不相关的
+//! 单元格付出重新换行的代价。由调整大小驱动的重新换行仅限于
+//! 宽度键刚刚发生变化的单元格；其他内容不会被无效化。
 //!
-//! The cache is bounded to keep memory predictable on long sessions.
-//! Eviction is a simple insertion-order scheme — a strict LRU would be
-//! overkill for the access pattern (full sweep on every render frame).
+//! 缓存有上限，以在长会话中保持内存可预测。
+//! 驱逐策略是简单的插入顺序方案——严格的 LRU 对于访问模式
+//!（每个渲染帧全量扫描）来说过于复杂。
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use ratatui::text::Line;
 
-/// Soft cap on the number of cached entries before insertion-order eviction
-/// kicks in. Sized for the worst-case "5,000-line transcript at 200 cells,
-/// resize twice" pattern; well under a megabyte even with 10 KB cells.
+/// 缓存条目数量的软上限，超过后执行插入顺序驱逐。
+/// 针对最坏情况的"200 个单元格的 5000 行对话，调整大小两次"模式；
+/// 即使有 10 KB 的单元格，也远低于 1 MB。
 const DEFAULT_CAPACITY: usize = 512;
 
-/// Identifier for a transcript cell within a live render. `History(idx)`
-/// addresses a finalized history cell at the given index;
-/// `Active(entry_idx)` addresses the synthetic active-cell entry while a
-/// turn is in flight.
+/// 实时渲染中对话单元格的标识符。`History(idx)` 用于定位
+/// 给定索引处的已定稿历史单元格；`Active(entry_idx)` 用于在
+/// 轮次进行中定位合成的活跃单元格条目。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellId {
     History(usize),
@@ -43,15 +40,15 @@ struct Key {
     revision: u64,
 }
 
-/// Bounded cache of wrapped lines. Keyed by `(cell_id, width, revision)` —
-/// any change to a cell's revision (mutation), the terminal width (resize),
-/// or the cell's identity (insert/delete shifting indices) misses the cache.
+/// 有上限的换行缓存。键为 `(cell_id, width, revision)`——
+/// 单元格修订版本的任何变化（变更）、终端宽度的变化（调整大小）
+/// 或单元格身份的变化（插入/删除导致索引偏移）都会导致缓存未命中。
 #[derive(Debug)]
 pub struct TranscriptCache {
     capacity: usize,
     entries: HashMap<Key, Vec<Line<'static>>>,
-    /// Insertion order so we can evict the oldest entry when full. Two-step
-    /// (HashMap + VecDeque) so insertion is O(1) and lookup stays O(1).
+    /// 插入顺序，以便在缓存满时驱逐最旧的条目。两步法
+    ///（HashMap + VecDeque）使插入为 O(1)，查找保持 O(1)。
     insertion_order: VecDeque<Key>,
 }
 
@@ -76,8 +73,8 @@ impl TranscriptCache {
         }
     }
 
-    /// Look up wrapped lines previously rendered at this exact key. Returns
-    /// `None` if the cell never wrapped at this width/revision before.
+    /// 查找之前在此确切键处渲染的换行结果。
+    /// 如果该单元格从未在此宽度/修订版处换行，则返回 `None`。
     #[must_use]
     pub fn get(&self, cell: CellId, width: u16, revision: u64) -> Option<&[Line<'static>]> {
         let key = Key {
@@ -88,16 +85,16 @@ impl TranscriptCache {
         self.entries.get(&key).map(Vec::as_slice)
     }
 
-    /// Cache a fresh wrap result. If the cache is at capacity the oldest
-    /// inserted entry is evicted first.
+    /// 缓存一个全新的换行结果。如果缓存达到容量上限，
+    /// 则首先驱逐最早插入的条目。
     pub fn insert(&mut self, cell: CellId, width: u16, revision: u64, lines: Vec<Line<'static>>) {
         let key = Key {
             cell,
             width,
             revision,
         };
-        // Replace an existing key in place — keep its position in the
-        // insertion-order queue so we don't trigger spurious eviction.
+        // 原地替换已有键——保持其在插入顺序队列中的位置，
+        // 以免触发虚假驱逐。
         if self.entries.insert(key, lines).is_some() {
             return;
         }
@@ -109,9 +106,9 @@ impl TranscriptCache {
         self.insertion_order.push_back(key);
     }
 
-    /// Drop every cached entry. Used when the underlying transcript shape
-    /// changes drastically (e.g. session reset).
-    #[allow(dead_code)] // Reserved for /clear and session-reset call sites.
+    /// 删除所有缓存的条目。当底层对话形状发生剧烈变化时使用
+    ///（例如会话重置）。
+    #[allow(dead_code)] // 为 /clear 和会话重置调用点保留。
     pub fn clear(&mut self) {
         self.entries.clear();
         self.insertion_order.clear();
@@ -145,7 +142,7 @@ mod tests {
         cache.insert(CellId::History(0), 80, 1, lines.clone());
         let got = cache
             .get(CellId::History(0), 80, 1)
-            .expect("entry should be cached");
+            .expect("条目应已缓存");
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].spans[0].content, "hello");
     }
@@ -154,9 +151,9 @@ mod tests {
     fn revision_bump_invalidates_cell() {
         let mut cache = TranscriptCache::new();
         cache.insert(CellId::History(0), 80, 1, vec![line("v1")]);
-        // Hit at rev=1
+        // rev=1 时命中
         assert!(cache.get(CellId::History(0), 80, 1).is_some());
-        // Miss at rev=2 — caller is expected to re-wrap and insert again.
+        // rev=2 时未命中——调用方应重新换行并再次插入。
         assert!(cache.get(CellId::History(0), 80, 2).is_none());
     }
 
@@ -185,9 +182,8 @@ mod tests {
 
     #[test]
     fn reinsert_same_key_does_not_evict() {
-        // Capacity 2 — re-inserting an existing key must not cause the other
-        // entry to be evicted; otherwise re-rendering the same cell on every
-        // frame would churn unrelated entries out of the cache.
+        // 容量为 2——重新插入已有键不得导致其他条目被驱逐；
+        // 否则每帧重新渲染同一单元格会不断将无关条目挤出缓存。
         let mut cache = TranscriptCache::with_capacity(2);
         cache.insert(CellId::History(0), 80, 1, vec![line("a")]);
         cache.insert(CellId::History(1), 80, 1, vec![line("b")]);
@@ -201,7 +197,7 @@ mod tests {
         cache.insert(CellId::History(0), 80, 1, vec![line("a")]);
         cache.insert(CellId::History(1), 80, 1, vec![line("b")]);
         cache.insert(CellId::History(2), 80, 1, vec![line("c")]);
-        // Oldest (History(0)) should be gone; the two newer keys remain.
+        // 最旧条目（History(0)）应被移除；两个较新的键保留。
         assert!(cache.get(CellId::History(0), 80, 1).is_none());
         assert!(cache.get(CellId::History(1), 80, 1).is_some());
         assert!(cache.get(CellId::History(2), 80, 1).is_some());

@@ -1,5 +1,4 @@
-//! Core command area: model/provider selection, help, navigation, and the
-//! persistent RLM / sub-agent entry points.
+//! 核心命令区域：模型/提供者选择、帮助、导航以及持久的 RLM/子代理入口点。
 
 #[cfg(all(test, feature = "long-running-tests"))]
 mod acceptance;
@@ -7,9 +6,9 @@ mod agent;
 mod anchor;
 mod clear;
 mod constitution;
-// This group dir intentionally has a `core.rs` child module with the same
-// name. The module_inception allow is a permanent structure rationale, not
-// migration scaffolding; see docs/architecture/command-dispatch.md.
+// 此组目录故意包含一个同名的 `core.rs` 子模块。
+// `module_inception` 允许是永久性的结构设计理由，而非迁移临时方案；
+// 参见 docs/architecture/command-dispatch.md。
 #[allow(clippy::module_inception)]
 mod core;
 mod exit;

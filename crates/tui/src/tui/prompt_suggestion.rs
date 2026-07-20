@@ -1,8 +1,7 @@
-//! Ghost-text follow-up prompt suggestion.
+//! 幽灵文本形式的后续提示建议。
 //!
-//! After each completed turn, a lightweight API call generates ONE short
-//! follow-up question the user might want to ask next. The suggestion is
-//! rendered as dimmed ghost text in the composer when the input is empty.
+//! 每完成一个回合后，一个轻量级 API 调用会生成一个用户可能想继续追问的简短问题。
+//! 当输入为空时，该建议以暗淡的幽灵文本形式显示在 composer 中。
 
 use std::sync::OnceLock;
 
@@ -10,17 +9,16 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tracing::debug;
 
-/// Reusable static client — avoids creating a new connection pool per request.
+/// 可复用的静态客户端——避免每次请求都创建新的连接池。
 fn suggestion_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(crate::tls::reqwest_client)
 }
 
-/// Generate a follow-up prompt suggestion based on recent messages.
+/// 基于最近的消息生成一个后续提示建议。
 ///
-/// Sends the conversation summary to the API with a system prompt that
-/// asks for a single short follow-up question. Returns `None` on failure
-/// or empty result — callers treat this as best-effort.
+/// 使用一条系统提示将对话摘要发送到 API，要求生成一个简短的后续问题。
+/// 失败或结果为空时返回 `None`——调用方将其视为尽力而为的尝试。
 pub async fn generate_suggestion(
     api_key: &str,
     base_url: &str,
@@ -81,7 +79,7 @@ pub async fn generate_suggestion(
     Some(suggestion)
 }
 
-/// Extract the first text line from a single message.
+/// 从单条消息中提取第一行文本。
 fn message_summary(m: &crate::models::Message) -> Option<String> {
     let role = match m.role.as_str() {
         "user" => "User",
@@ -113,8 +111,8 @@ fn message_summary(m: &crate::models::Message) -> Option<String> {
     Some(format!("{role}: {truncated}"))
 }
 
-/// Build a one-line-per-message summary of recent conversation context.
-/// Takes the last N messages, skipping tool-only messages.
+/// 构建最近对话上下文的每行一条消息的摘要。
+/// 取最后 N 条消息，跳过纯工具消息。
 pub fn summarize_recent_messages(messages: &[crate::models::Message], limit: usize) -> String {
     let start = messages.len().saturating_sub(limit);
     messages[start..]

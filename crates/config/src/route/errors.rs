@@ -1,26 +1,25 @@
-//! Route resolution errors (#3384).
+//! 路由解析错误（#3384）。
 //!
-//! `thiserror` is not a dependency of this crate, so [`Display`] and
-//! [`std::error::Error`] are hand-implemented. No new dependency is added.
+//! `thiserror` 不是此 crate 的依赖项，因此 [`Display`] 和 [`std::error::Error`] 是手动实现的。不添加新依赖。
 
 use std::fmt;
 
 use super::ids::ProviderId;
 
-/// Why a [`super::resolver::RouteResolver`] could not produce a candidate.
+/// 为什么 [`super::resolver::RouteResolver`] 无法生成候选路由。
 #[derive(Debug, Clone)]
 pub enum RouteError {
-    /// The requested model selector was empty.
+    /// 请求的模型选择器为空。
     EmptyModel,
-    /// The named provider could not be resolved.
+    /// 无法解析指定的提供商。
     InvalidProvider(String),
-    /// A model matched multiple providers; the caller must disambiguate.
+    /// 一个模型匹配了多个提供商；调用者必须消除歧义。
     AmbiguousModel(Vec<ProviderId>),
-    /// A clearly-foreign model was requested for a strict direct provider.
+    /// 为严格的直接提供商请求了明显外部的模型。
     ForeignModelForDirectProvider {
-        /// The strict direct provider that rejected the model.
+        /// 拒绝该模型的严格直接提供商。
         provider: ProviderId,
-        /// The foreign model selector that was rejected.
+        /// 被拒绝的外部模型选择器。
         model: String,
     },
 }

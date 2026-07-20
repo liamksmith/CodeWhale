@@ -31,12 +31,12 @@ fn default_runtime_event_envelope_schema_version() -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Capability advertisement
+// 能力声明
 // ---------------------------------------------------------------------------
 
-/// Fixed capability map advertised by `GET /v1/runtime/info`.
+/// `GET /v1/runtime/info` 广告的固定能力映射。
 ///
-/// All fields are required on serialization so clients can rely on the shape.
+/// 所有字段在序列化时都是必需的，以便客户端可以依赖该形状。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
     pub threads: bool,
@@ -49,9 +49,9 @@ pub struct RuntimeCapabilities {
     pub worker_runtime: bool,
 }
 
-/// Experimental opt-in flags advertised by `GET /v1/runtime/info`.
+/// `GET /v1/runtime/info` 广告的实验性选择加入标志。
 ///
-/// Fields are additive and default to `false` when omitted by older servers.
+/// 字段是增量的，当被较旧的服务器省略时默认值为 `false`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeExperimentalCapabilities {
     #[serde(default)]
@@ -59,12 +59,12 @@ pub struct RuntimeExperimentalCapabilities {
 }
 
 // ---------------------------------------------------------------------------
-// External Tool Bridge protocol types
+// 外部工具桥接协议类型
 // ---------------------------------------------------------------------------
 
-/// Specification for a dynamic external tool registered by a runtime client.
+/// 由运行时客户端注册的动态外部工具规范。
 ///
-/// Example JSON from the spec:
+/// 规范中的 JSON 示例：
 ///
 /// ```json
 /// {
@@ -83,32 +83,30 @@ pub struct RuntimeExperimentalCapabilities {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolSpec {
-    /// Optional namespace that groups related tools (e.g. `"tau_bench"`).
-    /// When present, the runtime may expose the tool as
-    /// `<namespace>::<name>` to the model.
+    /// 可选的命名空间，用于对相关工具进行分组（例如 `"tau_bench"`）。
+    /// 如果存在，运行时可以将工具以 `<namespace>::<name>`
+    /// 的形式暴露给模型。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 
-    /// Short tool name. Combined with `namespace` it forms a unique tool id.
+    /// 简短的工具名称。与 `namespace` 结合形成唯一的工具 ID。
     pub name: String,
 
-    /// Human-readable description exposed to the model.
+    /// 暴露给模型的人类可读描述。
     pub description: String,
 
-    /// JSON Schema describing the tool's input parameters.
+    /// 描述工具输入参数的 JSON Schema。
     pub input_schema: Value,
 
-    /// If true, the runtime may defer schema validation / tool loading until
-    /// the model actually calls the tool.
+    /// 如果为 true，运行时可以延迟模式验证 / 工具加载，直到
+    /// 模型实际调用该工具。
     ///
-    /// Defaults to `false` so that older clients omitting this field still
-    /// behave the same way.
+    /// 默认为 `false`，以便省略此字段的较旧客户端行为保持一致。
     #[serde(default)]
     pub defer_loading: bool,
 }
 
-/// Lifecycle status of a dynamic tool item shown in thread detail and event
-/// payloads.
+/// 在线程详情和事件负载中显示的动态工具项生命周期状态。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamicToolItemStatus {
@@ -117,42 +115,42 @@ pub enum DynamicToolItemStatus {
     Failed,
 }
 
-/// Parameters identifying a dynamic tool call request emitted by the runtime.
+/// 标识由运行时发出的动态工具调用请求的参数。
 ///
-/// This is the typed payload for `tool_call.requested` events and also the
-/// natural identifier used when the runtime looks up a pending call.
+/// 这是 `tool_call.requested` 事件的类型化负载，也是运行时查找
+/// 挂起调用时使用的自然标识符。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolCallParams {
     pub thread_id: String,
     pub turn_id: String,
     pub call_id: String,
 
-    /// Optional namespace that was registered with the tool.
+    /// 注册工具时可选的命名空间。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 
-    /// Tool name that the model invoked.
+    /// 模型调用的工具名称。
     pub tool: String,
 
-    /// Arguments supplied by the model, validated against `input_schema`.
+    /// 模型提供的参数，针对 `input_schema` 进行验证。
     pub arguments: Value,
 }
 
-/// Result submitted by a runtime client after executing a dynamic tool.
+/// 运行时客户端执行动态工具后提交的结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DynamicToolCallResult {
-    /// Whether the client-side tool execution succeeded.
+    /// 客户端工具执行是否成功。
     pub success: bool,
 
-    /// Content fragments returned by the tool.
+    /// 工具返回的内容片段。
     ///
-    /// Defaults to an empty vector when omitted so clients can send a minimal
-    /// `{ "success": false }` payload.
+    /// 省略时默认为空向量，以便客户端可以发送最小的
+    /// `{ "success": false }` 负载。
     #[serde(default)]
     pub content: Vec<DynamicToolCallContent>,
 }
 
-/// A single content fragment inside a [`DynamicToolCallResult`].
+/// [`DynamicToolCallResult`] 内部的单个内容片段。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DynamicToolCallContent {
@@ -161,12 +159,12 @@ pub enum DynamicToolCallContent {
 }
 
 // ---------------------------------------------------------------------------
-// Environment targeting protocol types
+// 环境目标协议类型
 // ---------------------------------------------------------------------------
 
-/// Environment target selected for a turn's shell/filesystem work.
+/// 为轮次的 shell/文件系统工作选择的环境目标。
 ///
-/// Example JSON:
+/// JSON 示例：
 ///
 /// ```json
 /// {
@@ -269,7 +267,7 @@ mod tests {
         let deserialized: Vec<DynamicToolCallContent> = serde_json::from_value(value).unwrap();
         assert_eq!(content, deserialized);
 
-        // Verify the exact JSON tag names expected by the spec.
+        // 验证规范期望的确切 JSON 标签名称。
         assert_eq!(
             serde_json::to_string(&DynamicToolCallContent::InputText { text: "x".into() }).unwrap(),
             r#"{"type":"input_text","text":"x"}"#
@@ -316,7 +314,7 @@ mod tests {
         let deserialized: TurnEnvironmentParams = serde_json::from_str(&serialized).unwrap();
         assert_eq!(env, deserialized);
 
-        // Verify JSON from the spec deserializes directly.
+        // 验证来自规范的 JSON 能否直接反序列化。
         let from_spec = r#"{
             "environment_id": "local",
             "cwd": "/workspace"

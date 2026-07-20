@@ -1,4 +1,4 @@
-//! `/sessions` command.
+//! `/sessions` 命令。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

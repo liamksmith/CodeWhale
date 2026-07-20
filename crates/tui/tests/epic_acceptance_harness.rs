@@ -1,7 +1,6 @@
-//! EPIC acceptance harness smoke test.
+//! EPIC 验收测试框架冒烟测试。
 //!
-//! Proves that the Gherkin/Cucumber infrastructure is available and functional
-//! on the target branch.
+//! 证明 Gherkin/Cucumber 基础设施在目标分支上可用且功能正常。
 
 use cucumber::{World as _, given, then, when, writer::Stats as _};
 

@@ -1,14 +1,11 @@
-//! Test-only mirror of the production `llm_client` module surface.
+//! 生产环境 `llm_client` 模块接口的仅测试镜像。
 //!
-//! The integration test under `tests/integration_mock_llm.rs` includes this
-//! file as `mod llm_client` and `mock.rs` as the nested submodule. Doing it
-//! this way means `mock.rs`'s `super::{LlmClient, StreamEventBox}` paths
-//! resolve cleanly — they refer to the trait + alias declared right here.
+//! `tests/integration_mock_llm.rs` 下的集成测试将此文件作为 `mod llm_client` 包含，
+//! 并将 `mock.rs` 作为嵌套子模块。这种方式使 `mock.rs` 的 `super::{LlmClient, StreamEventBox}`
+//! 路径能够正确解析 — 它们引用的是在此处声明的 trait 和别名。
 //!
-//! The trait shape MUST stay 1:1 with the real one in
-//! `crates/tui/src/llm_client/mod.rs`. If the production trait grows a method,
-//! mirror it here so `mock.rs` (the same source file shipped in the binary)
-//! still satisfies it.
+//! trait 形状必须与 `crates/tui/src/llm_client/mod.rs` 中的真实版本保持 1:1 一致。
+//! 如果生产 trait 增加了方法，请在此处镜像它，以便 `mock.rs`（二进制文件中包含的同一源文件）仍然满足它。
 
 use anyhow::Result;
 use std::pin::Pin;

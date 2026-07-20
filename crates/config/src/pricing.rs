@@ -1,22 +1,19 @@
-//! Provider/offering-scoped pricing projection with provenance (#3085).
+//! 带来源溯源的提供商/产品级定价投影 (#3085)。
 //!
-//! Network-free. Maps Models.dev offering `cost` (and live / user-override
-//! rows) into pricing rows that carry explicit **provenance**, **currency**, and
-//! **effective-at** metadata, plus a pure cost estimator over normalized token
-//! usage. UI display (`CostDisplay`) and provider usage-payload parsing live
-//! above this layer and are out of scope here.
+//! 无需网络。将 Models.dev 产品 `cost`（以及实时/用户覆盖行）映射到携带显式
+//! **来源**、**货币**和**生效时间**元数据的定价行，再加上一个基于规范化令牌用量的
+//! 纯成本估算器。UI 显示（`CostDisplay`）和提供商用量载荷解析位于此层之上，
+//! 不在本范围内。
 //!
-//! Boundary with the route layer: this models *pricing* — offering-owned,
-//! per-token unit prices. The coarse route-facing meter shape already exists as
-//! [`crate::route::PricingSku`]
-//! (`Token` / `SubscriptionQuota` / `AccountCredits` / `LocalOrNotApplicable` /
-//! `UnknownOrStale`); [`OfferingPricing::to_route_sku`] and
-//! [`route_pricing_sku`] bridge to it.
+//! 与路由层的边界：此为*定价*模型——产品拥有的每令牌单价。粗粒度的路由层计量形状
+//! 已经作为 [`crate::route::PricingSku`] 存在
+//! （`Token` / `SubscriptionQuota` / `AccountCredits` / `LocalOrNotApplicable` /
+//! `UnknownOrStale`）；[`OfferingPricing::to_route_sku`] 和
+//! [`route_pricing_sku`] 连接到它。
 //!
-//! Honesty rule (#2608 / #3085): pricing is never assumed. A route with no
-//! sourced price yields `None` here and `UnknownOrStale` at the route layer —
-//! never a fabricated token price, and never an implicit "free" for
-//! local/custom/subscription routes.
+//! 诚实规则 (#2608 / #3085)：永远不假定定价。没有来源价格的路由在此处返回 `None`，
+//! 在路由层返回 `UnknownOrStale`——从不虚构令牌价格，也从不隐式地将
+//! 本地/自定义/订阅路由视为"免费"。
 
 use serde::{Deserialize, Serialize};
 
@@ -24,98 +21,94 @@ use crate::catalog::{CatalogOffering, CatalogSource};
 use crate::models_dev::ModelsDevCost;
 use crate::route::PricingSku;
 
-/// Billing currency for a pricing row. Models.dev publishes USD per-million
-/// costs; other currencies arrive via provider docs or user overrides.
+/// 定价行的结算货币。Models.dev 发布每百万 USD 成本；
+/// 其他货币通过提供商文档或用户覆盖提供。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Currency {
     #[default]
     Usd,
     Cny,
-    /// An ISO-4217-style code CodeWhale does not special-case.
+    /// CodeWhale 不做特殊处理的 ISO-4217 风格代码。
     Other(String),
 }
 
-/// Where a pricing row came from. Retained so the UI can show provenance and so
-/// stale/unknown prices are never silently treated as authoritative.
+/// 定价行的来源。保留此信息以便 UI 可以显示来源，并且过期/未知价格不会静默地被当作权威数据。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum PricingProvenance {
-    /// Seeded from a bundled Models.dev catalog snapshot.
+    /// 从捆绑的 Models.dev 目录快照中播种。
     ModelsDevBundled,
-    /// From a provider live `/models` (or pricing) refresh.
+    /// 来自提供商实时 `/models`（或定价）刷新。
     ProviderLive,
-    /// From provider documentation / a hand-sourced seed. Set only by callers
-    /// constructing rows directly; `from_catalog_offering` never produces this
-    /// (Models.dev-sourced rows map to `ModelsDevBundled` / `ProviderLive`).
+    /// 来自提供商文档/手动来源的种子。仅由直接构造行的调用者设置；
+    /// `from_catalog_offering` 从不产生此值
+    /// （Models.dev 来源的行映射到 `ModelsDevBundled` / `ProviderLive`）。
     ProviderDocs,
-    /// User-supplied override (custom endpoint, enterprise terms, local route).
+    /// 用户提供的覆盖（自定义端点、企业条款、本地路由）。
     UserOverride,
-    /// No sourced price.
+    /// 无来源价格。
     Unknown,
 }
 
-/// Normalized token usage for a single turn, in canonical billable classes.
+/// 单轮次的规范化令牌用量，以规范的计费类别表示。
 ///
-/// Producing this from provider-specific usage payloads (Chat Completions,
-/// Responses, Anthropic) is a separate concern; this layer only consumes it.
+/// 从特定提供商的用量载荷（Chat Completions、Responses、Anthropic）生成此数据
+/// 是一个独立的关注点；此层只消费它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
-    /// Non-cached input (prompt) tokens.
+    /// 非缓存输入（提示）令牌。
     pub input: u64,
-    /// Output (completion) tokens, including reasoning output.
+    /// 输出（补全）令牌，包括推理输出。
     pub output: u64,
-    /// Cache-read (cache-hit) input tokens, billed at the cache-read rate.
+    /// 缓存读取（缓存命中）输入令牌，按缓存读取费率计费。
     pub cache_read: u64,
-    /// Cache-write (cache-creation) tokens, billed at the cache-write rate.
+    /// 缓存写入（缓存创建）令牌，按缓存写入费率计费。
     pub cache_write: u64,
 }
 
-/// A provider/offering-scoped pricing row.
+/// 一个提供商/产品级的定价行。
 ///
-/// Prices are per million tokens in [`Currency`]. Any field may be unknown
-/// (`None`); [`OfferingPricing::estimate_cost`] refuses to invent a number for a
-/// used class whose price is unknown.
+/// 价格以每百万令牌为单位，使用 [`Currency`]。任何字段都可能未知（`None`）；
+/// [`OfferingPricing::estimate_cost`] 拒绝为价格未知的已使用类别虚构数字。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OfferingPricing {
-    /// Provider id serving the offering.
+    /// 提供产品的提供商 ID。
     pub provider: String,
-    /// Provider-owned wire id the price applies to.
+    /// 提供商拥有的线路 ID，价格适用于该线路。
     pub wire_model_id: String,
-    /// Canonical model identity, when the offering carries one.
+    /// 规范模型标识（当产品携带时）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_model: Option<String>,
-    /// Billing currency.
+    /// 结算货币。
     pub currency: Currency,
-    /// Input price per million tokens.
+    /// 每百万令牌的输入价格。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_million: Option<f64>,
-    /// Output price per million tokens.
+    /// 每百万令牌的输出价格。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_million: Option<f64>,
-    /// Cache-read price per million tokens.
+    /// 每百万令牌的缓存读取价格。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_per_million: Option<f64>,
-    /// Cache-write price per million tokens.
+    /// 每百万令牌的缓存写入价格。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_per_million: Option<f64>,
-    /// Where the price came from.
+    /// 价格的来源。
     pub provenance: PricingProvenance,
-    /// Unix seconds the price was fetched / became effective, when known.
+    /// 价格获取/生效的 Unix 秒数（当已知时）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_at: Option<u64>,
 }
 
 impl OfferingPricing {
-    /// Derive a pricing row from a catalog offering's `cost`, when priced.
+    /// 从目录产品的 `cost` 派生定价行（当有定价时）。
     ///
-    /// Returns `None` when the offering carries no cost, or a cost object with
-    /// no concrete price field — those routes are *unknown*, not free, and the
-    /// caller should render them as such (see [`route_pricing_sku`]).
+    /// 当产品没有成本，或成本对象没有具体价格字段时返回 `None`——
+    /// 这些路由是*未知*的，而非免费，调用方应相应地渲染它们（参见 [`route_pricing_sku`]）。
     ///
-    /// Models.dev `cost` values are USD per million tokens, so the currency is
-    /// [`Currency::Usd`]; provenance and `effective_at` follow the offering's
-    /// [`CatalogSource`].
+    /// Models.dev `cost` 值是以每百万令牌 USD 计价的，因此货币为 [`Currency::Usd`]；
+    /// 来源 provenance 和 `effective_at` 跟随产品的 [`CatalogSource`]。
     #[must_use]
     pub fn from_catalog_offering(offering: &CatalogOffering) -> Option<Self> {
         let cost = offering.cost.as_ref()?;
@@ -140,7 +133,7 @@ impl OfferingPricing {
         })
     }
 
-    /// Whether any per-token price is known.
+    /// 是否有任何每令牌价格已知。
     #[must_use]
     pub fn has_any_price(&self) -> bool {
         self.input_per_million.is_some()
@@ -149,10 +142,10 @@ impl OfferingPricing {
             || self.cache_write_per_million.is_some()
     }
 
-    /// Whether this price is older than `max_age_secs` at `now_unix`.
+    /// 此价格在 `now_unix` 时是否早于 `max_age_secs`。
     ///
-    /// Rows without an `effective_at` (bundled snapshot / user override) carry
-    /// no fetch clock and are not considered age-stale here; live rows are.
+    /// 没有 `effective_at` 的行（捆绑快照/用户覆盖）没有获取时钟，
+    /// 在此处不被视为旧数据；实时行则会被视为旧数据。
     #[must_use]
     pub fn is_stale(&self, now_unix: u64, max_age_secs: u64) -> bool {
         match self.effective_at {
@@ -161,11 +154,10 @@ impl OfferingPricing {
         }
     }
 
-    /// Estimate the cost of `usage` in this row's [`Currency`].
+    /// 估算此行 [`Currency`] 中 `usage` 的成本。
     ///
-    /// Returns `None` if any usage class with a non-zero token count has an
-    /// unknown price — the estimate would otherwise silently under-report. With
-    /// all-zero usage the cost is `Some(0.0)`.
+    /// 如果任何非零令牌数的用量类别有未知价格，则返回 `None`——
+    /// 否则估算会静默地低估。如果所有用量为零，则成本为 `Some(0.0)`。
     #[must_use]
     pub fn estimate_cost(&self, usage: &TokenUsage) -> Option<f64> {
         let mut total = 0.0_f64;
@@ -177,22 +169,21 @@ impl OfferingPricing {
         ] {
             if tokens > 0 {
                 let price = price?;
-                // Per-turn token counts are far below 2^53, so this cast is
-                // exact; revisit if TokenUsage ever aggregates across sessions.
+                // 每轮令牌数远低于 2^53，因此此转换是精确的；
+                // 如果 TokenUsage 将来跨会话聚合，请重新审视。
                 total += (tokens as f64 / 1_000_000.0) * price;
             }
         }
         Some(total)
     }
 
-    /// Project to the coarse route-facing meter shape.
+    /// 投影到粗粒度的路由层计量形状。
     ///
-    /// Returns [`PricingSku::Token`] only when an input or output rate is known.
-    /// The route-layer `Token` shape carries only input/output rates, so a row
-    /// priced *only* on cache classes would become a `Token` with no visible
-    /// rates — misleading at the route layer. Such rows degrade to
-    /// [`PricingSku::UnknownOrStale`] here while their cache rates remain usable
-    /// through [`OfferingPricing::estimate_cost`].
+    /// 仅在输入或输出费率已知时返回 [`PricingSku::Token`]。
+    /// 路由层的 `Token` 形状仅携带输入/输出费率，因此*仅*在缓存类别上定价的行
+    /// 会变成没有可见费率的 `Token`——在路由层会产生误导。此类行在此处降级为
+    /// [`PricingSku::UnknownOrStale`]，而其缓存费率仍可通过
+    /// [`OfferingPricing::estimate_cost`] 使用。
     #[must_use]
     pub fn to_route_sku(&self) -> PricingSku {
         if self.input_per_million.is_none() && self.output_per_million.is_none() {
@@ -205,35 +196,33 @@ impl OfferingPricing {
     }
 }
 
-/// The honest route-facing pricing meter for a catalog offering.
+/// 目录产品的诚实路由层定价计量器。
 ///
-/// An offering with a usable input/output rate becomes [`PricingSku::Token`];
-/// everything else — no cost, a cost object with no concrete price, or a
-/// cache-only price — becomes [`PricingSku::UnknownOrStale`] rather than a
-/// fabricated zero price. (`from_catalog_offering` collapses the unpriced case
-/// to `None`; `to_route_sku` collapses the cache-only case.)
+/// 具有可用输入/输出费率的产品变为 [`PricingSku::Token`]；
+/// 其他所有情况——无成本、成本对象没有具体价格或仅缓存价格——变为
+/// [`PricingSku::UnknownOrStale`]，而非虚构的零价格。
+/// （`from_catalog_offering` 将未定价情况折叠为 `None`；
+/// `to_route_sku` 将仅缓存情况折叠。）
 #[must_use]
 pub fn route_pricing_sku(offering: &CatalogOffering) -> PricingSku {
     OfferingPricing::from_catalog_offering(offering)
         .map_or(PricingSku::UnknownOrStale, |pricing| pricing.to_route_sku())
 }
 
-/// The honest route-facing pricing meter for a raw Models.dev `cost` block.
+/// 原始 Models.dev `cost` 块的诚实路由层定价计量器。
 ///
-/// Same honesty rule as [`route_pricing_sku`], but for callers that hold a
-/// [`ModelsDevCost`] directly (the route-offering builders in
-/// [`crate::models_dev`]) rather than a full [`CatalogOffering`]. An absent or
-/// concretely-empty cost, or a cache-only cost, yields
-/// [`PricingSku::UnknownOrStale`]; only a usable input/output rate yields
-/// [`PricingSku::Token`].
+/// 与 [`route_pricing_sku`] 相同的诚实规则，但适用于直接持有 [`ModelsDevCost`]
+/// 的调用者（[`crate::models_dev`] 中的路由产品构建器）而非完整的 [`CatalogOffering`]。
+/// 缺失或具体为空的成本，或仅缓存成本，产生 [`PricingSku::UnknownOrStale`]；
+/// 仅当有可用输入/输出费率时产生 [`PricingSku::Token`]。
 #[must_use]
 pub(crate) fn route_pricing_sku_from_cost(cost: Option<&ModelsDevCost>) -> PricingSku {
     let Some(cost) = cost else {
         return PricingSku::UnknownOrStale;
     };
     if cost.input.is_none() && cost.output.is_none() {
-        // No input/output rate: a cache-only or empty cost would render as a
-        // rate-less `Token` at the route layer, so it stays honestly unknown.
+        // 无输入/输出费率：仅缓存或空成本会在路由层呈现为无费率的 `Token`，
+        // 因此诚实保持为未知。
         return PricingSku::UnknownOrStale;
     }
     PricingSku::Token {

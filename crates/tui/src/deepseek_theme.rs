@@ -1,15 +1,12 @@
-//! Whale/DeepSeek terminal theme tokens.
+//! Whale/DeepSeek 终端主题令牌。
 //!
-//! A small, deliberately flat module that names the color, border, and
-//! padding choices the TUI is already making. All values match the dark
-//! palette previously hard-coded against [`crate::palette`]; a single
-//! source-of-truth change here can swap the skin later. Visible output
-//! is not changed by introducing this module.
+//! 一个小的、刻意扁平的模块，命名了 TUI 正在使用的颜色、边框和内边距选择。
+//! 所有值与之前针对 [`crate::palette`] 硬编码的深色调色板一致；
+//! 在这里进行单一事实来源的更改可以稍后切换皮肤。引入此模块不会改变可见输出。
 //!
-//! The only consumers today are the plan and tool cell renderers in
-//! [`crate::tui::history`] and the sidebar section chrome in
-//! [`crate::tui::ui`]. All other call sites continue to use [`crate::palette`]
-//! directly until they are migrated in a later slice.
+//! 目前唯一的消费者是 [`crate::tui::history`] 中的计划和工具单元格渲染器，
+//! 以及 [`crate::tui::ui`] 中的侧边栏部分装饰。
+//! 所有其他调用点继续直接使用 [`crate::palette`]，直到后续阶段迁移。
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{BorderType, Borders, Padding};
@@ -18,7 +15,7 @@ use crate::palette;
 use crate::palette::PaletteMode;
 use crate::tui::history::ToolStatus;
 
-/// Visual variant exposed by the theme.
+/// 主题暴露的视觉变体。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Dark,
@@ -26,12 +23,12 @@ pub enum Variant {
     Grayscale,
 }
 
-/// Centralized visual tokens for sidebar, plan, and tool rendering.
+/// 侧边栏、计划和工具渲染的集中化视觉令牌。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub variant: Variant,
 
-    // Sidebar / section chrome
+    // 侧边栏 / 区域装饰
     pub section_borders: Borders,
     pub section_border_type: BorderType,
     pub section_border_color: Color,
@@ -39,7 +36,7 @@ pub struct Theme {
     pub section_title_color: Color,
     pub section_padding: Padding,
 
-    // Tool cell color tokens
+    // 工具单元格颜色令牌
     pub tool_title_color: Color,
     pub tool_value_color: Color,
     pub tool_label_color: Color,
@@ -47,7 +44,7 @@ pub struct Theme {
     pub tool_success_accent: Color,
     pub tool_failed_accent: Color,
 
-    // Plan cell color tokens
+    // 计划单元格颜色令牌
     pub plan_progress_color: Color,
     pub plan_summary_color: Color,
     pub plan_explanation_color: Color,
@@ -57,7 +54,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The current dark theme. Visible output today uses these values.
+    /// 当前的深色主题。当前可见输出使用这些值。
     #[must_use]
     pub const fn dark() -> Self {
         Self {
@@ -67,11 +64,10 @@ impl Theme {
             section_border_color: palette::BORDER_COLOR,
             section_bg: palette::WHALE_BG,
             section_title_color: palette::WHALE_ACCENT_PRIMARY,
-            // Horizontal padding only. `Padding::uniform(1)` ate two rows of
-            // each sidebar panel — for compact terminals where Work/Tasks/Agents
-            // get ~3 rows total via the 25% layout split, that left zero rows
-            // for content (#63 follow-up: panels rendered as empty boxes even
-            // when "No todos" / "No active plan" should have shown).
+            // 仅水平内边距。`Padding::uniform(1)` 占用了每个侧边栏面板的两行——
+            // 对于紧凑型终端，Work/Tasks/Agents 通过 25% 布局分割总共获得约 3 行，
+            // 这导致内容区域为零行（#63 后续：即使应该显示"无待办"/"无活跃计划"，
+            // 面板也渲染为空框）。
             section_padding: Padding::horizontal(1),
             tool_title_color: palette::TEXT_SOFT,
             tool_value_color: palette::TEXT_MUTED,
@@ -88,7 +84,7 @@ impl Theme {
         }
     }
 
-    /// Light theme tokens for sidebar and tool chrome.
+    /// 侧边栏和工具装饰的浅色主题令牌。
     #[must_use]
     pub const fn light() -> Self {
         Self {
@@ -114,7 +110,7 @@ impl Theme {
         }
     }
 
-    /// Solarized Light theme tokens — warm ivory tones, high contrast.
+    /// Solarized Light 主题令牌——温暖的象牙色调，高对比度。
     #[must_use]
     pub const fn solarized_light() -> Self {
         Self {
@@ -140,7 +136,7 @@ impl Theme {
         }
     }
 
-    /// Neutral black/white tokens for users who want minimal brand color.
+    /// 为想要最小化品牌色彩的用户提供的中性黑白令牌。
     #[must_use]
     pub const fn grayscale() -> Self {
         Self {
@@ -176,7 +172,7 @@ impl Theme {
         }
     }
 
-    /// Pick the right tool accent for a given [`ToolStatus`].
+    /// 为给定的 [`ToolStatus`] 选择合适的工具强调色。
     #[must_use]
     pub const fn tool_status_color(self, status: ToolStatus) -> Color {
         match status {
@@ -187,7 +183,7 @@ impl Theme {
         }
     }
 
-    /// Bold tool title style (e.g. "Plan", "Shell").
+    /// 粗体工具标题样式（例如"Plan"、"Shell"）。
     #[must_use]
     pub fn tool_title_style(self) -> Style {
         Style::default()
@@ -195,26 +191,26 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Right-side status text ("running", "done", "issue") style.
+    /// 右侧状态文本（"running"、"done"、"issue"）样式。
     #[must_use]
     pub fn tool_status_style(self, status: ToolStatus) -> Style {
         Style::default().fg(self.tool_status_color(status))
     }
 
-    /// Detail label style ("command:", "time:", step markers).
+    /// 详情标签样式（"command:"、"time:"、步骤标记）。
     #[must_use]
     pub fn tool_label_style(self) -> Style {
         Style::default().fg(self.tool_label_color)
     }
 
-    /// Default value style for tool detail rows.
+    /// 工具详情行的默认值样式。
     #[must_use]
     pub fn tool_value_style(self) -> Style {
         Style::default().fg(self.tool_value_color)
     }
 }
 
-/// Returns the active theme used by the TUI today.
+/// 返回 TUI 当前使用的活动主题。
 #[must_use]
 pub const fn active_theme() -> Theme {
     Theme::dark()

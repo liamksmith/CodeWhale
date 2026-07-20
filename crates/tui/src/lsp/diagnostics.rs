@@ -1,8 +1,8 @@
-//! Diagnostic shape returned by the LSP transport, plus the renderer that
-//! produces the `<diagnostics file="…">` block injected into the model
-//! context after a file edit.
+//! LSP 传输返回的诊断形状，以及渲染器，
+//! 用于生成文件编辑后注入模型上下文的
+//! `<diagnostics file="…">` 块。
 //!
-//! Format (matches the spec given in issue #136):
+//! 格式（与 issue #136 中给出的规范匹配）：
 //!
 //! ```text
 //! <diagnostics file="crates/tui/src/foo.rs">
@@ -11,13 +11,13 @@
 //! </diagnostics>
 //! ```
 //!
-//! Lines are 1-based. Columns are 1-based. We trim each diagnostic message
-//! to a single line so the block stays compact.
+//! 行号从 1 开始。列号从 1 开始。我们将每条诊断消息
+//! 截断为单行，以便块保持紧凑。
 
 use std::path::PathBuf;
 
-/// Severity bucket used in the rendered block. Mirrors the LSP severity
-/// codes (1 = Error, 2 = Warning, 3 = Information, 4 = Hint).
+/// 渲染块中使用严重级别分类。镜像 LSP 严重级别
+/// 代码（1 = Error, 2 = Warning, 3 = Information, 4 = Hint）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -27,9 +27,8 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// Decode the LSP integer severity. Returns `None` when the integer is
-    /// missing or unrecognized — callers default to `Error` to err on the
-    /// side of surfacing the issue.
+    /// 解码 LSP 整数严重级别。当整数缺失或无法识别时返回 `None`——
+    /// 调用者默认使用 `Error` 以优先暴露问题。
     #[must_use]
     pub fn from_lsp(code: Option<i64>) -> Option<Self> {
         match code? {
@@ -41,7 +40,7 @@ impl Severity {
         }
     }
 
-    /// Uppercase label used in the rendered block.
+    /// 渲染块中使用的大写标签。
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -53,9 +52,8 @@ impl Severity {
     }
 }
 
-/// One LSP diagnostic, normalized to 1-based line/col so we can render it
-/// directly. The transport layer is responsible for the `0-based -> 1-based`
-/// conversion.
+/// 一条 LSP 诊断，归一化为 1-based 行/列，以便直接渲染。
+/// 传输层负责 `0-based -> 1-based` 的转换。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub line: u32,
@@ -65,28 +63,28 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Trim the message to a single line for compact rendering.
+    /// 将消息修剪为单行以实现紧凑渲染。
     fn render_message(&self) -> String {
         let first_line = self.message.lines().next().unwrap_or("").trim();
         first_line.to_string()
     }
 }
 
-/// One file's worth of diagnostics, ready to render. The renderer caps the
-/// list to `max_per_file` items.
+/// 一个文件的诊断信息，准备好渲染。渲染器将列表
+/// 限制为 `max_per_file` 项。
 #[derive(Debug, Clone)]
 pub struct DiagnosticBlock {
-    /// Path used inside the `file="…"` attribute. Should be relative to the
-    /// workspace root when possible (we use `path.file_name()` if relativizing
-    /// fails, per the issue's hard rule).
+    /// 在 `file="…"` 属性中使用的路径。应尽可能相对于
+    /// 工作区根目录（根据 issue 的硬性规则，如果相对化失败，
+    /// 我们使用 `path.file_name()`）。
     pub file: PathBuf,
     pub items: Vec<Diagnostic>,
 }
 
 impl DiagnosticBlock {
-    /// Render the block in the format pasted in the module docs. Returns the
-    /// empty string when `self.items` is empty so callers can `if !text.is_empty()`
-    /// before injecting.
+    /// 以模块文档中描述的格式渲染块。当 `self.items` 为空时
+    /// 返回空字符串，以便调用者可以在注入前进行
+    /// `if !text.is_empty()` 检查。
     #[must_use]
     pub fn render(&self) -> String {
         if self.items.is_empty() {
@@ -107,9 +105,9 @@ impl DiagnosticBlock {
         out
     }
 
-    /// Truncate to at most `max_per_file` items, preserving order. The LSP
-    /// manager is responsible for sorting by severity before calling this so
-    /// errors are kept ahead of warnings when truncation happens.
+    /// 截断至最多 `max_per_file` 项，保持顺序。LSP 管理器
+    /// 负责在调用此函数前按严重级别排序，以便在截断时
+    /// 错误排在警告之前。
     pub fn truncate(&mut self, max_per_file: usize) {
         if self.items.len() > max_per_file {
             self.items.truncate(max_per_file);
@@ -117,8 +115,8 @@ impl DiagnosticBlock {
     }
 }
 
-/// Format a list of [`DiagnosticBlock`]s as a single bundle. Used by the
-/// engine when one turn touched several files. Empty blocks are skipped.
+/// 将一个 [`DiagnosticBlock`] 列表格式化为单个捆绑包。
+/// 当引擎在一个轮次中触及多个文件时使用。空的块被跳过。
 #[must_use]
 pub fn render_blocks(blocks: &[DiagnosticBlock]) -> String {
     let mut chunks = Vec::new();

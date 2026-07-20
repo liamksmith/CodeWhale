@@ -1,26 +1,21 @@
-//! Cross-session composer input history (#366).
+//! 跨会话 composer 输入历史 (#366)。
 //!
-//! Persists user-typed prompts to `~/.codewhale/composer_history.txt`
-//! (falling back to a legacy `~/.deepseek/composer_history.txt` only when
-//! one already exists, #3240) so pressing Up-arrow at the composer recalls
-//! submissions from previous sessions, not just the current one. One entry
-//! per line, oldest first,
-//! capped at [`MAX_HISTORY_ENTRIES`] entries (older entries are pruned
-//! at append time).
+//! 将用户输入的提示词持久化到 `~/.codewhale/composer_history.txt`
+//! （仅在旧版 `~/.deepseek/composer_history.txt` 已存在时回退到它，#3240），
+//! 这样在 composer 中按上箭头可以回忆起之前会话的提交内容，
+//! 而不仅仅是当前会话。每个条目一行，最早的在前，
+//! 最多 [`MAX_HISTORY_ENTRIES`] 个条目（添加时修剪较早的条目）。
 //!
-//! Entries that begin with `/` (slash commands) are NOT stored — they
-//! pollute the recall stream and the fuzzy slash-menu already covers
-//! them. Empty / whitespace-only inputs are also skipped.
+//! 以 `/` 开头的条目（斜杠命令）不会被存储——它们会污染回忆流，
+//! 且模糊斜杠菜单已覆盖了它们。空/仅空白的输入也会被跳过。
 //!
-//! ## Off-thread writes (#1927)
+//! ## 离线写入 (#1927)
 //!
-//! [`append_history`] used to block the caller for a read-then-atomic-
-//! rewrite of the full file. That ran on the UI thread inside
-//! `submit_input`, contributing a perceptible stall after Enter. The
-//! public entry point now hands work to a dedicated writer thread via
-//! [`writer_sender`] and returns immediately. Submissions stay serialised
-//! in arrival order, so the on-disk file keeps its "oldest first"
-//! invariant.
+//! [`append_history`] 过去会阻塞调用方进行读取然后原子重写整个文件。
+//! 这在 UI 线程的 `submit_input` 内部运行，导致按 Enter 后出现
+//! 可感知的卡顿。现在公共入口通过 [`writer_sender`] 将工作交给
+//! 专用的写入线程并立即返回。提交按到达顺序保持串行化，
+//! 因此磁盘上的文件保持"最早优先"的不变性。
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -29,9 +24,8 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-/// Hard cap on persisted history. Keeps the file small (typical entries
-/// are < 200 chars, so 1000 entries ≈ 200 KB) and bounds startup load
-/// time.
+/// 持久化历史的硬上限。保持文件较小（典型条目 < 200 字符，
+/// 所以 1000 个条目 ≈ 200 KB）并限制启动加载时间。
 pub const MAX_HISTORY_ENTRIES: usize = 1000;
 
 const HISTORY_FILE_NAME: &str = "composer_history.txt";
@@ -40,15 +34,13 @@ fn default_history_path() -> Option<PathBuf> {
     history_path_with_home(dirs::home_dir())
 }
 
-/// Resolve the composer-history file under `home`, preferring the CodeWhale
-/// root and only falling back to the legacy `.deepseek` root when a legacy
-/// file already exists.
+/// 解析 `home` 下的 composer 历史文件，优先使用 CodeWhale 根目录，
+/// 仅在旧版文件已存在时回退到旧版 `.deepseek` 根目录。
 ///
-/// On a fresh install (neither file present) this returns the `.codewhale`
-/// path, so the writer never recreates `~/.deepseek/` at runtime (#3240),
-/// while users who haven't migrated keep reading and appending to their
-/// existing legacy history. Mirrors the primary/legacy resolution used by
-/// `snapshot::paths` and `artifacts`.
+/// 在新安装（两个文件都不存在）时，返回 `.codewhale` 路径，
+/// 这样写入者永远不会在运行时重新创建 `~/.deepseek/` (#3240)，
+/// 而尚未迁移的用户继续读取和追加到他们现有的旧版历史中。
+/// 镜像了 `snapshot::paths` 和 `artifacts` 使用的主/旧版解析方式。
 fn history_path_with_home(home: Option<PathBuf>) -> Option<PathBuf> {
     let home = home?;
     let primary = home.join(".codewhale").join(HISTORY_FILE_NAME);
@@ -62,8 +54,7 @@ fn history_path_with_home(home: Option<PathBuf>) -> Option<PathBuf> {
     Some(primary)
 }
 
-/// Read the persisted history into memory. Returns an empty vec if the
-/// file doesn't exist or can't be parsed — this is best-effort.
+/// 将持久化的历史读取到内存。如果文件不存在或无法解析，返回空 vec——这是尽力而为的操作。
 #[must_use]
 pub fn load_history() -> Vec<String> {
     let Some(path) = default_history_path() else {
@@ -83,14 +74,14 @@ fn load_history_from(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Append an entry to the persisted history, pruning old entries to
-/// stay within [`MAX_HISTORY_ENTRIES`]. Slash-commands and empty input
-/// are skipped — those don't help recall.
+/// 向持久化历史追加一个条目，修剪旧条目以
+/// 保持在 [`MAX_HISTORY_ENTRIES`] 内。斜杠命令和空输入
+/// 会被跳过——它们对回忆没有帮助。
 ///
-/// Best-effort and non-blocking — work is forwarded to a dedicated writer
-/// thread so the caller (typically the UI submit handler) returns
-/// immediately. See module docs for the rationale (#1927). Failures on
-/// the writer thread are logged via `tracing` but not propagated.
+/// 尽力而为且非阻塞——工作被转发到专用的写入线程，
+/// 因此调用方（通常是 UI 提交处理器）立即返回。
+/// 参见模块文档了解原理 (#1927)。写入线程上的失败
+/// 通过 `tracing` 记录但不会传播。
 pub fn append_history(entry: &str) {
     let Some(path) = default_history_path() else {
         return;
@@ -98,9 +89,9 @@ pub fn append_history(entry: &str) {
     append_history_dispatched(&path, entry);
 }
 
-/// Path-injectable variant of [`append_history`] used by tests. Forwards
-/// the work to the dedicated writer thread (or falls back to a synchronous
-/// write if the channel send fails) so callers never block on disk I/O.
+/// [`append_history`] 的可注入路径变体，由测试使用。将工作转发
+/// 到专用的写入线程（如果通道发送失败则回退到同步写入），
+/// 因此调用方永远不会阻塞在磁盘 I/O 上。
 fn append_history_dispatched(path: &Path, entry: &str) {
     let entry = entry.to_string();
     if let Err(err) = writer_sender().send(HistoryWrite::Append(path.to_path_buf(), entry)) {
@@ -118,9 +109,9 @@ enum HistoryWrite {
     Flush(Sender<()>),
 }
 
-/// Lazy singleton sender for the dedicated composer-history writer
-/// thread. Initialised on first use; the thread runs for the lifetime
-/// of the process and drains queued writes in arrival order.
+/// 专用的 composer 历史写入线程的惰性单例发送者。
+/// 首次使用时初始化；线程在进程生命周期内运行，
+/// 按到达顺序排空排队的写入。
 fn writer_sender() -> &'static Sender<HistoryWrite> {
     static SENDER: OnceLock<Sender<HistoryWrite>> = OnceLock::new();
     SENDER.get_or_init(|| {
@@ -128,9 +119,9 @@ fn writer_sender() -> &'static Sender<HistoryWrite> {
         let spawn_result = std::thread::Builder::new()
             .name("composer-history-writer".to_string())
             .spawn(move || {
-                // recv() returns Err when all senders have dropped, which
-                // only happens at process shutdown because the singleton
-                // sender lives in a static for the lifetime of the process.
+                // 当所有发送者都已释放时 recv() 返回 Err，
+                // 这只在进程关闭时发生，因为单例发送者
+                // 在进程的整个生命周期内都存在于 static 中。
                 while let Ok(message) = rx.recv() {
                     match message {
                         HistoryWrite::Append(path, entry) => {
@@ -213,8 +204,8 @@ fn append_history_entries_to<'a>(
         return;
     }
 
-    // Read existing entries, append the new ones, prune from the front
-    // until under the cap, then atomically rewrite.
+    // 读取现有条目，追加新条目，从前面修剪
+    // 直到低于上限，然后原子重写。
     let mut entries = load_history_from(path);
     let mut changed = false;
     for entry in entries_to_append {
@@ -223,8 +214,7 @@ fn append_history_entries_to<'a>(
             continue;
         }
         if entries.last().map(String::as_str) == Some(trimmed) {
-            // De-dupe consecutive duplicates — repeated submission of the
-            // same prompt shouldn't bloat the file.
+            // 去重连续重复——相同提示词的重复提交不应使文件膨胀。
             continue;
         }
         entries.push(trimmed.to_string());
@@ -288,11 +278,11 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// Tests use the path-injecting `*_from` / `*_to` helpers so they
-    /// don't have to mutate `HOME` (which is not honored by
-    /// `dirs::home_dir()` on Windows — it reads `USERPROFILE` /
-    /// `SHGetKnownFolderPath` instead). This makes the suite portable
-    /// across all three CI runners without per-platform env juggling.
+    /// 测试使用注入路径的 `*_from` / `*_to` 辅助函数，这样
+    /// 就不需要修改 `HOME`（在 Windows 上 `dirs::home_dir()` 不识别它
+    /// ——它读取 `USERPROFILE` / `SHGetKnownFolderPath`）。
+    /// 这使得测试套件在所有三个 CI 运行器上都可移植，
+    /// 无需按平台进行环境调整。
     fn temp_history_path() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join(HISTORY_FILE_NAME);
@@ -309,8 +299,8 @@ mod tests {
             .expect("history writer flush timed out");
     }
 
-    // #3240: a fresh install must resolve the history file under `.codewhale`,
-    // never the legacy `.deepseek` dir, so normal use doesn't recreate it.
+    // #3240：新安装必须在 `.codewhale` 下解析历史文件，
+    // 绝不会在旧版 `.deepseek` 目录下，这样正常使用不会重新创建它。
     #[test]
     fn fresh_install_uses_codewhale_not_legacy() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -323,7 +313,7 @@ mod tests {
         );
     }
 
-    // Migration care: an existing legacy history is still read/appended.
+    // 迁移注意：现有的旧版历史仍然被读取/追加。
     #[test]
     fn existing_legacy_history_is_still_used() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -334,7 +324,7 @@ mod tests {
         assert_eq!(path, legacy);
     }
 
-    // Once a `.codewhale` history exists it wins over any legacy file.
+    // 一旦 `.codewhale` 历史存在，它将覆盖任何旧版文件。
     #[test]
     fn codewhale_history_preferred_over_legacy() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -395,7 +385,7 @@ mod tests {
         }
         let history = load_history_from(&path);
         assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
-        // Newest entries survive; oldest 50 were pruned.
+        // 最新的条目保留；最旧的 50 个被修剪。
         assert_eq!(history.first().map(String::as_str), Some("entry 50"));
         assert_eq!(
             history.last().map(String::as_str),
@@ -409,17 +399,16 @@ mod tests {
         assert!(load_history_from(&path).is_empty());
     }
 
-    /// Regression for #1927 — the dispatched append path must return
-    /// promptly even when a synchronous write of the seeded file would
-    /// be slow. We pre-populate the file with ~1000 entries (the cap)
-    /// so a sync read-modify-write would take real disk time on any
-    /// platform, then call `append_history_dispatched` many times and
-    /// assert that the cumulative wall-clock cost stays well below the
-    /// stall the user reports.
+    /// #1927 的回归测试——即使同步写入种子文件很慢，
+    /// 分派的追加路径也必须迅速返回。我们预填充文件
+    /// 约 1000 个条目（上限），这样同步读取-修改-写入
+    /// 在任何平台上都会花费实际的磁盘时间，然后多次调用
+    /// `append_history_dispatched` 并断言累计挂钟时间
+    /// 远低于用户报告的卡顿。
     #[test]
     fn append_history_dispatched_does_not_block_the_caller() {
         let (_tmp, path) = temp_history_path();
-        // Seed close to the cap so a synchronous rewrite is non-trivial.
+        // 预填充接近上限，使同步重写非平凡。
         let seed = (0..(MAX_HISTORY_ENTRIES - 50))
             .map(|i| format!("seed entry {i}"))
             .collect::<Vec<_>>()
@@ -433,11 +422,11 @@ mod tests {
         }
         let dispatch_elapsed = start.elapsed();
 
-        // 50 sync read-modify-write cycles on a ~200KB file would be
-        // measurable (tens of ms even on a fast SSD). The dispatch path
-        // hands work to the writer thread and returns; the whole loop
-        // should finish in single-digit ms. Pick a generous CI-safe
-        // bound that still catches a regression to the old sync path.
+        // 在约 200KB 文件上进行 50 次同步读取-修改-写入循环应该是
+        // 可测量的（即使在快速 SSD 上也要几十毫秒）。分派路径
+        // 将工作交给写入线程并返回；整个循环
+        // 应该在个位数毫秒内完成。选择一个宽松的 CI 安全
+        // 边界，仍能捕获回退到旧同步路径的回归。
         assert!(
             dispatch_elapsed < Duration::from_millis(150),
             "append_history dispatch was too slow: {dispatch_elapsed:?} \

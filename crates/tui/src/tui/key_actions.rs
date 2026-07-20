@@ -1,24 +1,23 @@
-//! Keyboard event action handlers extracted from `ui.rs`.
+//! 从 `ui.rs` 提取的键盘事件操作处理函数。
 //!
-//! Each function handles a focused subset of keyboard input so the
-//! main event loop stays lean.
+//! 每个函数处理键盘输入的一个集中子集，使主事件循环保持精简。
 
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::app::App;
 
-// ── File-tree key handling ───────────────────────────────────────
+// ── 文件树按键处理 ───────────────────────────────────────
 
-/// Handle keyboard input when the file-tree pane is visible.
+/// 处理文件树面板可见时的键盘输入。
 ///
-/// Returns `true` when the key was consumed (caller should `continue`).
+/// 当按键被消费时返回 `true`（调用者应 `continue`）。
 pub fn handle_file_tree_key(app: &mut App, key: &KeyEvent) -> bool {
-    // Guard: do not intercept keys when the file-tree pane is not visible.
+    // 守卫：当文件树面板不可见时不拦截按键。
     if !app.file_tree_visible {
         return false;
     }
 
-    // Esc closes the tree even when entries are still loading.
+    // 即使在条目仍在加载时，Esc 也关闭文件树。
     if key.code == KeyCode::Esc && app.file_tree.is_some() {
         app.file_tree = None;
         app.status_message = Some("File tree closed".to_string());

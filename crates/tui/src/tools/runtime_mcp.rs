@@ -1,8 +1,7 @@
-//! Runtime MCP server management.
+//! 运行时 MCP 服务器管理。
 //!
-//! Provides `StartRuntimeMcpServer` — the entry tool for LLM to dynamically
-//! connect to MCP servers from conversation context. Also contains parsing
-//! and naming helpers used by the tool.
+//! 提供 `StartRuntimeMcpServer` —— LLM 从对话上下文中动态连接到
+//! MCP 服务器的入口工具。还包含工具使用的解析和命名辅助函数。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-// === Parsing Functions ===
+// === 解析函数 ===
 
 #[derive(Debug, Clone)]
 pub struct ParsedMcpServer {
@@ -24,10 +23,10 @@ pub struct ParsedMcpServer {
     pub config: McpServerConfig,
 }
 
-/// Parse a command string or URL into an MCP server configuration.
+/// 将命令字符串或 URL 解析为 MCP 服务器配置。
 ///
-/// - Local command: `npx @modelcontextprotocol/server-filesystem /tmp`
-/// - Remote URL: `https://huggingface.co/mcp`
+/// - 本地命令：`npx @modelcontextprotocol/server-filesystem /tmp`
+/// - 远程 URL：`https://huggingface.co/mcp`
 pub fn parse_mcp_command(input: &str) -> Result<ParsedMcpServer> {
     let input = input.trim();
     if input.is_empty() {
@@ -104,10 +103,10 @@ pub fn extract_name_from_url(url: &str) -> Result<String> {
     let host = parsed.host_str().unwrap_or("remote");
     let path = parsed.path().trim_matches('/');
 
-    // Replace dots with dashes in hostname for better readability
+    // 为提高可读性，将主机名中的点替换为横线
     let host_part = host.replace('.', "-");
 
-    // Combine host and path, replacing slashes with underscores
+    // 组合主机和路径，将斜杠替换为下划线
     let name = if path.is_empty() {
         host_part
     } else {
@@ -121,8 +120,8 @@ fn infer_server_name(command: &str, args: &[String]) -> Result<String> {
     let cmd_path = std::path::Path::new(command);
     let cmd_base = cmd_path.file_stem().unwrap_or_default().to_string_lossy();
 
-    // Windows cmd /c prefix: skip "cmd /c" and recurse on the remaining args
-    // e.g. ["cmd", "/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
+    // Windows cmd /c 前缀：跳过 "cmd /c" 并在剩余参数上递归
+    // 例如 ["cmd", "/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
     if cmd_base.as_ref() == "cmd"
         && args.len() >= 2
         && (args[0] == "/c" || args[0] == "/C" || args[0] == "/k" || args[0] == "/K")
@@ -132,14 +131,14 @@ fn infer_server_name(command: &str, args: &[String]) -> Result<String> {
         return infer_server_name(inner_cmd, &inner_args);
     }
 
-    // Package managers: extract the package name (first non-flag arg)
+    // 包管理器：提取包名（第一个非标志参数）
     if matches!(
         cmd_base.as_ref(),
         "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "bun"
     ) {
         for arg in args {
             if !arg.starts_with('-') && arg != "exec" && arg != "run" && arg != "start" {
-                // e.g. "@modelcontextprotocol/server-filesystem" → "filesystem"
+                // 例如 "@modelcontextprotocol/server-filesystem" → "filesystem"
                 if let Some(name) = arg.split('/').next_back() {
                     if let Some(short) = name.strip_prefix("server-") {
                         return Ok(sanitize_name(short));
@@ -150,7 +149,7 @@ fn infer_server_name(command: &str, args: &[String]) -> Result<String> {
         }
     }
 
-    // Script interpreters: extract the script path (first non-flag arg)
+    // 脚本解释器：提取脚本路径（第一个非标志参数）
     if matches!(
         cmd_base.as_ref(),
         "node" | "python" | "python3" | "uvx" | "uv" | "ruby" | "deno"
@@ -162,7 +161,7 @@ fn infer_server_name(command: &str, args: &[String]) -> Result<String> {
         }
     }
 
-    // Fallback: first non-flag argument (script or file)
+    // 回退：第一个非标志参数（脚本或文件）
     if let Some(script) = args.iter().find(|a| !a.starts_with('-')) {
         let script_path = std::path::Path::new(script);
         if let Some(stem) = script_path.file_stem() {
@@ -170,7 +169,7 @@ fn infer_server_name(command: &str, args: &[String]) -> Result<String> {
         }
     }
 
-    // Last resort: command name itself
+    // 最后手段：命令名本身
     Ok(sanitize_name(&cmd_base))
 }
 
@@ -188,13 +187,13 @@ pub fn sanitize_name(name: &str) -> String {
         .to_string()
 }
 
-// === Tool: StartRuntimeMcpServer ===
+// === 工具：StartRuntimeMcpServer ===
 
-/// Entry tool for dynamically adding MCP servers from conversation context.
+/// 从对话上下文中动态添加 MCP 服务器的入口工具。
 ///
-/// LLM calls this to start a local MCP server (stdio) or connect to a remote
-/// one (HTTP). The server config is added to `McpPool.dynamic_servers` and
-/// tools are discovered via the existing `McpConnection` / `StdioTransport` flow.
+/// LLM 调用此工具来启动本地 MCP 服务器（stdio）或连接到远程
+/// 服务器（HTTP）。服务器配置被添加到 `McpPool.dynamic_servers`，
+/// 工具通过现有的 `McpConnection` / `StdioTransport` 流程发现。
 pub struct StartRuntimeMcpServer {
     pool: Arc<AsyncMutex<McpPool>>,
 }
@@ -256,7 +255,7 @@ impl ToolSpec for StartRuntimeMcpServer {
         let parsed =
             parse_mcp_command(server).map_err(|e| ToolError::invalid_input(e.to_string()))?;
 
-        // Reject shell-wrapped commands that could execute arbitrary code
+        // 拒绝可能执行任意代码的 shell 包装命令
         if let Some(ref cmd) = parsed.config.command {
             let cmd_lower = cmd.to_lowercase();
             if cmd_lower == "bash"
@@ -273,9 +272,9 @@ impl ToolSpec for StartRuntimeMcpServer {
             }
         }
 
-        // Reject shell metacharacters in arguments to prevent injection.
-        // Redirects (>, >>), pipes (|), command chaining (;, &&, ||),
-        // subshells (``), and variable expansion ($) are all dangerous.
+        // 拒绝参数中的 shell 元字符以防止注入。
+        // 重定向（>, >>）、管道（|）、命令链接（;, &&, ||）、
+        // 子 shell（``）和变量展开（$）都是危险的。
         for arg in &parsed.config.args {
             if arg.contains('>')
                 || arg.contains('|')
@@ -292,8 +291,8 @@ impl ToolSpec for StartRuntimeMcpServer {
             }
         }
 
-        // Allowlist of known MCP server runtimes and package managers.
-        // Commands not in this list are rejected to prevent arbitrary execution.
+        // 已知 MCP 服务器运行时和包管理器的许可列表。
+        // 不在此列表中的命令被拒绝，以防止任意执行。
         if let Some(ref cmd) = parsed.config.command {
             let cmd_base = std::path::Path::new(cmd)
                 .file_stem()
@@ -318,12 +317,12 @@ impl ToolSpec for StartRuntimeMcpServer {
             .unwrap_or(parsed.name)
             .replace('_', "-");
 
-        // Underscores in server names would cause tool name collision.
-        // Tool names are formatted as mcp_{server}_{tool}; underscores in
-        // server names would make it ambiguous (server "foo" + tool "bar_x"
-        // vs server "foo_bar" + tool "x" both → mcp_foo_bar_x).
-        // sanitize_name already converts non-alphanumeric chars to hyphens,
-        // but underscores from the original input need explicit conversion.
+        // 服务器名称中的下划线会导致工具名称冲突。
+        // 工具名称格式为 mcp_{server}_{tool}；服务器名称中的下划线
+        // 会使其产生歧义（服务器 "foo" + 工具 "bar_x" vs
+        // 服务器 "foo_bar" + 工具 "x" 都会变成 mcp_foo_bar_x）。
+        // sanitize_name 已经将非字母数字字符转换为连字符，
+        // 但原始输入中的下划线需要显式转换。
 
         let transport = if parsed.config.url.is_some() {
             "http"
@@ -331,7 +330,7 @@ impl ToolSpec for StartRuntimeMcpServer {
             "stdio"
         };
 
-        // Register server config, connect, and collect tool info
+        // 注册服务器配置，连接，并收集工具信息
         let mut pool = self.pool.lock().await;
         pool.add_runtime_server_config(server_name.clone(), parsed.config)
             .map_err(ToolError::invalid_input)?;
@@ -344,8 +343,8 @@ impl ToolSpec for StartRuntimeMcpServer {
 
         let mcp_tools: Vec<McpTool> = conn.tools().to_vec();
 
-        // Build tool list with fully qualified names (mcp_{server}_{tool})
-        // so the LLM can call them directly without guessing the naming convention.
+        // 使用完全限定名称构建工具列表（mcp_{server}_{tool}）
+        // 以便 LLM 可以直接调用它们，而无需猜测命名约定。
         let tools_list: Vec<String> = mcp_tools
             .iter()
             .map(|t| {
@@ -441,7 +440,7 @@ mod tests {
         );
     }
 
-    // === shell_words split tests ===
+    // === shell_words 分割测试 ===
 
     #[test]
     fn shell_words_simple() {
@@ -521,7 +520,7 @@ mod tests {
         );
     }
 
-    // === infer_server_name tests ===
+    // === infer_server_name 测试 ===
 
     #[test]
     fn infer_name_npx_package() {
@@ -581,19 +580,19 @@ mod tests {
 
     #[test]
     fn infer_name_only_command_no_args() {
-        // No args at all — falls through to last resort: command name itself
+        // 完全没有参数——回退到最后手段：命令名本身
         let parsed = parse_mcp_command("my-server").unwrap();
         assert_eq!(parsed.name, "my-server");
     }
 
     #[test]
     fn infer_name_only_command_no_args_path() {
-        // Absolute path, no args — uses file_stem of command
+        // 绝对路径，无参数——使用命令的 file_stem
         let parsed = parse_mcp_command("/usr/local/bin/my-server").unwrap();
         assert_eq!(parsed.name, "my-server");
     }
 
-    // === sanitize_name tests ===
+    // === sanitize_name 测试 ===
 
     #[test]
     fn sanitize_name_preserves_hyphens() {
@@ -625,13 +624,13 @@ mod tests {
         assert_eq!(sanitize_name(""), "");
     }
 
-    // === command validation tests ===
+    // === 命令验证测试 ===
 
     #[test]
     fn reject_shell_wrapper_bash() {
         let result = parse_mcp_command("bash -c 'npx server'");
-        assert!(result.is_ok()); // parsing succeeds
-        // but execute would reject — tested via parse_mcp_command structure
+        assert!(result.is_ok()); // 解析成功
+        // 但 execute 会拒绝——通过 parse_mcp_command 结构验证
     }
 
     #[test]
@@ -673,27 +672,27 @@ mod tests {
 
     #[test]
     fn allowlist_includes_common_runtimes() {
-        // Verify the allowlist covers the expected commands
+        // 验证许可列表包含预期的命令
         const ALLOWED: &[&str] = &[
             "npx", "npm", "pnpm", "yarn", "bunx", "bun", "node", "python", "python3", "uvx", "uv",
             "deno", "ruby", "cargo",
         ];
-        // All standard MCP server launchers should be present
+        // 所有标准 MCP 服务器启动器都应存在
         assert!(ALLOWED.contains(&"npx"));
         assert!(ALLOWED.contains(&"node"));
         assert!(ALLOWED.contains(&"python3"));
         assert!(ALLOWED.contains(&"uvx"));
     }
 
-    // === approval-gate contract ===
+    // === 审批门控契约 ===
 
     #[test]
     fn start_mcp_server_declares_required_approval() {
-        // Security invariant (#3866): spawning a runtime MCP server is
-        // side-effecting (child process / network connection), so the tool
-        // spec itself must declare `ApprovalRequirement::Required`. Combined
-        // with the engine's non-bypassable gate (see engine tests), this
-        // guarantees an unapproved start is rejected before `execute` runs.
+        // 安全不变量（#3866）：生成运行时 MCP 服务器是
+        // 有副作用的（子进程/网络连接），因此工具规范本身
+        // 必须声明 `ApprovalRequirement::Required`。结合引擎的
+        // 不可绕过的门控（参见引擎测试），这保证了在 `execute`
+        // 运行之前，未经批准的启动会被拒绝。
         let pool = Arc::new(AsyncMutex::new(McpPool::new(
             crate::mcp::McpConfig::default(),
         )));

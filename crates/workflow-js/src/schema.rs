@@ -1,19 +1,15 @@
-//! `responseSchema` decoding: parse the subagent's reply as JSON and validate
-//! it against the caller-supplied schema.
+//! `responseSchema` 解码：将子代理的回复解析为 JSON 并针对调用者提供的 schema 进行验证。
 //!
-//! Retry semantics live on the driver side (it owns the child and its
-//! prompt); the VM only parses and validates — a reply that is not valid
-//! JSON, or that fails the schema, throws on the awaiting `task()` call.
+//! 重试语义位于驱动器侧（它拥有子代理及其提示词）；VM 仅进行解析和验证——
+//! 不是有效 JSON 或未通过 schema 验证的回复会在等待的 `task()` 调用上抛出异常。
 
-/// Compile the caller's schema. Called before spawning so a malformed schema
-/// fails fast instead of burning a subagent.
+/// 编译调用者的 schema。在生成之前调用，以便格式错误的 schema 快速失败，而不是浪费一个子代理。
 pub(crate) fn compile_schema(schema: &serde_json::Value) -> Result<jsonschema::Validator, String> {
     jsonschema::validator_for(schema)
         .map_err(|err| format!("task(): invalid responseSchema: {err}"))
 }
 
-/// Parse `text` as JSON (tolerating a single Markdown code fence around the
-/// payload) and validate it against `validator`.
+/// 将 `text` 解析为 JSON（允许有效负载周围有一个 Markdown 代码围栏）并针对 `validator` 进行验证。
 pub(crate) fn decode_reply(
     text: &str,
     validator: &jsonschema::Validator,
@@ -35,8 +31,8 @@ pub(crate) fn decode_reply(
     Ok(parsed)
 }
 
-/// If the whole reply is wrapped in one Markdown code fence (``` or ```json),
-/// return the fenced body; otherwise return the trimmed reply unchanged.
+/// 如果整个回复包裹在一个 Markdown 代码围栏（``` 或 ```json）中，
+/// 则返回围栏内的内容；否则原样返回修整后的回复。
 fn strip_code_fence(text: &str) -> &str {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix("```") else {
@@ -45,7 +41,7 @@ fn strip_code_fence(text: &str) -> &str {
     let Some(body) = rest.strip_suffix("```") else {
         return trimmed;
     };
-    // Drop an optional language tag on the opening fence line.
+    // 丢弃开头围栏行上的可选语言标签。
     match body.split_once('\n') {
         Some((first_line, tail)) if !first_line.trim().is_empty() => tail.trim(),
         _ => body.trim(),

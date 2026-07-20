@@ -1,7 +1,6 @@
-//! Workspace diagnostics tool: `diagnostics`.
+//! 工作区诊断工具：`diagnostics`。
 //!
-//! This tool gathers lightweight, best-effort environment information without
-//! failing hard when optional commands are unavailable.
+//! 该工具收集轻量级、尽力而为的环境信息，当可选命令不可用时不会硬性失败。
 
 use std::env;
 use std::path::Path;
@@ -15,7 +14,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-/// Tool for collecting workspace and toolchain diagnostics.
+/// 用于收集工作区和工具链诊断的工具。
 pub struct DiagnosticsTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,9 +31,8 @@ struct DiagnosticsOutput {
     cgroup_version: Option<u8>,
     rustc_version: Option<String>,
     cargo_version: Option<String>,
-    /// User-trusted external paths the agent may access from this workspace
-    /// (`/trust add <path>` from the slash command, persisted in
-    /// `~/.deepseek/workspace-trust.json`). See issue #29.
+    /// 用户信任的外部路径，代理可从此工作区访问这些路径
+    ///（通过斜杠命令 `/trust add <path>` 添加，持久化在 `~/.deepseek/workspace-trust.json` 中）。参见问题 #29。
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     trusted_external_paths: Vec<String>,
 }
@@ -89,10 +87,10 @@ impl ToolSpec for DiagnosticsTool {
         let sandbox_type = crate::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
-        // Bubblewrap availability (#2184).
+        // Bubblewrap 可用性 (#2184)。
         let bwrap_available = probe_bwrap_available();
 
-        // Cgroup version (Linux only).
+        // Cgroup 版本（仅限 Linux）。
         let cgroup_version = probe_cgroup_version();
 
         let trusted_external_paths = context
@@ -120,7 +118,7 @@ impl ToolSpec for DiagnosticsTool {
     }
 }
 
-// === Helpers ===
+// === 辅助函数 ===
 
 fn probe_git(workspace: &Path) -> GitProbe {
     let rev_parse = run_command("git", &["rev-parse", "--is-inside-work-tree"], workspace);

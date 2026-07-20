@@ -1,8 +1,7 @@
-//! Palette audit tests to prevent color drift.
+//! 调色板审计测试，防止颜色漂移。
 //!
-//! These tests ensure that deprecated colors are not used directly in
-//! user-visible code. Backward-compatible DeepSeek aliases should point
-//! at the current CodeWhale semantic tokens instead of stale brand RGBs.
+//! 这些测试确保已弃用的颜色不会直接用于用户可见的代码中。
+//! 向后兼容的 DeepSeek 别名应指向当前的 CodeWhale 语义令牌，而不是过时的品牌 RGB 值。
 
 use ratatui::style::Color;
 
@@ -65,8 +64,8 @@ fn assert_min_contrast(label: &str, foreground: Color, background: Color, min_ra
     );
 }
 
-// NOTE: The deprecated color audit (DEEPSEEK_AQUA) was removed because
-// the deprecated constant no longer exists in the palette.
+// 注意：已弃用的颜色审计（DEEPSEEK_AQUA）已被移除，
+// 因为该已弃用的常量在调色板中不再存在。
 
 #[test]
 fn verify_status_success_uses_success_token() {

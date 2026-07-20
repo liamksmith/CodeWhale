@@ -2,13 +2,11 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> std::process::ExitCode {
-    // Reset SIGPIPE to SIG_DFL so piping codewhale output into a command that
-    // exits early (e.g. `codewhale doctor | head`) terminates the process
-    // cleanly with exit code 141 instead of panicking on the broken-pipe
-    // write. Many execution environments (systemd, Docker, some shells)
-    // inherit SIGPIPE set to SIG_IGN, which makes write(2) return EPIPE;
-    // Rust's `println!` then treats that io::Error as fatal and panics.
-    // See issue #4030.
+    // 将 SIGPIPE 重置为 SIG_DFL，这样当 codewhale 输出通过管道传入提前退出的命令时
+    //（例如 `codewhale doctor | head`），进程会以退出码 141 正常终止，而不是因管道断裂写入而 panic。
+    // 许多执行环境（systemd、Docker、某些 shell）继承 SIGPIPE 为 SIG_IGN，
+    // 这会使 write(2) 返回 EPIPE；Rust 的 `println!` 随后将该 io::Error 视为致命错误并 panic。
+    // 参见 issue #4030。
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);

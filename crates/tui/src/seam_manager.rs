@@ -1,30 +1,28 @@
-//! Append-only layered context management with Flash seam manager (issue #159).
+//! 追加式分层上下文管理，基于 Flash 接缝管理器（issue #159）。
 //!
-//! ## Why
+//! ## 为什么
 //!
-//! The current cycle/compaction/capacity mechanisms share a fatal flaw: they
-//! replace or rewrite messages, which breaks DeepSeek V4's prefix cache
-//! (SS4.2.1). The prefix cache gives ~90% discount on cached tokens at
-//! 128-token granularity. Replacing old messages with summaries breaks the
-//! cache at the replacement point — every token after must be recomputed.
+//! 当前的轮询/压缩/容量机制存在一个致命缺陷：它们会替换或重写消息，
+//! 这破坏了 DeepSeek V4 的前缀缓存（SS4.2.1）。
+//! 前缀缓存以 128 token 的粒度提供约 90% 的缓存 token 折扣。
+//! 用摘要替换旧消息会破坏替换点的缓存——之后每个 token 都必须重新计算。
 //!
-//! The append-only layered approach keeps all verbatim messages and appends
-//! `<archived_context>` summary blocks produced by V4 Flash. These blocks
-//! are *navigational aids* — the model reads them first, then drills into
-//! verbatim messages when precision is needed. The prefix cache stays hot
-//! for the entire stable prefix. In v0.7.5 this manager is opt-in while the
-//! cache/timing policy is audited.
+//! 追加式分层方法保留所有原始消息，并追加由 V4 Flash 生成的
+//! `<archived_context>` 摘要块。这些块是*导航辅助*——模型先读取它们，
+//! 在需要精确信息时再深入查看原始消息。前缀缓存对
+//! 整个稳定前缀保持有效。在 v0.7.5 中，此管理器为可选加入，
+//! 同时审计缓存/时序策略。
 //!
-//! ## Soft seam levels
+//! ## 软接缝级别
 //!
-//! | Level | Active input trigger | Covers messages    | Density        |
-//! |-------|------------------|--------------------|----------------|
-//! | L1    | 192K             | 0–128K             | ~2,500 tokens  |
-//! | L2    | 384K             | 0–320K             | ~1,800 tokens  |
-//! | L3    | 576K             | 0–512K             | ~1,200 tokens  |
+//! | 级别 | 活跃输入触发阈值 | 覆盖消息范围    | 摘要密度      |
+//! |-------|------------------|-----------------|----------------|
+//! | L1    | 192K             | 0–128K          | ~2,500 token   |
+//! | L2    | 384K             | 0–320K          | ~1,800 token   |
+//! | L3    | 576K             | 0–512K          | ~1,200 token   |
 //!
-//! Thresholds derived from V4 paper Figure 9 (MMR): 128K->256K is the real
-//! cliff at -0.09. L1 triggers at 192K, before the cliff.
+//! 阈值源自 V4 论文的图 9（MMR）：128K->256K 是实际上的拐点，降幅为 -0.09。
+//! L1 在 192K 时触发，位于拐点之前。
 
 use std::fmt::Write;
 use std::path::Path;
@@ -40,34 +38,34 @@ use crate::compaction::plan_compaction;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
-/// Default seam model — Flash is cheap and fast, ideal for summarization.
+/// 默认接缝模型——Flash 便宜且快速，非常适合摘要生成。
 pub const DEFAULT_SEAM_MODEL: &str = "deepseek-v4-flash";
 
-/// Default thresholds based on the active request input estimate.
+/// 基于当前请求输入估算的默认阈值。
 pub const DEFAULT_L1_THRESHOLD: usize = 192_000;
 pub const DEFAULT_L2_THRESHOLD: usize = 384_000;
 pub const DEFAULT_L3_THRESHOLD: usize = 576_000;
 
-/// Verbatim window: last N turns never summarized.
+/// 逐字窗口：最后 N 轮对话永不参与摘要。
 pub const VERBATIM_WINDOW_TURNS: usize = 16;
 
-/// Approximate token cap for each seam level.
+/// 每个接缝级别的大致 token 上限。
 const L1_MAX_TOKENS: u32 = 3_200;
 const L2_MAX_TOKENS: u32 = 2_400;
 const L3_MAX_TOKENS: u32 = 1_600;
 
-/// Configuration for the Flash seam manager.
+/// Flash 接缝管理器的配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeamConfig {
-    /// Whether the layered context manager is enabled.
+    /// 分层上下文管理器是否启用。
     pub enabled: bool,
-    /// Verbatim window: last N turns never summarized.
+    /// 逐字窗口：最后 N 轮对话永不参与摘要。
     pub verbatim_window_turns: usize,
-    /// Soft seam thresholds based on the active request input estimate.
+    /// 基于当前请求输入估算的软接缝阈值。
     pub l1_threshold: usize,
     pub l2_threshold: usize,
     pub l3_threshold: usize,
-    /// Model used for seam/briefing work.
+    /// 用于接缝/简报工作的模型。
     pub seam_model: String,
 }
 
@@ -84,40 +82,40 @@ impl Default for SeamConfig {
     }
 }
 
-/// Metadata for a single soft seam block.
+/// 单个软接缝块的元数据。
 #[derive(Debug, Clone)]
 pub struct SeamMetadata {
-    /// Which level (1, 2, or 3).
+    /// 级别（1、2 或 3）。
     pub level: u8,
-    /// Message range covered (inclusive-exclusive indices).
-    /// Reserved for future diagnostic use.
+    /// 覆盖的消息范围（包含起始索引，不包含结束索引）。
+    /// 保留供将来诊断使用。
     #[allow(dead_code)]
     pub start_idx: usize,
     #[allow(dead_code)]
     pub end_idx: usize,
-    /// Approximate token count of the summary.
+    /// 摘要的大致 token 数。
     #[allow(dead_code)]
     pub token_estimate: usize,
-    /// When the seam was produced.
+    /// 接缝生成的时间。
     #[allow(dead_code)]
     pub timestamp: DateTime<Utc>,
-    /// Model that produced it.
+    /// 生成摘要的模型。
     #[allow(dead_code)]
     pub model: String,
 }
 
-/// The Flash seam manager — produces `<archived_context>` blocks.
+/// Flash 接缝管理器——生成 `<archived_context>` 块。
 pub struct SeamManager {
-    /// Flash client for summarization work.
+    /// 用于摘要工作的 Flash 客户端。
     flash_client: DeepSeekClient,
-    /// Configuration.
+    /// 配置文件。
     config: SeamConfig,
-    /// Currently active seams in order (oldest first).
+    /// 当前活跃的接缝列表（按从旧到新顺序）。
     active_seams: Arc<Mutex<Vec<SeamMetadata>>>,
 }
 
 impl SeamManager {
-    /// Create a new seam manager with a Flash client.
+    /// 使用 Flash 客户端创建新的接缝管理器。
     pub fn new(flash_client: DeepSeekClient, config: SeamConfig) -> Self {
         Self {
             flash_client,
@@ -126,18 +124,18 @@ impl SeamManager {
         }
     }
 
-    /// Get the current config.
+    /// 获取当前配置。
     pub fn config(&self) -> &SeamConfig {
         &self.config
     }
 
-    /// Current active seam count.
+    /// 当前活跃的接缝数量。
     pub async fn seam_count(&self) -> usize {
         self.active_seams.lock().await.len()
     }
 
-    /// Determine which seam level (if any) should fire for the given
-    /// active request input estimate. Returns `None` when no seam is due.
+    /// 判断给定的当前请求输入估算是否应触发接缝以及触发哪个级别。
+    /// 当不需要接缝时返回 `None`。
     #[must_use]
     pub fn seam_level_for(
         &self,
@@ -147,19 +145,18 @@ impl SeamManager {
         seam_level_for_active_input(&self.config, active_input_tokens, highest_existing_level)
     }
 
-    /// Compute the verbatim window: the last N message indices that must
-    /// never be summarized. Returns the start index of the verbatim window.
+    /// 计算逐字窗口：最后 N 条消息的索引，这些消息永不参与摘要。
+    /// 返回逐字窗口的起始索引。
     pub fn verbatim_window_start(&self, message_count: usize) -> usize {
-        let turn_count = message_count / 2; // Rough: user+assistant per turn
+        let turn_count = message_count / 2; // 粗略估算：每轮包含 user+assistant 各一条
         let verbatim_turns = self.config.verbatim_window_turns.min(turn_count);
         let verbatim_messages = (verbatim_turns * 2).min(message_count);
         message_count.saturating_sub(verbatim_messages)
     }
 
-    /// Produce a soft seam for the given message range and level.
+    /// 为给定的消息范围和级别生成软接缝。
     ///
-    /// Returns the `<archived_context>` XML block as a string, ready to
-    /// be appended as an assistant message.
+    /// 返回 `<archived_context>` XML 块字符串，准备追加为助手消息。
     pub async fn produce_soft_seam(
         &self,
         messages: &[Message],
@@ -178,9 +175,8 @@ impl SeamManager {
             return Ok(String::new());
         }
 
-        // Use compaction pinning heuristics to identify which messages to
-        // exclude from summarization. Pinned messages stay verbatim; the
-        // seam summary covers everything else.
+        // 使用压缩固定启发式算法来识别应从摘要中排除的消息。
+        // 固定的消息保持原样；接缝摘要涵盖其余所有内容。
         let local_pins = local_pins_for_range(pinned_indices, start_idx, end_idx, messages.len());
         let plan = plan_compaction(
             range,
@@ -190,7 +186,7 @@ impl SeamManager {
             None,
         );
 
-        // Collect messages to summarize (non-pinned), excluding pinned ones.
+        // 收集需要摘要的消息（未固定的），排除已固定的消息。
         let to_summarize: Vec<&Message> = range
             .iter()
             .enumerate()
@@ -199,7 +195,7 @@ impl SeamManager {
             .collect();
 
         if to_summarize.is_empty() {
-            // Nothing to summarize — all messages are pinned.
+            // 没有需要摘要的内容——所有消息都已固定。
             return Ok(String::new());
         }
 
@@ -217,7 +213,7 @@ impl SeamManager {
         let timestamp = Utc::now();
         let token_estimate = summary.len() / 4;
 
-        // Record this seam.
+        // 记录此接缝。
         {
             let mut seams = self.active_seams.lock().await;
             seams.push(SeamMetadata {
@@ -241,8 +237,8 @@ impl SeamManager {
         ))
     }
 
-    /// Re-compact existing seams into a higher-level block. Consumes prior
-    /// `<archived_context>` content and fuses it with new messages.
+    /// 将现有接缝重新压缩为更高级别的块。消费先前的
+    /// `<archived_context>` 内容并与新消息融合。
     pub async fn recompact(
         &self,
         existing_seams: &[String],
@@ -312,9 +308,8 @@ impl SeamManager {
         };
 
         let response = self.flash_client.create_message(request).await?;
-        // Seam recompaction calls are billed; route through the
-        // side-channel (#526) so the footer total matches the
-        // DeepSeek website.
+        // 接缝重新压缩调用需要计费；通过旁路通道（#526）报告，
+        // 以使页脚总额与 DeepSeek 网站一致。
         crate::cost_status::report(&response.model, &response.usage);
         let summary = response
             .content
@@ -329,7 +324,7 @@ impl SeamManager {
         let token_estimate = summary.len() / 4;
         let timestamp = Utc::now();
 
-        // Record this recompacted seam.
+        // 记录此重新压缩后的接缝。
         {
             let mut seams = self.active_seams.lock().await;
             seams.push(SeamMetadata {
@@ -352,7 +347,7 @@ impl SeamManager {
         ))
     }
 
-    /// Internal: summarize a slice of messages using Flash.
+    /// 内部方法：使用 Flash 对消息切片进行摘要。
     async fn summarize_messages(
         &self,
         messages: &[&Message],
@@ -382,7 +377,7 @@ impl SeamManager {
                         let _ = write!(conversation, "Tool result: {snippet}\n\n");
                     }
                     ContentBlock::Thinking { .. } => {
-                        // Skip thinking in seam summaries.
+                        // 在接缝摘要中跳过思考块。
                     }
                     ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolSearchToolResult { .. }
@@ -433,9 +428,8 @@ impl SeamManager {
         };
 
         let response = self.flash_client.create_message(request).await?;
-        // Seam recompaction calls are billed; route through the
-        // side-channel (#526) so the footer total matches the
-        // DeepSeek website.
+        // 接缝摘要调用需要计费；通过旁路通道（#526）报告，
+        // 以使页脚总额与 DeepSeek 网站一致。
         crate::cost_status::report(&response.model, &response.usage);
         let summary = response
             .content
@@ -450,13 +444,12 @@ impl SeamManager {
         Ok(summary)
     }
 
-    /// Collect the text content of all active seams (for use as input to
-    /// re-compaction or briefing).
+    /// 收集所有活跃接缝的文本内容（供重新压缩或简报使用）。
     pub async fn collect_seam_texts(&self, messages: &[Message]) -> Vec<String> {
         let _seams = self.active_seams.lock().await;
         let mut texts = Vec::new();
 
-        // Extract `<archived_context>` blocks from messages.
+        // 从消息中提取 `<archived_context>` 块。
         for msg in messages {
             if msg.role == "assistant" {
                 for block in &msg.content {
@@ -472,7 +465,7 @@ impl SeamManager {
         texts
     }
 
-    /// Get the highest seam level currently recorded.
+    /// 获取当前记录的最高接缝级别。
     pub async fn highest_level(&self) -> Option<u8> {
         let seams = self.active_seams.lock().await;
         seams.last().map(|s| s.level)
@@ -490,7 +483,7 @@ pub fn seam_level_for_active_input(
     }
     let highest = highest_existing_level.unwrap_or(0);
 
-    // Each level fires at most once, and only in order.
+    // 每个级别最多触发一次，且必须按顺序触发。
     if highest < 1 && active_input_tokens >= config.l1_threshold {
         return Some(1);
     }
@@ -503,7 +496,7 @@ pub fn seam_level_for_active_input(
     None
 }
 
-/// Truncate a string to max_chars, respecting Unicode boundaries.
+/// 截断字符串至 max_chars 长度，尊重 Unicode 边界。
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -535,8 +528,8 @@ mod tests {
 
     #[test]
     fn seam_levels_fire_in_order() {
-        // Cannot create DeepSeekClient without API key in test env.
-        // Test the pure logic functions only.
+        // 在测试环境中无法在没有 API 密钥的情况下创建 DeepSeekClient。
+        // 仅测试纯逻辑函数。
         let config = SeamConfig::default();
 
         assert_eq!(seam_level_for_active_input(&config, 100_000, None), None);
@@ -570,12 +563,12 @@ mod tests {
             verbatim_window_turns: 4,
             ..Default::default()
         };
-        // 4 verbatim turns = 8 messages
-        // 20 messages: 20 - (4*2) = 12
+        // 4 轮逐字对话 = 8 条消息
+        // 20 条消息: 20 - (4*2) = 12
         assert_eq!(20usize.saturating_sub(8), 12);
-        // 8 messages: 8 - 8 = 0
+        // 8 条消息: 8 - 8 = 0
         assert_eq!(8usize.saturating_sub(8), 0);
-        // 4 messages: 4 - 4 = 0
+        // 4 条消息: 4 - 4 = 0
         assert_eq!(4usize.saturating_sub(4), 0);
 
         let _ = config;

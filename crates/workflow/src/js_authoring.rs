@@ -58,9 +58,8 @@ fn compile_js_like_workflow(
     Ok(workflow)
 }
 
-// Role/profile names are case-insensitive roster keys; the IR stores the
-// canonical lowercase form. Invalid tokens are left as-is so validation
-// reports them.
+// 角色/配置文件名称是不区分大小写的花名册键；IR 存储规范的
+// 小写形式。无效的 token 原样保留，以便验证报告它们。
 fn normalize_leaf_profiles(nodes: &mut [WorkflowNode]) {
     for node in nodes {
         match node {
@@ -575,7 +574,7 @@ workflow({
         };
         assert_eq!(scout.role.as_deref(), Some("scout"));
         assert_eq!(scout.profile, None);
-        // Provider/model are not required identity fields on role steps.
+        // 提供者/模型不是角色步骤上必需的身份字段。
         assert_eq!(scout.model_policy.provider, None);
         assert_eq!(scout.model_policy.model, None);
 

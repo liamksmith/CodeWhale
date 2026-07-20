@@ -1,51 +1,49 @@
 #![allow(dead_code)]
 
-//! Resource-usage telemetry for long-running CodeWhale tasks.
+//! 长时间运行 CodeWhale 任务的资源使用遥测。
 //!
-//! This module is a pure, side-effect-free foundation for surfacing how many
-//! tokens and how much wall-clock time a task has consumed, optionally relative
-//! to a budget. It performs no I/O and no rendering; consumers (status lines,
-//! the cost panel, the goal/budget tooling) are wired up separately so the
-//! formatting and pressure logic can be unit-tested in isolation.
+//! 此模块是一个纯粹的、无副作用的底层基础，用于展示任务消耗了多少令牌
+//! 和多少挂钟时间，可选地相对于预算。它不执行 I/O 和渲染；
+//! 消费者（状态行、成本面板、目标/预算工具）单独连接，
+//! 因此格式化和压力逻辑可以隔离进行单元测试。
 //!
-//! The shape intentionally mirrors the budget vocabulary already used by the
-//! goal tooling (`token_budget: Option<_>`) so a consumer can adapt between the
-//! two without inventing new concepts. We keep a local type rather than reusing
-//! `tools::goal` here to avoid coupling a presentation-layer helper to the tool
-//! domain model (whose budgets are `u32` and carry unrelated bookkeeping).
+//! 形状有意镜像目标工具已使用的预算词汇表
+//!（`token_budget: Option<_>`），以便消费者可以在这两者之间适配，
+//! 而无需发明新概念。我们保留本地类型而不是在此处重用
+//! `tools::goal`，以避免将表示层辅助函数耦合到工具
+//! 领域模型（其预算是 `u32` 并具有不相关的簿记）。
 
 use std::{
     fmt::{self, Write as _},
     time::Duration,
 };
 
-/// A coarse, three-level read on how close a task is to exhausting its budget.
+/// 任务距离耗尽预算的粗略三级读数。
 ///
-/// The level is derived from the *highest* pressure across all bounded
-/// dimensions (tokens and time), so a task that is comfortable on tokens but
-/// nearly out of time still reports [`PressureLevel::High`]. When nothing is
-/// bounded, pressure is [`PressureLevel::Low`] by definition.
+/// 级别源自所有有界维度（令牌和时间）中的*最高*压力，
+/// 因此令牌舒适但时间即将耗尽的任务仍报告 [`PressureLevel::High`]。
+/// 当没有任何有界时，压力根据定义为 [`PressureLevel::Low`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PressureLevel {
-    /// Plenty of headroom (under ~75% of every bounded budget).
+    /// 充足余量（每个有界预算的 ~75% 以下）。
     Low,
-    /// Getting close (at/over ~75% but under 100% of some budget).
+    /// 接近边界（某个预算达到/超过约 75% 但低于 100%）。
     Medium,
-    /// At or over budget on some bounded dimension.
+    /// 某个有界维度达到或超过预算。
     High,
 }
 
 impl PressureLevel {
-    /// Fraction at/above which a dimension is considered medium pressure.
+    /// 维度被视为中等压力的分数阈值。
     const MEDIUM_THRESHOLD: f64 = 0.75;
-    /// Fraction at/above which a dimension is considered high pressure.
+    /// 维度被视为高压力的分数阈值。
     const HIGH_THRESHOLD: f64 = 1.0;
 
-    /// Classify a single budget fraction (e.g. `0.41` for 41% used).
+    /// 分类单个预算分数（例如使用 41% 时为 `0.41`）。
     ///
-    /// Negative or non-finite input is treated as [`PressureLevel::Low`]; the
-    /// telemetry helpers never produce such values, but classifying defensively
-    /// keeps this usable for arbitrary callers.
+    /// 负数或非有限输入被视为 [`PressureLevel::Low`]；
+    /// 遥测辅助函数从不产生此类值，但防御性分类使此函数
+    /// 对任意调用者都可用。
     fn from_fraction(fraction: f64) -> Self {
         if !fraction.is_finite() || fraction < Self::MEDIUM_THRESHOLD {
             PressureLevel::Low
@@ -56,7 +54,7 @@ impl PressureLevel {
         }
     }
 
-    /// A short lowercase label suitable for compact status output.
+    /// 适合紧凑状态输出的简短小写标签。
     pub fn label(self) -> &'static str {
         match self {
             PressureLevel::Low => "low",
@@ -66,25 +64,25 @@ impl PressureLevel {
     }
 }
 
-/// A snapshot of token and time usage for a single task, with optional budgets.
+/// 单个任务的令牌和时间使用快照，带有可选预算。
 ///
-/// All fields are plain counters; this type owns no clock and reads no
-/// environment. Construct it from whatever the caller is already tracking and
-/// use the helpers below to render or classify it.
+/// 所有字段都是普通计数器；此类型不拥有时钟，不读取环境。
+/// 从调用者已跟踪的任何内容构建它，并使用下面的辅助函数
+/// 来渲染或分类它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ResourceTelemetry {
-    /// Total tokens consumed so far.
+    /// 到目前为止消耗的总令牌数。
     pub tokens_used: u64,
-    /// Total wall-clock seconds elapsed so far.
+    /// 到目前为止经过的总挂钟秒数。
     pub time_used_seconds: u64,
-    /// Optional token ceiling for the task; `None` means unbounded.
+    /// 任务的令牌上限；`None` 表示无限制。
     pub token_budget: Option<u64>,
-    /// Optional time ceiling in seconds; `None` means unbounded.
+    /// 以秒为单位的时间上限；`None` 表示无限制。
     pub time_budget_seconds: Option<u64>,
 }
 
 impl ResourceTelemetry {
-    /// Create a telemetry snapshot with no budgets (fully unbounded).
+    /// 创建无预算（完全无限制）的遥测快照。
     pub fn new(tokens_used: u64, time_used_seconds: u64) -> Self {
         Self {
             tokens_used,
@@ -94,35 +92,35 @@ impl ResourceTelemetry {
         }
     }
 
-    /// Set the token budget, returning the updated snapshot (builder style).
+    /// 设置令牌预算，返回更新后的快照（构建器风格）。
     pub fn with_token_budget(mut self, budget: u64) -> Self {
         self.token_budget = Some(budget);
         self
     }
 
-    /// Set the time budget in seconds, returning the updated snapshot.
+    /// 设置时间预算（秒），返回更新后的快照。
     pub fn with_time_budget_seconds(mut self, seconds: u64) -> Self {
         self.time_budget_seconds = Some(seconds);
         self
     }
 
-    /// Fraction of the token budget consumed, or `None` when unbounded.
+    /// 令牌预算的消耗比例，无上限时返回 `None`。
     ///
-    /// A zero budget yields `None` (a percentage of nothing is meaningless)
-    /// rather than infinity, keeping every downstream consumer safe.
+    /// 零预算返回 `None`（零的百分比无意义）
+    /// 而不是无穷大，确保每个下游消费者安全。
     pub fn token_fraction(&self) -> Option<f64> {
         fraction(self.tokens_used, self.token_budget)
     }
 
-    /// Fraction of the time budget consumed, or `None` when unbounded.
+    /// 时间预算的消耗比例，无上限时返回 `None`。
     pub fn time_fraction(&self) -> Option<f64> {
         fraction(self.time_used_seconds, self.time_budget_seconds)
     }
 
-    /// The largest bounded budget fraction across tokens and time.
+    /// 令牌和时间中最大的有界预算比例。
     ///
-    /// Returns `None` only when *neither* dimension is bounded. When at least
-    /// one budget is present, the most-pressured bounded dimension wins.
+    /// 仅在*两个*维度都无上限时返回 `None`。当至少有一个
+    /// 预算存在时，最有压力的有界维度胜出。
     pub fn budget_fraction(&self) -> Option<f64> {
         match (self.token_fraction(), self.time_fraction()) {
             (Some(t), Some(s)) => Some(t.max(s)),
@@ -132,15 +130,15 @@ impl ResourceTelemetry {
         }
     }
 
-    /// Budget fraction expressed as a whole-number percent (rounded), or `None`
-    /// when unbounded. This is the value surfaced in the human summary.
+    /// 预算比例表示为整百分比（四舍五入），无上限时返回 `None`。
+    /// 这是人类摘要中展示的值。
     pub fn budget_percent(&self) -> Option<u64> {
         self.budget_fraction().map(|f| (f * 100.0).round() as u64)
     }
 
-    /// Coarse pressure level derived from [`Self::budget_fraction`].
+    /// 从 [`Self::budget_fraction`] 派生的粗略压力级别。
     ///
-    /// Unbounded tasks are always [`PressureLevel::Low`].
+    /// 无上限的任务始终为 [`PressureLevel::Low`]。
     pub fn pressure(&self) -> PressureLevel {
         match self.budget_fraction() {
             Some(fraction) => PressureLevel::from_fraction(fraction),
@@ -148,14 +146,14 @@ impl ResourceTelemetry {
         }
     }
 
-    /// A compact, human-readable one-liner, e.g. `12.3k tok · 4m12s · 41% budget`.
+    /// 紧凑、人类可读的一行摘要，例如 `12.3k tok · 4m12s · 41% budget`。
     ///
-    /// Tokens are abbreviated with `k`/`M` suffixes, time is rendered as
-    /// `Hh Mm Ss` (dropping leading zero units), and the budget segment is
-    /// omitted entirely when the task is unbounded.
+    /// 令牌用 `k`/`M` 后缀缩写，时间渲染为
+    /// `Hh Mm Ss`（删除前导零单位），任务无上限时
+    /// 完全省略预算部分。
     pub fn human_summary(&self) -> String {
         let mut out = String::new();
-        // `write!` into a String is infallible; ignore the Result.
+        // 向 String 写入 `write!` 不会失败；忽略 Result。
         let _ = write!(
             out,
             "{} tok · {}",
@@ -175,7 +173,7 @@ impl fmt::Display for ResourceTelemetry {
     }
 }
 
-/// Output-token throughput for a live or completed turn.
+/// 进行中或已完成回合的输出令牌吞吐量。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TokenThroughput {
     pub output_tokens: u64,
@@ -212,11 +210,10 @@ impl TokenThroughput {
     }
 }
 
-/// Estimate output tokens from streamed text before provider usage arrives.
+/// 在提供商使用数据到达前从流式文本估计输出令牌。
 ///
-/// Provider-reported usage remains canonical at turn completion. During a live
-/// stream, this gives the footer a stable approximation without inspecting
-/// provider-specific tokenizer internals.
+/// 提供商报告的使用在回合完成时仍为规范数据。在实时流期间，
+/// 这为页脚提供稳定的近似值，无需检查提供商特定的分词器内部。
 pub fn estimate_output_tokens_from_text(text: &str) -> u64 {
     let chars = text.chars().count() as u64;
     if chars == 0 {
@@ -226,8 +223,8 @@ pub fn estimate_output_tokens_from_text(text: &str) -> u64 {
     }
 }
 
-/// Divide `used` by an optional budget, guarding against an absent or zero
-/// budget. Returns `None` when the budget is `None` or `0`.
+/// 用 `used` 除以可选预算，防止缺失或零预算。
+/// 当预算为 `None` 或 `0` 时返回 `None`。
 fn fraction(used: u64, budget: Option<u64>) -> Option<f64> {
     match budget {
         Some(budget) if budget > 0 => Some(used as f64 / budget as f64),
@@ -235,11 +232,11 @@ fn fraction(used: u64, budget: Option<u64>) -> Option<f64> {
     }
 }
 
-/// Format a token count with a `k`/`M` suffix once it crosses each threshold.
+/// 在超过每个阈值时用 `k`/`M` 后缀格式化令牌计数。
 ///
-/// Values under 1_000 are printed verbatim. Thousands use one decimal place
-/// (`12.3k`), trimming a trailing `.0` so round values read cleanly (`5k`).
-/// Millions follow the same rule (`1.5M`, `2M`).
+/// 低于 1_000 的值按原样打印。千位使用一个小数位
+///（`12.3k`），修剪尾随的 `.0` 以便圆整值干净地读取（`5k`）。
+/// 百万遵循相同规则（`1.5M`、`2M`）。
 fn format_tokens(tokens: u64) -> String {
     const K: u64 = 1_000;
     const M: u64 = 1_000_000;
@@ -252,12 +249,12 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
-/// Render `value / divisor` to one decimal place with `suffix`, dropping a
-/// trailing `.0`. The divisor is always one of the constants above (non-zero).
+/// 用 `suffix` 将 `value / divisor` 渲染到一个小数位，去掉尾随的 `.0`。
+/// 除数始终是上述常量之一（非零）。
 fn format_scaled(value: u64, divisor: u64, suffix: char) -> String {
     let scaled = value as f64 / divisor as f64;
-    // Round to one decimal before deciding whether the fraction is ".0", so a
-    // value like 1_999_999 reads as "2M" rather than "1.9...M".
+    // 在决定小数部分是否为 ".0" 前四舍五入到一位小数，因此
+    // 像 1_999_999 这样的值读作 "2M" 而不是 "1.9...M"。
     let rounded = (scaled * 10.0).round() / 10.0;
     if (rounded.fract()).abs() < f64::EPSILON {
         format!("{}{}", rounded as u64, suffix)
@@ -266,12 +263,12 @@ fn format_scaled(value: u64, divisor: u64, suffix: char) -> String {
     }
 }
 
-/// Format a duration in seconds as a compact `Hh Mm Ss` string.
+/// 将秒数格式化为紧凑的 `Hh Mm Ss` 字符串。
 ///
-/// Leading zero units are dropped, so 252s renders as `4m12s` and 90s as
-/// `1m30s`. Sub-minute durations render as bare seconds (`0s`, `45s`). Minutes
-/// and seconds are zero-padded only when a larger unit precedes them, matching
-/// conventional clock-style readouts (`1h05m`, `2h00m03s`).
+/// 前导零单位被删除，因此 252 秒渲染为 `4m12s`，90 秒渲染为
+/// `1m30s`。亚分钟持续时间渲染为裸秒（`0s`、`45s`）。只有当
+/// 更大的单位在它们之前时，分钟和秒才补零，匹配传统的
+/// 时钟风格读数（`1h05m`、`2h00m03s`）。
 fn format_duration(total_seconds: u64) -> String {
     let hours = total_seconds / 3_600;
     let minutes = (total_seconds % 3_600) / 60;
@@ -288,9 +285,8 @@ fn format_duration(total_seconds: u64) -> String {
             let _ = write!(out, "{minutes}m");
         }
     }
-    // Always include seconds unless we have hours+minutes and seconds is zero
-    // would still be informative; we keep seconds for precision, padding when a
-    // minute or hour precedes it.
+    // 始终包括秒，除非我们有小时+分钟且秒为零
+    // 仍然会有信息量；我们为了精度保留秒，当分钟或小时在前时补零。
     if hours > 0 || minutes > 0 {
         let _ = write!(out, "{seconds:02}s");
     } else {
@@ -303,7 +299,7 @@ fn format_duration(total_seconds: u64) -> String {
 mod tests {
     use super::*;
 
-    // ---- token formatting -------------------------------------------------
+    // ---- 令牌格式化 -------------------------------------------------
 
     #[test]
     fn format_tokens_under_a_thousand_is_verbatim() {
@@ -317,9 +313,9 @@ mod tests {
         assert_eq!(format_tokens(1_000), "1k");
         assert_eq!(format_tokens(1_500), "1.5k");
         assert_eq!(format_tokens(12_345), "12.3k");
-        // Exactly on a round thousand trims the ".0".
+        // 恰好整千时修剪 ".0"。
         assert_eq!(format_tokens(5_000), "5k");
-        // Just under the millions boundary stays in k.
+        // 刚好在百万边界以下保持在 k 范围。
         assert_eq!(format_tokens(999_400), "999.4k");
     }
 
@@ -332,9 +328,9 @@ mod tests {
 
     #[test]
     fn format_tokens_rounds_up_across_a_unit_boundary() {
-        // 1_999_999 rounds to 2.0M -> "2M", not "1.9M" or "2.0M".
+        // 1_999_999 四舍五入为 2.0M -> "2M"，不是 "1.9M" 或 "2.0M"。
         assert_eq!(format_tokens(1_999_999), "2M");
-        // 999_950 rounds to 1000.0k; still within the k branch and trims ".0".
+        // 999_950 四舍五入为 1000.0k；仍在 k 分支并修剪 ".0"。
         assert_eq!(format_tokens(999_950), "1000k");
     }
 
@@ -343,7 +339,7 @@ mod tests {
         assert_eq!(format_tokens(u64::MAX), "18446744073709.6M");
     }
 
-    // ---- duration formatting ---------------------------------------------
+    // ---- 持续时间格式化 ---------------------------------------------
 
     #[test]
     fn format_duration_zero_and_sub_minute() {
@@ -365,17 +361,17 @@ mod tests {
     fn format_duration_hours() {
         assert_eq!(format_duration(3_600), "1h00m00s");
         assert_eq!(format_duration(3_661), "1h01m01s");
-        // 2h00m03s exercises zero-padded minutes between hours and seconds.
+        // 2h00m03s 测试小时和秒之间的零填充分钟。
         assert_eq!(format_duration(7_203), "2h00m03s");
     }
 
     #[test]
     fn format_duration_large() {
-        // 100 hours, 1 minute, 1 second.
+        // 100 小时，1 分钟，1 秒。
         assert_eq!(format_duration(360_061), "100h01m01s");
     }
 
-    // ---- throughput -------------------------------------------------------
+    // ---- 吞吐量 -------------------------------------------------------
 
     #[test]
     fn token_throughput_formats_compact_rates() {
@@ -407,7 +403,7 @@ mod tests {
         assert_eq!(throughput.compact_rate(), "10");
     }
 
-    // ---- fraction / percent ----------------------------------------------
+    // ---- 分数 / 百分比 ----------------------------------------------
 
     #[test]
     fn fractions_are_none_when_unbounded() {
@@ -442,7 +438,7 @@ mod tests {
 
     #[test]
     fn budget_fraction_takes_the_max_across_dimensions() {
-        // Tokens at 10%, time at 80% -> the time pressure dominates.
+        // 令牌 10%，时间 80% -> 时间压力占主导。
         let t = ResourceTelemetry {
             tokens_used: 1_000,
             time_used_seconds: 80,
@@ -473,7 +469,7 @@ mod tests {
         assert_eq!(up.budget_percent(), Some(34));
     }
 
-    // ---- pressure levels --------------------------------------------------
+    // ---- 压力级别 --------------------------------------------------
 
     #[test]
     fn pressure_low_when_unbounded_regardless_of_usage() {
@@ -483,23 +479,23 @@ mod tests {
 
     #[test]
     fn pressure_thresholds_just_under_and_over() {
-        // 74% -> Low (just under the medium threshold).
+        // 74% -> Low（刚好在中等阈值以下）。
         let low = ResourceTelemetry::new(7_400, 0).with_token_budget(10_000);
         assert_eq!(low.pressure(), PressureLevel::Low);
 
-        // Exactly 75% -> Medium (inclusive lower bound).
+        // 恰好 75% -> Medium（包含下限）。
         let medium_edge = ResourceTelemetry::new(7_500, 0).with_token_budget(10_000);
         assert_eq!(medium_edge.pressure(), PressureLevel::Medium);
 
-        // 99% -> Medium (just under the high threshold).
+        // 99% -> Medium（刚好在高阈值以下）。
         let medium = ResourceTelemetry::new(9_900, 0).with_token_budget(10_000);
         assert_eq!(medium.pressure(), PressureLevel::Medium);
 
-        // Exactly 100% -> High (at budget).
+        // 恰好 100% -> High（达到预算）。
         let high_edge = ResourceTelemetry::new(10_000, 0).with_token_budget(10_000);
         assert_eq!(high_edge.pressure(), PressureLevel::High);
 
-        // Over budget -> High.
+        // 超过预算 -> High。
         let over = ResourceTelemetry::new(12_500, 0).with_token_budget(10_000);
         assert_eq!(over.pressure(), PressureLevel::High);
     }
@@ -509,7 +505,7 @@ mod tests {
         assert_eq!(PressureLevel::Low.label(), "low");
         assert_eq!(PressureLevel::Medium.label(), "medium");
         assert_eq!(PressureLevel::High.label(), "high");
-        // Ord derive: Low < Medium < High.
+        // Ord 派生：Low < Medium < High。
         assert!(PressureLevel::Low < PressureLevel::Medium);
         assert!(PressureLevel::Medium < PressureLevel::High);
     }
@@ -524,12 +520,12 @@ mod tests {
         assert_eq!(PressureLevel::from_fraction(-0.5), PressureLevel::Low);
     }
 
-    // ---- human summary ----------------------------------------------------
+    // ---- 人类摘要 ----------------------------------------------------
 
     #[test]
     fn human_summary_bounded_matches_example_shape() {
         let t = ResourceTelemetry::new(12_345, 252).with_token_budget(30_000);
-        // 12_345 -> "12.3k", 252s -> "4m12s", 12345/30000 = 41.15% -> 41%.
+        // 12_345 -> "12.3k", 252s -> "4m12s", 12345/30000 = 41.15% -> 41%。
         assert_eq!(t.human_summary(), "12.3k tok · 4m12s · 41% budget");
     }
 
@@ -537,7 +533,7 @@ mod tests {
     fn human_summary_unbounded_omits_budget_segment() {
         let t = ResourceTelemetry::new(500, 5);
         assert_eq!(t.human_summary(), "500 tok · 5s");
-        // Display delegates to human_summary.
+        // Display 委托给 human_summary。
         assert_eq!(t.to_string(), "500 tok · 5s");
     }
 
@@ -550,7 +546,7 @@ mod tests {
     #[test]
     fn human_summary_over_budget_can_exceed_one_hundred_percent() {
         let t = ResourceTelemetry::new(15_000, 7_320).with_token_budget(10_000);
-        // 15000/10000 = 150%, 2h02m00s.
+        // 15000/10000 = 150%, 2h02m00s。
         assert_eq!(t.human_summary(), "15k tok · 2h02m00s · 150% budget");
         assert_eq!(t.pressure(), PressureLevel::High);
     }
@@ -558,7 +554,7 @@ mod tests {
     #[test]
     fn human_summary_with_only_time_budget() {
         let t = ResourceTelemetry::new(2_000_000, 300).with_time_budget_seconds(600);
-        // 2M tokens, 5m00s, 300/600 = 50% budget.
+        // 2M 令牌，5m00s，300/600 = 50% 预算。
         assert_eq!(t.human_summary(), "2M tok · 5m00s · 50% budget");
         assert_eq!(t.pressure(), PressureLevel::Low);
     }

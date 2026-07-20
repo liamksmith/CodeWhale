@@ -1,8 +1,8 @@
-//! Provider switching: flip between DeepSeek, hosted providers, and self-hosted
-//! OpenAI-compatible DeepSeek V4 servers at runtime.
+//! 提供商切换：在运行时在 DeepSeek、托管提供商和自托管
+//! OpenAI 兼容 DeepSeek V4 服务器之间切换。
 //!
-//! `/provider` with no args opens the picker modal (#52). `/provider <name>`
-//! keeps the v0.6.6 CLI form for muscle-memory + scripted use.
+//! 无参数的 `/provider` 打开选择器模态框（#52）。`/provider <name>`
+//! 保留 v0.6.6 CLI 形式，供肌肉记忆和脚本化使用。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::config::{ApiProvider, canonical_model_id_for_provider, provider_passes_model_through};
@@ -30,12 +30,12 @@ impl RegisterCommand for ProviderCmd {
     }
 }
 
-/// Switch or view the current LLM backend.
+/// 切换或查看当前 LLM 后端。
 ///
-/// With no args, opens the picker modal. With `<provider> [model]`, performs
-/// the switch directly (e.g. `/provider nim flash` lands on
-/// `deepseek-ai/deepseek-v4-flash`). The optional model accepts shorthand
-/// (`flash`, `pro`, `v4-flash`, `v4-pro`) or any normal provider model ID.
+/// 无参数时，打开选择器模态框。有 `<provider> [model]` 时，直接执行
+/// 切换（例如 `/provider nim flash` 会切换到 `deepseek-ai/deepseek-v4-flash`）。
+/// 可选的模型参数接受简写（`flash`、`pro`、`v4-flash`、`v4-pro`）或任何
+/// 正常的提供商模型 ID。
 pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     let trimmed = args.map(str::trim).filter(|s| !s.is_empty());
     let Some(args) = trimmed else {
@@ -75,14 +75,14 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     let model = match model_arg {
         None => None,
         Some(raw) => {
-            // Expand provider shorthands (flash/pro, Xiaomi MiMo tts/omni, …)
-            // uniformly, then either keep the id verbatim for providers that take
-            // opaque/custom model tags, or resolve it to the canonical family id.
-            // Families are treated equally: each resolves through its own
-            // canonical map (DeepSeek, GLM via Z.ai/Zhipu, Kimi, MiniMax, …) and
-            // an id matching none passes through unchanged — the upstream API is
-            // the authority. Wire-id translation is deferred to the route
-            // resolver at request time, so `/provider` stores canonical names.
+            // 统一展开提供商标识简写（flash/pro、Xiaomi MiMo tts/omni……），
+            // 然后要么为接受不透明/自定义模型标签的提供商原样保留 ID，
+            // 要么解析为规范系列 ID。
+            // 所有系列一视同仁：每个系列通过各自的规范映射解析
+            //（DeepSeek、通过 Z.ai/Zhipu 的 GLM、Kimi、MiniMax……）
+            // 没有匹配的 ID 原样通过——上游 API 是权威。
+            // 有线 ID 转换在请求时推迟到路由解析器，因此 `/provider`
+            // 存储规范名称。
             let expanded = expand_model_alias_for_provider(target, raw);
             if provider_passes_model_through(target) {
                 Some(expanded)
@@ -175,8 +175,8 @@ fn expand_model_alias_for_provider(provider: ApiProvider, name: &str) -> String 
             "voiceclone" | "voice-clone" | "mimo-voice-clone" => {
                 "mimo-v2.5-tts-voiceclone".to_string()
             }
-            // Not a shorthand: keep the id as typed (case preserved for custom
-            // token-plan model ids).
+            // 不是简写：按原样保留 ID（大小写保留，用于自定义
+            // token 计划模型 ID）。
             _ => trimmed.to_string(),
         };
     }
@@ -184,8 +184,8 @@ fn expand_model_alias_for_provider(provider: ApiProvider, name: &str) -> String 
     match lower.as_str() {
         "pro" | "v4-pro" => "deepseek-v4-pro".to_string(),
         "flash" | "v4-flash" => "deepseek-v4-flash".to_string(),
-        // Not a shorthand: keep the id as typed (case preserved for opaque
-        // model tags on passthrough providers like Ollama/HuggingFace).
+        // 不是简写：按原样保留 ID（大小写保留，用于透传提供商
+        // 如 Ollama/HuggingFace 的不透明模型标签）。
         _ => trimmed.to_string(),
     }
 }
@@ -270,8 +270,7 @@ mod tests {
     #[test]
     fn unknown_provider_returns_error() {
         let mut app = create_test_app();
-        // "anthropic" became a real provider in #3014; probe with an id that
-        // stays unknown.
+        // "anthropic" 在 #3014 中成为真正的提供商；使用一个保持未知的 ID 进行探测。
         let result = provider(&mut app, Some("not-a-provider"));
         let msg = result.message.expect("expected error message");
         assert!(msg.contains("Unknown provider"));
@@ -403,9 +402,9 @@ mod tests {
 
     #[test]
     fn zhipu_aliases_fold_into_zai_and_canonicalize_glm() {
-        // Zhipu AI and Z.ai are the same vendor: `zhipu`/`zhipuai` select the
-        // single Zai provider and store the canonical GLM family id in Z.ai's own
-        // casing (`glm-5.2` → `GLM-5.2`).
+        // Zhipu AI 和 Z.ai 是同一个供应商：`zhipu`/`zhipuai` 选择
+        // 单个 Zai 提供商并以 Z.ai 自己的大小写存储规范 GLM 系列 ID
+        //（`glm-5.2` → `GLM-5.2`）。
         let mut app = create_test_app();
         let result = provider(&mut app, Some("zhipu glm-5.2"));
         match result.action {
@@ -480,10 +479,9 @@ mod tests {
 
     #[test]
     fn switch_to_together_canonicalizes_deepseek_aliases() {
-        // Together is symmetric with the other DeepSeek-hosting routes: the
-        // canonical family id is stored and the route resolver performs the
-        // wire-id translation (deepseek-v4-pro → Together's catalog slug) at
-        // request time, rather than the command storing a wire slug.
+        // Together 与其他 DeepSeek 托管路由对称：存储规范系列 ID，
+        // 路由解析器在请求时执行有线 ID 转换（deepseek-v4-pro → Together
+        // 的目录标识符），而不是命令存储有线标识符。
         let mut app = create_test_app();
         let result = provider(&mut app, Some("together deepseek-v4-pro"));
         match result.action {
@@ -646,11 +644,10 @@ mod tests {
         ));
     }
 
-    /// #2574: `/provider fallback reset` returns to the *primary* (chain entry
-    /// 0), not to whatever fallback is currently active. The resolved
-    /// `SwitchProvider` action is the canonical restore path — it re-seats
-    /// `api_provider` and rebuilds the chain at position 0 (see
-    /// `switch_provider`), so a bare `ProviderChain::reset()` is not needed here.
+    /// #2574：`/provider fallback reset` 返回到*主*（链条目 0），
+    /// 而不是当前活跃的任何回退。解析后的 `SwitchProvider` 操作是
+    /// 规范的恢复路径——它重新设置 `api_provider` 并在位置 0 重建链
+    ///（参见 `switch_provider`），因此此处不需要纯 `ProviderChain::reset()`。
     #[test]
     fn provider_fallback_reset_targets_primary_even_when_on_fallback() {
         let _lock = lock_test_env();
@@ -660,8 +657,8 @@ mod tests {
             codewhale_config::ProviderKind::Deepseek,
             &[codewhale_config::ProviderKind::Openrouter],
         ));
-        // Simulate having already fallen back to the secondary provider.
-        // (Openrouter is treated as ready by default — no readiness snapshot.)
+        // 模拟已回退到辅助提供商的情况。
+        // （Openrouter 默认被视为已就绪——无就绪状态快照。）
         let advanced = app.advance_fallback("recoverable error");
         assert_eq!(advanced, Some(ApiProvider::Openrouter));
         assert_eq!(app.api_provider, ApiProvider::Openrouter);
@@ -685,9 +682,8 @@ mod tests {
 
     #[test]
     fn aggregator_passes_unrecognized_model_through() {
-        // Equal treatment: a non-DeepSeek id on a DeepSeek-hosting aggregator is
-        // not rejected — it passes through so the upstream API stays the
-        // authority on what it can serve.
+        // 平等对待：DeepSeek 托管聚合器上的非 DeepSeek ID 不会被拒绝——
+        // 它原样通过，因此上游 API 仍然是它能提供什么的权威。
         let mut app = create_test_app();
         let result = provider(&mut app, Some("nim gpt-4"));
         assert!(result.message.is_none());

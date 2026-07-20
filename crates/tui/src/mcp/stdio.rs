@@ -14,26 +14,26 @@ pub(super) struct StdioTransport {
     pub(super) child: Child,
     pub(super) stdin: ChildStdin,
     pub(super) reader: tokio::io::BufReader<ChildStdout>,
-    /// Tail of stderr lines from the spawned MCP server. A background task
-    /// drains the child's stderr into this buffer so a mid-run crash leaves
-    /// some context behind instead of `Stdio::null` swallowing it.
+    /// 从生成的 MCP 服务器收集的 stderr 行尾部。后台任务
+    /// 将子进程的 stderr 排入此缓冲区，以便运行时崩溃
+    /// 能留下一些上下文，而不是被 `Stdio::null` 吞没。
     pub(super) stderr_tail: Arc<StderrTail>,
 }
 
-/// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
-/// before `kill_on_drop` fires SIGKILL. Tuned short so a hung MCP server
-/// can't stall TUI exit; well-behaved servers almost always exit within
-/// a few hundred ms.
+/// `StdioTransport::shutdown` 等待子进程通过 SIGTERM 退出
+/// 的超时时间，超时后 `kill_on_drop` 会发送 SIGKILL。
+/// 设置较短，这样挂起的 MCP 服务器不会阻塞 TUI 退出；
+/// 行为良好的服务器几乎总是在几百毫秒内退出。
 pub(super) const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
 
-/// How many lines of MCP-server stderr to keep around for crash diagnostics.
-/// Bounded so a chatty server can't grow this without limit; large enough to
-/// catch typical Node/Python startup or panic output.
+/// 为崩溃诊断保留的 MCP 服务器 stderr 行数。
+/// 有限制，防止健谈的服务器无限制增长；足够大以
+/// 捕获典型的 Node/Python 启动或 panic 输出。
 const STDERR_TAIL_CAPACITY: usize = 64;
 
-/// Bounded ring buffer for the most recent stderr lines from a spawned MCP
-/// server. Used by `StdioTransport` to surface server-side context when the
-/// transport read side fails (server crashed, exited early, etc).
+/// 来自生成的 MCP 服务器的最新 stderr 行的有界环形缓冲区。
+/// 由 `StdioTransport` 使用，在传输读取端失败时显示
+/// 服务器端上下文（服务器崩溃、提前退出等）。
 #[derive(Default)]
 pub(super) struct StderrTail {
     lines: TokioMutex<VecDeque<String>>,
@@ -76,18 +76,18 @@ impl StdioTransport {
             cmd.current_dir(cwd);
         }
 
-        // Expand `${NAME}` placeholders so secret env values can be sourced
-        // from the process environment instead of being stored in cleartext
-        // in the MCP config. The child env is allowlist-sanitized below, so
-        // these vars would not otherwise be inherited by the child.
+        // 展开 `${NAME}` 占位符，使密钥环境变量值可以从
+        // 进程环境获取，而不是以明文形式存储在 MCP 配置中。
+        // 子进程环境已通过允许列表清理，因此如果不这样做，
+        // 这些变量将不会被子进程继承。
         let expanded_env = super::expand_env_placeholders_map(&config.env, "env")
             .with_context(|| format!("MCP server '{server_name}' env expansion failed"))?;
 
-        // MCP stdio servers are user-configured integrations. Use the
-        // wider MCP allowlist so common Node/Python/proxy/CA-bundle
-        // bootstrap variables (NVM_DIR, NODE_OPTIONS, NPM_CONFIG_*,
-        // HTTP(S)_PROXY, …) reach the child. See `sanitized_mcp_env`
-        // and #1244 for context.
+        // MCP stdio 服务器是用户配置的集成。使用
+        // 更广泛的 MCP 允许列表，使常见的 Node/Python/代理/CA 证书包
+        // 引导变量（NVM_DIR, NODE_OPTIONS, NPM_CONFIG_*,
+        // HTTP(S)_PROXY, …）能传递到子进程。参见 `sanitized_mcp_env`
+        // 和 #1244 了解上下文。
         child_env::apply_to_tokio_command_mcp(&mut cmd, child_env::string_map_env(&expanded_env));
 
         let mut child = cmd.spawn().with_context(|| {
@@ -102,10 +102,10 @@ impl StdioTransport {
         let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
         let stderr = child.stderr.take().context("Failed to get MCP stderr")?;
 
-        // Drain stderr into a bounded ring buffer so a crash mid-run leaves
-        // diagnostic breadcrumbs instead of disappearing into `Stdio::null`.
-        // The task exits naturally when the child closes its stderr
-        // (kill_on_drop / exit / explicit shutdown).
+        // 将 stderr 排入有界环形缓冲区，以便运行时崩溃留下
+        // 诊断线索，而不是消失在 `Stdio::null` 中。
+        // 当子进程关闭其 stderr 时，该任务自然退出
+        //（kill_on_drop / exit / 显式关闭）。
         let stderr_tail = StderrTail::new();
         {
             let tail = Arc::clone(&stderr_tail);
@@ -126,8 +126,8 @@ impl StdioTransport {
     }
 }
 
-/// Format the captured stderr tail for inclusion in an error message. Empty
-/// tails return `None` so the caller can fall back to its original message.
+/// 格式化捕获的 stderr 尾部以包含在错误消息中。空尾部
+/// 返回 `None`，以便调用者回退到其原始消息。
 async fn format_stderr_context(tail: &StderrTail) -> Option<String> {
     let lines = tail.snapshot().await;
     if lines.is_empty() {
@@ -141,17 +141,17 @@ async fn format_stderr_context(tail: &StderrTail) -> Option<String> {
     ))
 }
 
-/// Best-effort SIGTERM. On Unix uses `libc::kill`; on Windows there's no
-/// equivalent so we let `kill_on_drop` (TerminateProcess) handle it via the
-/// subsequent Drop. Returns whether a signal was actually sent.
+/// 尽力发送 SIGTERM。在 Unix 上使用 `libc::kill`；在 Windows 上没有
+/// 等效操作，因此让 `kill_on_drop`（TerminateProcess）通过后续的
+/// Drop 处理。返回是否实际发送了信号。
 fn send_sigterm(child: &Child) -> bool {
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
-            // SAFETY: pid was just obtained from `child.id()`. `libc::kill`
-            // with `SIGTERM` is async-signal-safe and never observes invalid
-            // memory. Worst case (pid wrap / process already gone) returns
-            // ESRCH, which we deliberately ignore.
+            // 安全保证：pid 刚刚从 `child.id()` 获取。`libc::kill`
+            // 配合 `SIGTERM` 是异步信号安全的，永远不会访问无效
+            // 内存。最坏情况（pid 回绕/进程已消失）返回
+            // ESRCH，我们有意忽略它。
             unsafe {
                 let _ = libc::kill(pid as i32, libc::SIGTERM);
             }
@@ -178,8 +178,8 @@ impl McpTransport for StdioTransport {
     async fn recv(&mut self) -> Result<Vec<u8>> {
         let mut line_bytes: Vec<u8> = Vec::new();
         loop {
-            // Bounded read: a server emitting a newline-free multi-GB "line"
-            // must not OOM us (read_line is unbounded).
+            // 有界读取：服务器发出无换行符的多 GB "行"时
+            // 不能 OOM 我们（read_line 是无界的）。
             let bytes = match read_line_capped(
                 &mut self.reader,
                 &mut line_bytes,
@@ -212,30 +212,30 @@ impl McpTransport for StdioTransport {
         }
     }
 
-    /// Send SIGTERM and wait up to `STDIO_SHUTDOWN_GRACE` for graceful exit
-    /// before letting Drop / `kill_on_drop` fire SIGKILL as the backstop.
+    /// 发送 SIGTERM 并等待最多 `STDIO_SHUTDOWN_GRACE` 时间以便优雅退出，
+    /// 然后让 Drop / `kill_on_drop` 作为兜底发送 SIGKILL。
     async fn shutdown(&mut self) {
         send_sigterm(&self.child);
-        // Give the child a window to exit cleanly. Discard the result —
-        // either it exits (success) or the timeout fires (Drop will SIGKILL).
+        // 给子进程一个干净退出的窗口。丢弃结果——
+        // 要么它退出（成功），要么超时触发（Drop 会发送 SIGKILL）。
         let _ = tokio::time::timeout(STDIO_SHUTDOWN_GRACE, self.child.wait()).await;
     }
 }
 
-/// Drop fallback (#420): if `shutdown` was never called explicitly, still
-/// fire SIGTERM before tokio's `kill_on_drop` sends SIGKILL. The two
-/// signals arrive back-to-back so well-behaved servers at least see the
-/// SIGTERM first; misbehaving ones get SIGKILL'd anyway.
+/// Drop 回退（#420）：如果从未显式调用 `shutdown`，仍然在
+/// tokio 的 `kill_on_drop` 发送 SIGKILL 之前发送 SIGTERM。两个信号
+/// 连续到达，因此行为良好的服务器至少先看到 SIGTERM；
+/// 行为不端的服务器无论如何都会被 SIGKILL。
 impl Drop for StdioTransport {
     fn drop(&mut self) {
         send_sigterm(&self.child);
     }
 }
 
-/// Read one newline-terminated line into `out` (cleared first), aborting if it
-/// exceeds `max` bytes without a newline. Bounds an otherwise-unbounded
-/// `read_line` so a misbehaving MCP server cannot OOM the client. Returns the
-/// number of bytes accumulated; 0 means EOF.
+/// 将一行以换行符结尾的数据读入 `out`（先清空），如果超过
+/// `max` 字节而没有换行符则中止。限制了原本无界的 `read_line`，
+/// 防止行为不端的 MCP 服务器 OOM 客户端。返回累积的字节数；
+/// 0 表示 EOF。
 async fn read_line_capped<R>(
     reader: &mut R,
     out: &mut Vec<u8>,
@@ -293,7 +293,7 @@ mod read_cap_tests {
             6
         );
         assert_eq!(out, b"world\n");
-        // EOF.
+        // EOF。
         assert_eq!(
             read_line_capped(&mut reader, &mut out, 1024).await.unwrap(),
             0

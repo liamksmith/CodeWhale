@@ -1,46 +1,41 @@
-//! Process-wide retry-state surface (#499).
+//! 进程级重试状态面板 (#499)。
 //!
-//! The HTTP retry path in `client::send_with_retry` already times its
-//! waits and knows the error category. This module gives the TUI a way
-//! to observe that state — `start`, `succeeded`, and `failed` flip a
-//! global `RetryState` that the footer / status panel reads each frame.
+//! `client::send_with_retry` 中的 HTTP 重试路径已经计时等待并知道错误类别。
+//! 此模块为 TUI 提供观察该状态的方式——`start`、`succeeded` 和 `failed`
+//! 切换一个全局的 `RetryState`，页脚/状态面板每帧读取。
 //!
-//! Why a process-wide global: the user-facing TUI runs as one engine
-//! per process, and the only retry state we want to surface is the one
-//! the user is staring at. Sub-agent retries in background tasks
-//! deliberately do **not** light up the foreground banner — they're
-//! supposed to be invisible. If a future feature ever needs per-engine
-//! retry surfaces, swap this for an `Arc<RwLock<...>>` carried on the
-//! `EngineHandle`; the public API stays the same.
+//! 为什么是进程级全局变量：面向用户的 TUI 每个进程运行一个引擎，
+//! 我们想要展示的唯一重试状态是用户正在关注的那个。
+//! 后台任务中的子代理重试有意**不**点亮前台横幅——它们本应是不可见的。
+//! 如果未来某个功能需要按引擎区分重试面板，将其替换为 `EngineHandle`
+//! 上携带的 `Arc<RwLock<...>>`；公开 API 保持不变。
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// One in-flight retry attempt. `deadline` is the wall-clock time the
-/// next request will fire — the UI subtracts `Instant::now()` from it
-/// to render a live countdown.
+/// 一次进行中的重试尝试。`deadline` 是下一次请求将发起的挂钟时间——
+/// UI 从中减去 `Instant::now()` 来渲染实时倒计时。
 #[derive(Debug, Clone)]
 pub struct RetryBanner {
-    /// 1-indexed retry attempt number (the first retry is attempt 1).
+    /// 从 1 开始的重试尝试编号（第一次重试为 1）。
     pub attempt: u32,
-    /// Time at which the next request will be sent.
+    /// 下一次请求将发送的时间。
     pub deadline: Instant,
-    /// Short human-readable reason ("rate limited", "server error", …).
+    /// 简短的可读原因（"频率受限"、"服务器错误"等）。
     pub reason: String,
 }
 
-/// Snapshot of the retry surface for the UI to render.
+/// 供 UI 渲染的重试状态快照。
 #[derive(Debug, Clone, Default)]
 pub enum RetryState {
-    /// No retry in flight. Banner hidden.
+    /// 无进行中的重试。横幅隐藏。
     #[default]
     Idle,
-    /// A request is sleeping before retrying. Show countdown banner.
+    /// 请求在重试前等待。显示倒计时横幅。
     Active(RetryBanner),
-    /// All retries exhausted; show failure row until the next turn
-    /// starts. `since` records when the row was set so a future polish
-    /// pass can age it out automatically; today the engine clears it on
-    /// `TurnStarted`.
+    /// 所有重试已耗尽；显示失败行直到下一个轮次开始。
+    /// `since` 记录行被设置的时间，以便未来的优化可以自动将其老化；
+    /// 目前引擎在 `TurnStarted` 时清除它。
     Failed {
         reason: String,
         #[allow(dead_code)]
@@ -49,9 +44,8 @@ pub enum RetryState {
 }
 
 impl RetryState {
-    /// Wall-clock seconds remaining on the active banner, or `None` if
-    /// not active. Saturates at zero — the renderer should treat any
-    /// negative remaining as "firing now".
+    /// 活动横幅上的挂钟秒数剩余，如果非活动则返回 `None`。
+    /// 饱和到零——渲染器应将任何负剩余视为"正在发起"。
     #[must_use]
     pub fn seconds_remaining(&self) -> Option<u64> {
         match self {
@@ -65,9 +59,8 @@ impl RetryState {
         }
     }
 
-    /// Whether the failure row should still be shown. Mirrors the
-    /// "until next turn" rule in the issue spec; the engine clears it
-    /// explicitly via [`clear`] on `TurnStarted`.
+    /// 失败行是否仍应显示。镜像 issue 规范中的"直到下一个轮次"规则；
+    /// 引擎通过 `TurnStarted` 上的 [`clear`] 显式清除它。
     #[cfg(test)]
     #[must_use]
     pub fn is_failed(&self) -> bool {
@@ -75,8 +68,7 @@ impl RetryState {
     }
 }
 
-/// Lazy-init the cell on first read so callers don't have to initialize
-/// process-wide state at boot.
+/// 在首次读取时懒初始化 cell，这样调用者不必在启动时初始化进程级状态。
 fn cell() -> &'static Mutex<RetryState> {
     static STATE: OnceLock<Mutex<RetryState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(RetryState::Idle))
@@ -87,15 +79,14 @@ fn rate_limit_cell() -> &'static Mutex<Option<Instant>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-/// Public read snapshot for renderers.
+/// 供渲染器使用的公开只读快照。
 #[must_use]
 pub fn snapshot() -> RetryState {
     cell().lock().map(|s| s.clone()).unwrap_or(RetryState::Idle)
 }
 
-/// Extend the provider-wide rate-limit pause window. This is separate from
-/// the footer banner so one successful concurrent request cannot clear another
-/// request's active `Retry-After` window.
+/// 扩展供应商级频率限制暂停窗口。这与页脚横幅分开，
+/// 以便一个成功的并发请求不会清除另一个请求的活动 `Retry-After` 窗口。
 pub fn note_rate_limit(delay: Duration) {
     let deadline = Instant::now() + delay;
     if let Ok(mut current) = rate_limit_cell().lock()
@@ -105,7 +96,7 @@ pub fn note_rate_limit(delay: Duration) {
     }
 }
 
-/// Remaining provider-wide rate-limit pause, if any.
+/// 供应商级频率限制暂停的剩余时间（如果有）。
 #[must_use]
 pub fn rate_limit_remaining() -> Option<Duration> {
     let now = Instant::now();
@@ -120,9 +111,8 @@ pub fn rate_limit_remaining() -> Option<Duration> {
     }
 }
 
-/// Mark an in-flight retry. `attempt` is the number of the *upcoming*
-/// retry (1 for the first); `delay` is how long the client will sleep
-/// before firing.
+/// 标记进行中的重试。`attempt` 是*即将到来*的重试编号（第一次为 1）；
+/// `delay` 是客户端在发起前将休眠的时间。
 pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
     let banner = RetryBanner {
         attempt,
@@ -134,15 +124,14 @@ pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
     }
 }
 
-/// Mark the retry chain as having succeeded. Hides the banner.
+/// 标记重试链已成功。隐藏横幅。
 pub fn succeeded() {
     if let Ok(mut s) = cell().lock() {
         *s = RetryState::Idle;
     }
 }
 
-/// Mark the retry chain as having exhausted retries. The renderer keeps
-/// the failure row until [`clear`] (typically called on `TurnStarted`).
+/// 标记重试链已耗尽重试次数。渲染器保留失败行直到 [`clear`]（通常在 `TurnStarted` 时调用）。
 pub fn failed(reason: impl Into<String>) {
     if let Ok(mut s) = cell().lock() {
         *s = RetryState::Failed {
@@ -152,8 +141,7 @@ pub fn failed(reason: impl Into<String>) {
     }
 }
 
-/// Reset to idle. Called on `TurnStarted` so the previous turn's
-/// failure row doesn't bleed into the next turn.
+/// 重置为空闲。在 `TurnStarted` 时调用，这样上一个轮次的失败行不会渗入下一个轮次。
 pub fn clear() {
     if let Ok(mut s) = cell().lock() {
         *s = RetryState::Idle;
@@ -167,10 +155,9 @@ pub fn clear_rate_limit() {
     }
 }
 
-/// Test helper: serialize tests that touch the global state so cargo's
-/// parallel runner can't observe a torn read. The guard is exported so
-/// tests in *other* modules (e.g. footer rendering tests) can hold the
-/// same lock as the ones in `retry_status::tests`.
+/// 测试辅助函数：序列化触及全局状态的测试，这样 cargo 的并行运行器
+/// 无法观察到撕裂的读取。该守卫被导出，以便*其他*模块中的测试
+/// （例如页脚渲染测试）可以持有与 `retry_status::tests` 中相同的锁。
 #[cfg(test)]
 pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     static GUARD: Mutex<()> = Mutex::new(());
@@ -181,8 +168,7 @@ pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
 
-    /// Acquire the cross-module test guard from [`super::test_guard`] and
-    /// reset state to `Idle` before yielding to the test body.
+    /// 从 [`super::test_guard`] 获取跨模块测试守卫，并在让出给测试体之前将状态重置为 `Idle`。
     fn setup() -> std::sync::MutexGuard<'static, ()> {
         let g = test_guard();
         clear();
@@ -227,7 +213,7 @@ mod tests {
     #[test]
     fn deadline_in_past_yields_zero_remaining() {
         let _g = setup();
-        // Bypass `start` so we can plant a deadline already in the past.
+        // 绕过 `start` 以便我们设置一个已经过去的截止时间。
         if let Ok(mut s) = cell().lock() {
             *s = RetryState::Active(RetryBanner {
                 attempt: 2,
@@ -247,7 +233,7 @@ mod tests {
         succeeded();
         assert!(
             rate_limit_remaining().is_some(),
-            "provider-wide rate limit pause must not be cleared by an unrelated success"
+            "供应商级频率限制暂停不得被无关的成功操作清除"
         );
         clear_rate_limit();
     }

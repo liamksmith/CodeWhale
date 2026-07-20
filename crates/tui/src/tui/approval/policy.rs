@@ -1,61 +1,53 @@
-//! Approval risk and stakes policy.
+//! 审批风险和影响程度策略。
 //!
-//! This module is intentionally UI-free: it classifies tool calls so the
-//! approval and elevation views can render the decision without owning the
-//! policy itself.
+//! 本模块刻意不涉及 UI：它对工具调用进行分类，使审批和升级视图能够呈现决策，而无需拥有策略本身。
 
 use crate::command_safety::is_parallel_readonly_command;
 use serde_json::Value;
 
-/// Categorizes tools by cost/risk level.
+/// 按成本/风险级别对工具进行分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCategory {
-    /// Free, read-only operations (`list_dir`, `read_file`, todo_*)
+    /// 免费、只读操作（`list_dir`、`read_file`、todo_*）
     Safe,
-    /// File modifications (`write_file`, `edit_file`)
+    /// 文件修改（`write_file`、`edit_file`）
     FileWrite,
-    /// Shell execution (`exec_shell`)
+    /// Shell 执行（`exec_shell`）
     Shell,
-    /// Network-oriented built-in tools
+    /// 面向网络的内置工具
     Network,
-    /// Read-only MCP discovery and resource access
+    /// 只读 MCP 发现和资源访问
     McpRead,
-    /// MCP actions that may change remote state
+    /// 可能更改远程状态的 MCP 操作
     McpAction,
-    /// Sub-agent lifecycle (`agent` start/status/peek/cancel); the child's
-    /// own tool gates govern what it may actually do.
+    /// 子代理生命周期（`agent` start/status/peek/cancel）；子代理自身的工具门控决定它实际能做什么。
     Agent,
-    /// Unknown or unclassified tool surface
+    /// 未知或未分类的工具表面
     Unknown,
 }
 
-/// Stakes-based variant for the takeover modal.
+/// 基于影响程度的接管模态框变体。
 ///
-/// `RiskLevel::Benign` lets a single keystroke commit the approval.
-/// `RiskLevel::Destructive` keeps stronger warning copy and styling
-/// around approvals that can touch files, shell, or remote state.
+/// `RiskLevel::Benign` 允许单次按键确认审批。
+/// `RiskLevel::Destructive` 对可能触及文件、shell 或远程状态的审批保持更强的警告文案和样式。
 ///
-/// Routing rules live in [`classify_risk`] - when in doubt, route to
-/// `Destructive`.
+/// 路由规则位于 [`classify_risk`] 中——有疑问时路由到 `Destructive`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskLevel {
     Benign,
     Destructive,
 }
 
-/// Presentation-level stakes for the approval prompt (#3883 follow-up).
+/// 审批提示的展示级影响程度（#3883 后续）。
 ///
-/// `RiskLevel` drives keymaps and stays conservative ("not provably
-/// read-only" is `Destructive`), but rendering everything in that bucket
-/// as a red DESTRUCTIVE takeover made routine file edits and build
-/// commands read like emergencies. Stakes split presentation three ways:
+/// `RiskLevel` 驱动快捷键映射，并保持保守（"不能证明是只读的"即为 `Destructive`），
+/// 但将该桶中的所有内容渲染为红色的 DESTRUCTIVE 接管，使得常规的文件编辑和构建命令
+/// 看起来像是紧急情况。Stakes 将展示分为三个级别：
 ///
-/// - `Routine` - provably read-only; minimal chrome.
-/// - `Elevated` - ordinary state-touching work (edits, builds, MCP
-///   actions); a calm approval, not a warning.
-/// - `Critical` - genuinely destructive, publish-like, or
-///   secret-touching per `ToolActionKind`; keeps the strong styling and
-///   the policy semantics lines.
+/// - `Routine` - 可证明是只读的；最小化界面元素。
+/// - `Elevated` - 普通的状态触碰工作（编辑、构建、MCP 操作）；平静的审批，而非警告。
+/// - `Critical` - 真正具有破坏性、类似发布或触及秘密的操作，依据 `ToolActionKind`；
+///   保持强样式和策略语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalStakes {
     Routine,
@@ -63,11 +55,11 @@ pub enum ApprovalStakes {
     Critical,
 }
 
-/// Get the category for a tool by name.
+/// 按名称获取工具的分类。
 pub fn get_tool_category(name: &str) -> ToolCategory {
     if name == "agent" || name == "workflow" {
-        // Workflow is multi-agent orchestration; reuse Agent stakes/routing
-        // and specialize the impact card via build_impact_summary (#4126).
+        // Workflow 是多代理编排；复用 Agent 的影响程度/路由
+        // 并通过 build_impact_summary (#4126) 定制影响卡片。
         ToolCategory::Agent
     } else if matches!(name, "write_file" | "edit_file" | "apply_patch") {
         ToolCategory::FileWrite
@@ -114,9 +106,7 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
     {
         ToolCategory::Safe
     } else if name == "start_mcp_server" {
-        // Starting an MCP server spawns child processes or opens network
-        // connections — classify as McpAction to trigger appropriate
-        // approval prompts.
+        // 启动 MCP 服务器会产生子进程或打开网络连接——归类为 McpAction 以触发适当的审批提示。
         ToolCategory::McpAction
     } else {
         ToolCategory::Unknown
@@ -141,25 +131,20 @@ pub fn classify_stakes(
     }
 }
 
-/// Decide the stakes variant for an approval request.
+/// 决定审批请求的影响程度变体。
 ///
-/// The bias is conservative: a category we don't recognise routes to
-/// `Destructive`, and any shell command that `command_safety` flags as
-/// `Dangerous` is forced to `Destructive` even when the rest of the
-/// request looks calm. The split lets the modal render stronger warning
-/// copy on anything that can touch state outside this turn.
+/// 偏向保守：我们不识别的分类路由到 `Destructive`，且任何被 `command_safety` 标记为
+/// `Dangerous` 的 shell 命令即使请求其余部分看起来平静，也被强制为 `Destructive`。
+/// 这种区分让模态框能够在可能触及本轮次之外状态的内容上渲染更强的警告文案。
 #[must_use]
 pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) -> RiskLevel {
     match category {
-        // Read paths and discovery.
+        // 读取路径和发现。
         ToolCategory::Safe | ToolCategory::McpRead => RiskLevel::Benign,
-        // Query-only network is benign; opening a URL pulls arbitrary
-        // remote content, so it stays destructive.
+        // 仅查询的网络是良性的；打开 URL 会拉取任意的远程内容，因此保持破坏性。
         ToolCategory::Network => match tool_name {
             "web_search" | "wait_for_dev_server" => RiskLevel::Benign,
-            // web_run is benign for search/query, but its `open`/`click`
-            // actions fetch model-supplied URLs (arbitrary remote content) -
-            // destructive, consistent with fetch_url.
+            // web_run 用于搜索/查询时是良性的，但其 `open`/`click` 操作会获取模型提供的 URL（任意远程内容）——破坏性，与 fetch_url 一致。
             "web_run" => {
                 let fetches_url = params
                     .get("open")
@@ -177,8 +162,7 @@ pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) ->
             }
             _ => RiskLevel::Destructive,
         },
-        // Shell stays destructive unless the existing command-safety analyzer
-        // can prove the concrete command is read-only.
+        // Shell 保持破坏性，除非现有的命令安全分析器能证明具体命令是只读的。
         ToolCategory::Shell => {
             if let Some(cmd) = params.get("command").and_then(Value::as_str)
                 && is_parallel_readonly_command(cmd)
@@ -187,15 +171,12 @@ pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) ->
             }
             RiskLevel::Destructive
         }
-        // Sub-agent lifecycle: status/peek are inspection-only. Starts and
-        // other actions keep the explicit-options keymap (the child's own
-        // gates govern what it may do once running).
+        // 子代理生命周期：status/peek 仅用于检查。启动和其他操作保持显式选项的快捷键映射（子代理自身的门控在其运行后决定它能做什么）。
         ToolCategory::Agent => match params.get("action").and_then(Value::as_str) {
             Some("status" | "peek" | "list") => RiskLevel::Benign,
             _ => RiskLevel::Destructive,
         },
-        // File writes, MCP actions, unclassified surfaces - all require
-        // explicit confirmation.
+        // 文件写入、MCP 操作、未分类的表面——全部需要显式确认。
         ToolCategory::FileWrite | ToolCategory::McpAction | ToolCategory::Unknown => {
             RiskLevel::Destructive
         }

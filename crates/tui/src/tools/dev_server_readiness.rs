@@ -1,8 +1,7 @@
-//! Local dev-server readiness tool.
+//! 本地开发服务器就绪工具。
 //!
-//! This intentionally covers only the narrow "is my localhost dev server ready
-//! yet?" primitive. It is not process supervision and it rejects non-loopback
-//! targets so agents do not turn it into a general network probe.
+//! 本工具有意仅覆盖狭隘的"我的 localhost 开发服务器准备好了吗"原语。
+//! 它不是进程管理，并且拒绝非回环目标，以防代理将其变成通用网络探测工具。
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,

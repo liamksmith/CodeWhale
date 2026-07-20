@@ -1,4 +1,4 @@
-//! Welcome screen content for onboarding.
+//! 引导流程的欢迎屏幕内容。
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -123,7 +123,7 @@ mod tests {
         app.trust_mode = true;
         let body = body(&app);
 
-        // The dual meaning of "code" opens the arc: software and law.
+        // "code"的双重含义开启了弧线：软件和法律。
         assert!(body.contains("Code means two things"));
         assert!(body.contains("the law this agent works under"));
         assert!(body.contains("only these screens will appear"));

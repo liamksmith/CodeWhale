@@ -1,36 +1,35 @@
-//! Automatic Workflow trigger and suppression heuristics (#4127).
+//! 自动工作流触发和抑制启发式方法（#4127）。
 //!
-//! Soft-auto model: the **agent** decides to use Workflow without the operator
-//! saying the word "workflow". Policy here answers "should we orchestrate?" —
-//! the parent prompt still **tells the operator** the intended shape and may
-//! ask setup questions via `request_user_input` (TUI modal) before calling
-//! `workflow` / `plan`.
+//! 软自动模型：**代理**决定使用工作流，而无需操作员
+//! 说出"工作流"这个词。策略在此回答"是否应编排？"——
+//! 父提示词仍然**告知操作员**预期的形状，并可能在调用
+//! `workflow` / `plan` 之前通过 `request_user_input`（TUI 模态框）询问设置问题。
 //!
-//! Pure decision helper; does not start workflows itself. Public API is live for
-//! unit tests and upcoming runtime wiring — keep reachable from non-test builds
-//! via [`soft_auto_policy_is_linked`].
+//! 纯决策辅助；自身不启动工作流。公共 API 对
+//! 单元测试和即将到来的运行时连接是实时的 —— 通过
+//! [`soft_auto_policy_is_linked`] 保持从非测试构建可达。
 
-// Soft-auto policy is consulted primarily by the model (prompt) and tests today;
-// runtime auto-launch will call [`evaluate_workflow_trigger`] next. Until then,
-// private helpers trip `dead_code` on bin builds under `-D warnings`.
+// 软自动策略主要由模型（提示词）和今天测试使用；
+// 运行时自动启动将在下一步调用 [`evaluate_workflow_trigger`]。在此之前，
+// 私有辅助方法会在 `-D warnings` 下的二进制构建中触发 `dead_code`。
 #![allow(dead_code)]
 
-/// Signals the parent can supply without full conversation replay.
+/// 父级可以在无需完整对话回放的情况下提供的信号。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowTriggerSignals {
-    /// Approximate open file / edit scope count for the current ask.
+    /// 当前请求的大致打开文件/编辑范围数量。
     pub distinct_file_scopes: usize,
-    /// True when the operator is mid interactive multi-turn design/chat.
+    /// 当操作员处于交互式多轮设计/聊天中时为 true。
     pub highly_interactive: bool,
-    /// True when the ask requires writes but no clear phase/child decomposition.
+    /// 当请求需要写入但没有清晰阶段/子任务分解时为 true。
     pub risky_writes_unclear_decomposition: bool,
-    /// Estimated child count if Workflow launched now.
+    /// 如果现在启动工作流，估计的子任务数量。
     pub estimated_children: usize,
-    /// Soft cap from `[workflow].auto_start_child_limit` (default 8).
+    /// 来自 `[workflow].auto_start_child_limit` 的软限制（默认 8）。
     pub auto_start_child_limit: usize,
-    /// Approximate parent context tokens in use (for high-volume signal).
+    /// 正在使用的近似父上下文 token 数（用于高容量信号）。
     pub context_tokens: usize,
-    /// Threshold above which high context volume favors Workflow.
+    /// 高上下文量有利于工作流的阈值。
     pub high_context_token_threshold: usize,
 }
 
@@ -49,12 +48,12 @@ impl WorkflowTriggerSignals {
     }
 }
 
-/// Decision for automatic Workflow launch / recommendation.
+/// 自动工作流启动/推荐的决策。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowTriggerDecision {
-    /// Launch or recommend Workflow.
+    /// 启动或推荐工作流。
     Trigger { reason: &'static str },
-    /// Suppress automatic Workflow; prefer direct tools / single agent.
+    /// 抑制自动工作流；首选直接工具/单代理。
     Suppress { reason: &'static str },
 }
 
@@ -72,11 +71,11 @@ impl WorkflowTriggerDecision {
     }
 }
 
-/// Evaluate whether automatic Workflow is appropriate for this user ask.
+/// 评估自动工作流是否适合此用户请求。
 ///
-/// Suppression wins over trigger when both could apply (noisy auto-orchestration
-/// is worse than missing a fan-out). Prompt guidance in Agent/Operate modes
-/// should stay aligned with these rules.
+/// 当两者都可能适用时，抑制优先于触发（嘈杂的自动编排
+/// 比错过扇出更糟糕）。Agent/Operate 模式中的提示词指导
+/// 应与这些规则保持一致。
 #[must_use]
 pub fn evaluate_workflow_trigger(
     user_text: &str,
@@ -85,7 +84,7 @@ pub fn evaluate_workflow_trigger(
     let text = user_text.trim();
     let lower = text.to_ascii_lowercase();
 
-    // --- Hard suppressions (AC) ---
+    // --- 硬抑制（AC） ---
     if signals.highly_interactive {
         return WorkflowTriggerDecision::Suppress {
             reason: "highly interactive task — keep turn-by-turn",
@@ -120,7 +119,7 @@ pub fn evaluate_workflow_trigger(
         };
     }
 
-    // --- Triggers (AC) ---
+    // --- 触发条件（AC） ---
     if signals.distinct_file_scopes >= 3 {
         return WorkflowTriggerDecision::Trigger {
             reason: "independent scopes across multiple files",
@@ -153,7 +152,7 @@ pub fn evaluate_workflow_trigger(
 }
 
 fn child_overhead_exceeds_benefit(lower: &str, signals: &WorkflowTriggerSignals) -> bool {
-    // Tiny asks or explicit single-step language — spawn cost dominates.
+    // 微小的请求或明确的单步语言 —— 启动成本占主导地位。
     if signals.estimated_children == 1 {
         return true;
     }
@@ -173,7 +172,7 @@ fn child_overhead_exceeds_benefit(lower: &str, signals: &WorkflowTriggerSignals)
 
 fn is_simple_command_or_factual_question(lower: &str, original: &str) -> bool {
     if lower.starts_with('/') {
-        // Slash commands are UI routing, not orchestration.
+        // 斜杠命令是 UI 路由，不是编排。
         return true;
     }
     let factual_prefixes = [
@@ -210,7 +209,7 @@ fn is_simple_command_or_factual_question(lower: &str, original: &str) -> bool {
     {
         return true;
     }
-    // Short yes/no or status pings.
+    // 简短的是/否或状态 ping。
     matches!(
         lower.trim_end_matches(['?', '.', '!']),
         "ok" | "thanks" | "thank you" | "status" | "ping" | "hello" | "hi"
@@ -234,7 +233,7 @@ fn is_one_file_edit(lower: &str, signals: &WorkflowTriggerSignals) -> bool {
         ];
         return editish.iter().any(|n| lower.contains(n));
     }
-    // Explicit single-file phrasing without scope signal.
+    // 没有范围信号的显式单文件措辞。
     lower.contains("only this file")
         || lower.contains("just this file")
         || lower.contains("single file")
@@ -293,10 +292,10 @@ fn has_independent_verification_language(lower: &str) -> bool {
     NEEDLES.iter().any(|n| lower.contains(n))
 }
 
-/// Reachability probe so the soft-auto surface stays linked in release builds.
+/// 可达性探测，以便软自动表面在发布构建中保持链接。
 ///
-/// Returns `true` when a canonical fan-out ask would trigger Workflow under
-/// product defaults (used by registry/tool wiring smoke tests).
+/// 当典型扇出请求在产品默认值下触发工作流时返回 `true`
+///（由注册表/工具连接冒烟测试使用）。
 #[must_use]
 pub fn soft_auto_policy_is_linked() -> bool {
     evaluate_workflow_trigger(

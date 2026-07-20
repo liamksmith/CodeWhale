@@ -7,11 +7,11 @@ use super::error::Result;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Decision {
-    /// Command may run without further approval.
+    /// 命令可直接运行，无需进一步审批。
     Allow,
-    /// Request explicit user approval; rejected outright when running with `approval_policy="never"`.
+    /// 请求用户明确批准；当使用 `approval_policy="never"` 运行时直接拒绝。
     Prompt,
-    /// Command is blocked without further consideration.
+    /// 命令被阻止，不进行进一步考虑。
     Forbidden,
 }
 

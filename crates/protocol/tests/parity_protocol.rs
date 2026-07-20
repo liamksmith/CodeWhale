@@ -230,9 +230,9 @@ fn runtime_event_envelope_preserves_unknown_fields() {
 
 #[test]
 fn user_input_request_event_frame_round_trip() {
-    // issue #3102: the new EventFrame::UserInputRequest variant must tag as
-    // "user_input_request" and round-trip the full nested question schema,
-    // including the allow_free_text / multi_select booleans.
+    // issue #3102：新的 EventFrame::UserInputRequest 变体必须标记为
+    // "user_input_request" 并完整往返嵌套的问题模式，
+    // 包括 allow_free_text / multi_select 布尔值。
     let frame = EventFrame::UserInputRequest {
         request: UserInputRequestEvent {
             call_id: "call-1".to_string(),
@@ -270,7 +270,7 @@ fn user_input_request_event_frame_round_trip() {
         "TUI"
     );
 
-    // Round-trips back through serde.
+    // 通过 serde 执行往返反序列化。
     let decoded: EventFrame =
         serde_json::from_value(encoded).expect("deserialize user input frame");
     let EventFrame::UserInputRequest { request } = decoded else {
@@ -284,8 +284,8 @@ fn user_input_request_event_frame_round_trip() {
 
 #[test]
 fn user_input_request_event_defaults_flags_when_omitted() {
-    // Backwards compatibility: omitting allow_free_text/multi_select in the
-    // wire JSON must deserialize both to false (matching the TUI's leniency).
+    // 向后兼容性：在线 JSON 中省略 allow_free_text/multi_select
+    // 必须反序列化两者为 false（匹配 TUI 的宽容性）。
     let input = json!({
         "event": "user_input_request",
         "request": {
@@ -313,8 +313,8 @@ fn user_input_request_event_defaults_flags_when_omitted() {
 
 #[test]
 fn submit_user_input_app_request_round_trip() {
-    // issue #3102: the headless client→server reply variant must tag as
-    // "submit_user_input" and carry the answer list.
+    // issue #3102：无头客户端→服务端回复变体必须标记为
+    // "submit_user_input" 并携带答案列表。
     let req = AppRequest::SubmitUserInput {
         request_id: "ui-1".to_string(),
         answers: vec![UserInputAnswerEvent {

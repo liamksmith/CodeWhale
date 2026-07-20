@@ -1,4 +1,4 @@
-//! `/setup` command.
+//! `/setup` 命令。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::config::ApiProvider;

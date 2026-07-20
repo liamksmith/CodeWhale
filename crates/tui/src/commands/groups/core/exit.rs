@@ -1,4 +1,4 @@
-//! `/exit` command.
+//! `/exit` 命令。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

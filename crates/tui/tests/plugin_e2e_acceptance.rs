@@ -1,11 +1,11 @@
-//! Cucumber E2E acceptance tests for plugin discovery and listing.
+//! 插件发现和列表的 Cucumber E2E 验收测试。
 //!
-//! Tests the plugin frontmatter scanner end-to-end from the binary level:
-//! - Scripts with valid `# name:` frontmatter are discovered
-//! - Approval levels (auto, suggest, required) are parsed correctly
-//! - Hidden files and README.md are ignored
-//! - Empty and missing directories are handled gracefully
-//! - The binary still loads after the plugin module migration
+//! 从二进制级别端到端测试插件前置声明扫描器：
+//! - 具有有效 `# name:` 前置声明的脚本被发现
+//! - 审批级别（auto、suggest、required）被正确解析
+//! - 隐藏文件和 README.md 被忽略
+//! - 空目录和缺失目录被优雅处理
+//! - 插件模块迁移后二进制文件仍能加载
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -24,12 +24,12 @@ const EMPTY_SCENARIO: &str = "Empty plugin directory reports no plugins";
 const MISSING_SCENARIO: &str = "Missing plugin directory reports the path";
 
 // ---------------------------------------------------------------------------
-// Test-local plugin scanner
+// 测试本地插件扫描器
 //
-// Mirrors the real `scan_plugin_dir` from `crates/tui/src/tools/plugin.rs`
-// so the test can run as a standalone integration test without relying on
-// `#[path]` (which breaks on internal `crate::` and `super::` imports).
-// The contract (frontmatter format, skip rules) matches exactly.
+// 镜像 `crates/tui/src/tools/plugin.rs` 中的真实 `scan_plugin_dir`，
+// 以便测试可以作为独立的集成测试运行，而无需依赖
+// `#[path]`（它会破坏内部 `crate::` 和 `super::` 导入）。
+// 契约（前置声明格式、跳过规则）完全匹配。
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +82,7 @@ fn parse_frontmatter(content: &str) -> Option<TestPluginMeta> {
     Some(TestPluginMeta {
         name,
         description: if description.is_empty() {
-            "User-provided plugin tool".to_string()
+            "用户提供的插件工具".to_string()
         } else {
             description
         },
@@ -125,13 +125,13 @@ fn scan_plugin_dir(dir: &std::path::Path) -> Vec<(PathBuf, TestPluginMeta)> {
 }
 
 // ---------------------------------------------------------------------------
-// Cucumber world
+// Cucumber 世界
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, cucumber::World)]
 struct PluginE2EWorld {
-    /// TempDir holding the plugin directory. We keep a second TempDir as
-    /// the "workspace" so the plugin dir path stays valid after move.
+    /// 保存插件目录的 TempDir。我们保留第二个 TempDir 作为
+    /// "工作区"，以便插件目录路径在移动后保持有效。
     _workspace: Option<TempDir>,
     plugin_dir: Option<TempDir>,
     discovered: Option<Vec<(PathBuf, TestPluginMeta)>>,
@@ -139,7 +139,7 @@ struct PluginE2EWorld {
 }
 
 // ---------------------------------------------------------------------------
-// Given steps
+// Given 步骤
 // ---------------------------------------------------------------------------
 
 #[given("an offline CodeWhale workspace with a configured plugin directory")]
@@ -192,7 +192,7 @@ fn plugin_directory_contains(world: &mut PluginE2EWorld, step: &cucumber::gherki
         std::fs::write(&script_path, &script_content)
             .unwrap_or_else(|e| panic!("write plugin script {name}.sh: {e}"));
 
-        // Make executable on Unix
+        // 在 Unix 上使其可执行
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -201,7 +201,7 @@ fn plugin_directory_contains(world: &mut PluginE2EWorld, step: &cucumber::gherki
         }
     }
 
-    // Write a README.md and a hidden file that should be ignored
+    // 写入一个应被忽略的 README.md 和一个隐藏文件
     std::fs::write(dir.path().join("README.md"), "# Plugin Docs\n").expect("write README.md");
     std::fs::write(
         dir.path().join(".hidden_script.sh"),
@@ -212,7 +212,7 @@ fn plugin_directory_contains(world: &mut PluginE2EWorld, step: &cucumber::gherki
 
 #[given("the plugin directory is empty")]
 fn plugin_directory_empty(world: &mut PluginE2EWorld) {
-    // Replace with a fresh empty directory
+    // 替换为新的空目录
     let dir = TempDir::new().expect("empty plugin tempdir");
     world.plugin_dir = Some(dir);
 }
@@ -221,11 +221,11 @@ fn plugin_directory_empty(world: &mut PluginE2EWorld) {
 fn plugin_directory_does_not_exist(world: &mut PluginE2EWorld) {
     let base = TempDir::new().expect("base tempdir for non-existent path");
     let non_existent = base.path().join("nonexistent");
-    // Ensure it truly doesn't exist
+    // 确保它真的不存在
     let _ = std::fs::remove_dir_all(&non_existent);
-    // Store the base so the path stays valid for the lifetime of the test
+    // 存储 base，以便路径在测试生命周期内保持有效
     world._workspace = Some(base);
-    // Remove the previous plugin_dir so scanning uses the path deliberately
+    // 移除之前的 plugin_dir，以便扫描使用故意设置的路径
     world.plugin_dir = None;
     world.scanner_message = Some(format!(
         "No plugin directory found at {}",
@@ -234,7 +234,7 @@ fn plugin_directory_does_not_exist(world: &mut PluginE2EWorld) {
 }
 
 // ---------------------------------------------------------------------------
-// When steps
+// When 步骤
 // ---------------------------------------------------------------------------
 
 #[when("the plugin scanner discovers plugins")]
@@ -249,12 +249,12 @@ fn plugin_scanner_discovers_plugins(world: &mut PluginE2EWorld) {
 
 #[when("the plugin scanner runs")]
 fn plugin_scanner_runs(world: &mut PluginE2EWorld) {
-    // Use the stored non-existent path
+    // 使用存储的不存在路径
     let msg = world
         .scanner_message
         .as_ref()
         .expect("missing path message");
-    // Extract the path from the message
+    // 从消息中提取路径
     let path_str = msg
         .strip_prefix("No plugin directory found at ")
         .expect("message format");
@@ -264,7 +264,7 @@ fn plugin_scanner_runs(world: &mut PluginE2EWorld) {
 }
 
 // ---------------------------------------------------------------------------
-// Then steps
+// Then 步骤
 // ---------------------------------------------------------------------------
 
 #[then(regex = r"^the scanner should report (\d+) plugins?$")]
@@ -348,10 +348,10 @@ fn scanner_should_report_missing_path(world: &mut PluginE2EWorld) {
 }
 
 // ---------------------------------------------------------------------------
-// Binary smoke test
+// 二进制冒烟测试
 // ---------------------------------------------------------------------------
 
-/// Prove the binary still loads after the plugin module extraction.
+/// 证明插件模块提取后二进制文件仍能加载。
 #[tokio::test(flavor = "current_thread")]
 async fn plugin_module_does_not_break_binary_load() {
     let output = Command::new(codewhale_tui_binary())
@@ -373,7 +373,7 @@ async fn plugin_module_does_not_break_binary_load() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario runners
+// 场景运行器
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
@@ -409,7 +409,7 @@ async fn run_scenario(name: &'static str, expected_steps: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// 辅助方法
 // ---------------------------------------------------------------------------
 
 fn codewhale_tui_binary() -> PathBuf {

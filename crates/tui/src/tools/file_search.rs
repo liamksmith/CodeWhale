@@ -1,4 +1,4 @@
-//! File search tool with fuzzy matching and scoring.
+//! 带模糊匹配和评分的文件搜索工具。
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -44,25 +44,25 @@ impl ToolSpec for FileSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query (file name or path fragment)."
+                    "description": "搜索查询（文件名或路径片段）。"
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional base path to search (relative to workspace)."
+                    "description": "可选的搜索基础路径（相对于工作空间）。"
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 20)."
+                    "description": "返回的最大结果数（默认：20）。"
                 },
                 "extensions": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional list of file extensions to include (e.g. [\"rs\", \"md\"])."
+                    "description": "可选的包含文件扩展名列表（例如 [\"rs\", \"md\"]）。"
                 },
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional glob patterns to exclude, matching grep_files' convention (e.g. [\"target/**\", \"*.lock\"])."
+                    "description": "可选的排除 glob 模式，遵循 grep_files 的约定（例如 [\"target/**\", \"*.lock\"]）。"
                 }
             },
             "required": ["query"]
@@ -80,7 +80,7 @@ impl ToolSpec for FileSearchTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let query = required_str(&input, "query")?.trim();
         if query.is_empty() {
-            return Err(ToolError::invalid_input("query cannot be empty"));
+            return Err(ToolError::invalid_input("查询不能为空"));
         }
 
         let limit = optional_u64(&input, "limit", 20).clamp(1, 200) as usize;
@@ -162,13 +162,13 @@ where
     let joined = result.map_err(|_| file_search_timeout(timeout))?;
     joined.map_err(|err| {
         ToolError::execution_failed(format!(
-            "file_search worker failed before completion: {err}"
+            "file_search 工作线程在完成前失败: {err}"
         ))
     })?
 }
 
 fn file_search_cancelled() -> ToolError {
-    ToolError::execution_failed("file_search cancelled before completion")
+    ToolError::execution_failed("file_search 在完成前被取消")
 }
 
 fn file_search_timeout(timeout: Duration) -> ToolError {
@@ -239,7 +239,7 @@ fn search_files(
 
     if !base_path.exists() {
         return Err(ToolError::invalid_input(format!(
-            "Base path does not exist: {}",
+            "基础路径不存在: {}",
             base_path.display()
         )));
     }
@@ -536,11 +536,11 @@ mod tests {
         let err = tool
             .execute(json!({"query": "needle"}), &ctx)
             .await
-            .expect_err("cancelled file_search should return an error");
+            .expect_err("取消的 file_search 应返回错误");
 
         assert!(
             format!("{err:?}").contains("cancelled"),
-            "unexpected error: {err:?}"
+            "意外错误: {err:?}"
         );
     }
 
@@ -551,11 +551,11 @@ mod tests {
             Ok(Vec::new())
         })
         .await
-        .expect_err("slow file_search worker should time out");
+        .expect_err("慢 file_search 工作线程应超时");
 
         assert!(
             matches!(err, ToolError::Timeout { seconds: 1 }),
-            "unexpected error: {err:?}"
+            "意外错误: {err:?}"
         );
     }
 

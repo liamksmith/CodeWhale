@@ -1,13 +1,12 @@
-//! `image_ocr` tool — extract text from an image via local OCR.
+//! `image_ocr` 工具——通过本地 OCR 从图像中提取文本。
 //!
-//! Tesseract is the cross-platform workhorse for "convert this image
-//! to text". On macOS we also use the built-in Vision framework, so
-//! screenshots keep working on a clean machine without making the
-//! user install a separate OCR binary first.
+//! Tesseract 是"将图像转换为文本"的跨平台主力工具。
+//! 在 macOS 上，我们还使用内置的 Vision 框架，因此
+//! 截图在干净的机器上仍然可以工作，而无需用户先安装
+//! 单独的 OCR 二进制文件。
 //!
-//! Surfacing OCR as a model-callable tool means the model can read an
-//! asset the user drops into the workspace without bouncing through
-//! `exec_shell`.
+//! 将 OCR 展现为模型可调用的工具意味着模型可以读取
+//! 用户放入工作区的资源，而无需通过 `exec_shell` 间接实现。
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,8 +16,7 @@ use serde_json::{Value, json};
 
 use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str};
 
-/// Tool implementing `image_ocr`. Runs a local OCR backend and returns the
-/// extracted text on success.
+/// 实现 `image_ocr` 的工具。运行本地 OCR 后端并在成功时返回提取的文本。
 pub struct ImageOcrTool;
 
 #[async_trait]
@@ -86,8 +84,8 @@ pub(crate) fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
 }
 
 fn ocr_with_tesseract(tesseract: &str, image_path: &Path) -> Result<String, ToolError> {
-    // `tesseract <image> -` writes the recognised text to stdout. The trailing
-    // `-` is documented and produces text mode by default (no `.txt` file).
+    // `tesseract <image> -` 将识别出的文本写入标准输出。尾部的
+    // `-` 是文档化行为，默认产生文本模式（不会生成 .txt 文件）。
     let mut cmd = Command::new(tesseract);
     cmd.arg(image_path);
     cmd.arg("-");
@@ -107,8 +105,8 @@ fn ocr_with_tesseract(tesseract: &str, image_path: &Path) -> Result<String, Tool
         )));
     }
 
-    // Tesseract appends a trailing form-feed on some platforms; trim trailing
-    // whitespace so the result reads cleanly inline.
+    // Tesseract 在某些平台上会附加尾部的换页符；修剪尾部空白，
+    // 使结果在内联显示时更整洁。
     Ok(String::from_utf8_lossy(&output.stdout)
         .trim_end()
         .to_string())
@@ -167,8 +165,8 @@ mod macos_vision {
         })?;
 
         let request = new_object(request_class, "VNRecognizeTextRequest")?;
-        // VNRequestTextRecognitionLevelAccurate is 0. Use accurate mode for
-        // screenshots and receipts; the tool is user-facing, not latency-critical.
+        // VNRequestTextRecognitionLevelAccurate 为 0。对截图和收据使用精确模式；
+        // 该工具面向用户，对延迟不敏感。
         unsafe {
             let _: () = msg_send![&*request, setRecognitionLevel: 0usize];
             let _: () = msg_send![&*request, setUsesLanguageCorrection: true];
@@ -274,10 +272,10 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    /// Resolve the checked-in OCR fixture path. The image lives at
-    /// `crates/tui/tests/fixtures/ocr_hello.png` (300x100 grayscale,
-    /// "HELLO OCR" rendered in Helvetica) and is committed for the
-    /// happy-path round-trip below.
+    /// 解析检入的 OCR 测试夹具路径。图像位于
+    /// `crates/tui/tests/fixtures/ocr_hello.png`（300x100 灰度，
+    /// "HELLO OCR" 渲染为 Helvetica），已提交用于下面的
+    /// 正常路径往返测试。
     fn ocr_fixture_path() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr_hello.png")
     }
@@ -303,28 +301,27 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("does not exist"),
-            "error must call out missing path; got {msg}"
+            "错误必须指出路径不存在；得到 {msg}"
         );
     }
 
     #[tokio::test]
     async fn image_ocr_recovers_hello_from_fixture_image() {
         if !ocr_available() {
-            // Tool wouldn't be registered without a local OCR backend — mirror
-            // that here so the suite stays green on CI images that
-            // intentionally omit OCR tooling.
+            // 没有本地 OCR 后端时不会注册此工具——
+            // 在这里镜像该行为，使测试套件在有意省略
+            // OCR 工具的 CI 镜像上保持绿色。
             return;
         }
         let fixture = ocr_fixture_path();
         if !fixture.exists() {
-            // Fixture not committed (sparse / shallow checkout). Skip
-            // silently rather than failing the suite.
+            // 夹具未提交（稀疏/浅层检出）。静默跳过
+            // 而不是导致套件失败。
             return;
         }
         let tmp = tempdir().expect("tempdir");
-        // Stage the fixture under the workspace so the path resolver
-        // accepts the relative input — keeps the test independent of
-        // the workspace boundary check inside `resolve_path`.
+        // 将夹具复制到工作区下，使路径解析器接受相对路径输入——
+        // 保持测试独立于 `resolve_path` 内部的工作区边界检查。
         let staged = tmp.path().join("ocr_hello.png");
         fs::copy(&fixture, &staged).unwrap();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
@@ -333,12 +330,12 @@ mod tests {
             .await
             .expect("execute");
         assert!(result.success);
-        // Tesseract reliably recovers "HELLO OCR" from the rendered
-        // PNG; allow either spacing variant.
+        // Tesseract 能够可靠地从渲染的 PNG 中恢复出 "HELLO OCR"；
+        // 允许任意一种间距变体。
         let normalised = result.content.to_uppercase();
         assert!(
             normalised.contains("HELLO") && normalised.contains("OCR"),
-            "expected OCR to recover HELLO OCR; got {:?}",
+            "期望 OCR 恢复出 HELLO OCR；得到 {:?}",
             result.content
         );
     }

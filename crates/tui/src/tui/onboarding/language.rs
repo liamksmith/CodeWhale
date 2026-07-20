@@ -1,9 +1,8 @@
-//! Language picker for first-run onboarding (#566).
+//! 首次运行引导的语言选择器 (#566)。
 //!
-//! Surfaces every locale the TUI ships translations for, plus an `auto`
-//! option that defers to `LC_ALL` / `LANG`. Selection persists via
-//! `Settings::save` immediately so the rest of onboarding (and every
-//! subsequent session) reads the chosen tag.
+//! 展示 TUI 所发布翻译的每个语言区域，以及一个 `auto` 选项，
+//! 该选项会委托给 `LC_ALL` / `LANG`。选择会立即通过 `Settings::save` 持久化，
+//! 因此引导的其余部分（以及后续每个会话）都能读取所选的标签。
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -12,10 +11,10 @@ use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
 
-/// Locale options shown in the picker. Order matches the keyboard hotkeys.
-/// Each entry is `(hotkey, settings_tag, native_name, english_label)`.
-/// `settings_tag` is what `Settings::set("locale", …)` accepts and what
-/// `localization::Locale` resolves on next read.
+/// 选择器中显示的区域设置选项。顺序与键盘快捷键匹配。
+/// 每个条目为 `(hotkey, settings_tag, native_name, english_label)`。
+/// `settings_tag` 是 `Settings::set("locale", …)` 所接受的，
+/// 也是 `localization::Locale` 在下次读取时解析的值。
 pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "auto", "Auto-detect", "(LC_ALL / LANG)"),
     ('2', "en", "English", ""),
@@ -95,9 +94,9 @@ mod tests {
     use super::*;
     use crate::localization::Locale;
 
-    /// Every locale we ship translations for must be offered in the picker,
-    /// otherwise the footer advertises hotkeys that select nothing and users
-    /// can never reach a supported UI language (#3929).
+    /// 我们拥有翻译的每个语言区域都必须在选择器中提供，
+    /// 否则底部会宣传无法选择任何内容的快捷键，
+    /// 用户就永远无法切换到受支持的 UI 语言 (#3929)。
     #[test]
     fn picker_offers_every_shipped_locale() {
         let offered: Vec<&str> = LANGUAGE_OPTIONS.iter().map(|(_, tag, _, _)| *tag).collect();
@@ -114,8 +113,8 @@ mod tests {
         }
     }
 
-    /// Hotkeys must be the contiguous digits `1..=N` so the footer's "1-N"
-    /// range stays truthful and `KeyCode::Char` lookups resolve.
+    /// 快捷键必须是连续的数字 `1..=N`，这样底部的"1-N"范围始终保持真实，
+    /// 并且 `KeyCode::Char` 查找能够解析。
     #[test]
     fn picker_hotkeys_are_contiguous_digits() {
         for (idx, (hotkey, tag, _, _)) in LANGUAGE_OPTIONS.iter().enumerate() {

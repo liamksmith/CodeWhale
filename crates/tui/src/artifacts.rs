@@ -1,7 +1,7 @@
-//! Session-scoped artifact metadata.
+//! 会话级别的人工产物元数据。
 //!
-//! Large tool outputs are written under the owning session directory and saved
-//! sessions keep a durable metadata index for resume/listing flows.
+//! 大型工具输出会写入所属会话目录下，保存的会话会维护持久的
+//! 元数据索引以支持恢复/列表流程。
 
 use std::io;
 use std::path::Component;
@@ -210,9 +210,8 @@ impl From<&ArtifactRecord> for TranscriptArtifactRef {
 
 #[must_use]
 pub fn render_transcript_artifact_ref(reference: &TranscriptArtifactRef) -> String {
-    // The model sees several identifiers in this block. Keep a literal
-    // retrieve command next to them so it does not have to infer which
-    // field is accepted by `retrieve_tool_result`.
+    // 模型在此块中会看到多个标识符。在旁边保留一条字面的
+    // retrieve 命令，使其不必推断哪个字段被 `retrieve_tool_result` 接受。
     format!(
         "[artifact: {tool}]\n\
          id:           {id}\n\
@@ -285,7 +284,7 @@ mod tests {
         assert!(rendered.contains("path:         artifacts/art_call-big.txt"));
         assert!(
             rendered.contains("retrieve:     retrieve_tool_result ref=art_call-big"),
-            "rendered block must embed the literal retrieve command: {rendered}"
+            "渲染块必须包含字面的 retrieve 命令: {rendered}"
         );
     }
 

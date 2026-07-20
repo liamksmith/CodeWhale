@@ -1,8 +1,8 @@
-//! Config command area: settings, modes, themes, trust, and status surfaces.
+//! 配置命令区域：设置、模式、主题、信任和状态界面。
 
-// This group dir intentionally has a `config.rs` child module with the same
-// name. The module_inception allow is a permanent structure rationale, not
-// migration scaffolding; see docs/architecture/command-dispatch.md.
+// 此组目录故意包含一个同名的 `config.rs` 子模块。
+// `module_inception` 允许是永久性的结构设计理由，而非迁移临时方案；
+// 参见 docs/architecture/command-dispatch.md。
 #[allow(clippy::module_inception)]
 pub mod config;
 mod status;
@@ -35,8 +35,8 @@ impl CommandGroup for ConfigCommands {
 
 static CONFIG_INFO: CommandInfo = CommandInfo {
     name: "config",
-    // /experiments is a discoverable entry to the same view: the Experimental
-    // section exposes the Workflow, goal, and sub-agent opt-ins (#3182).
+    // /experiments 是同一视图的可发现入口：Experimental
+    // 部分公开了 Workflow、goal 和 sub-agent 的选择加入选项 (#3182)。
     aliases: &["experiments", "experimental"],
     usage: "/config [ask-rules|status|<key> [value]]",
     description_id: MessageId::CmdConfigDescription,

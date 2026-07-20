@@ -1,4 +1,4 @@
-//! Undo, retry, edit, and diff commands.
+//! 撤销、重试、编辑和差异命令。
 
 use crate::dependencies::{ExternalTool, Git};
 use crate::models::ContentBlock;
@@ -7,15 +7,13 @@ use crate::tui::history::HistoryCell;
 
 use super::CommandResult;
 
-/// Remove last message pair (user + assistant).
+/// 移除最后一对消息（用户 + 助手）。
 ///
-/// This is the old `/undo` behaviour — it removes the most recent
-/// user+assistant conversation pair from history and API messages.
-/// The new `/undo` first tries to revert workspace files via
-/// [`patch_undo`]; if no snapshots are available it falls back to
-/// this function.
+/// 这是旧的 `/undo` 行为——它从历史和 API 消息中移除最新的
+/// 用户+助手对话对。新的 `/undo` 首先尝试通过 [`patch_undo`]
+/// 恢复工作区文件；如果没有快照可用，则回退到此函数。
 pub fn undo_conversation(app: &mut App) -> CommandResult {
-    // Remove from display history (up to the last user message)
+    // 从显示历史中移除（直到最后一条用户消息）
     let mut removed_count = 0;
     while !app.history.is_empty() {
         let last_is_user = matches!(app.history.last(), Some(HistoryCell::User { .. }));
@@ -26,7 +24,7 @@ pub fn undo_conversation(app: &mut App) -> CommandResult {
         }
     }
 
-    // Remove from API messages
+    // 从 API 消息中移除
     while let Some(last) = app.api_messages.last() {
         if last.role == "user" {
             app.api_messages.pop();
@@ -36,7 +34,7 @@ pub fn undo_conversation(app: &mut App) -> CommandResult {
     }
 
     if removed_count > 0 {
-        // Keep tool/index mappings consistent after truncation.
+        // 截断后保持工具/索引映射一致。
         app.tool_cells.clear();
         app.tool_details_by_cell.clear();
         app.exploring_entries.clear();
@@ -131,15 +129,15 @@ fn tool_result_id(block: &ContentBlock) -> Option<&String> {
     }
 }
 
-/// Revert the most recent write tool (apply_patch/edit_file/write_file) or turn.
+/// 回滚最近的写入工具（apply_patch/edit_file/write_file）或轮次。
 ///
-/// Opens the side-git snapshot repo and finds the most recent snapshot,
-/// preferring per-tool snapshots (`tool:*`) over pre-turn snapshots
-/// (`pre-turn:*`). Restores files from that snapshot and shows a diff
-/// summary. Falls back to conversation undo when no snapshots exist.
+/// 打开侧边 git 快照仓库并查找最近的快照，优先选择
+/// 每个工具的快照（`tool:*`）而不是轮次前快照（`pre-turn:*`）。
+/// 从该快照恢复文件并显示差异摘要。当没有快照存在时
+/// 回退到对话撤销。
 ///
-/// Posts a `HistoryCell::System` entry so the user can see what was
-/// reverted in the transcript.
+/// 发布一个 `HistoryCell::System` 条目，以便用户可以在对话记录中
+/// 看到回滚了什么。
 pub fn patch_undo(app: &mut App) -> CommandResult {
     let workspace = app.workspace.clone();
 
@@ -164,10 +162,9 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
         return CommandResult::message("No snapshots found to undo — nothing to revert.");
     }
 
-    // Prefer the newest revertable `tool:` / `pre-turn:` snapshot whose
-    // tracked content differs from the current workspace. This lets
-    // repeated `/undo` walk back through older snapshots instead of
-    // restoring the same no-op target forever.
+    // 优先选择最新的可回滚 `tool:` / `pre-turn:` 快照，其
+    // 跟踪内容与当前工作区不同。这允许重复 `/undo` 向后
+    // 遍历更旧的快照，而不是永远恢复同一个无变化的目标。
     let target = snapshots
         .iter()
         .filter(|s| s.label.starts_with("tool:") || s.label.starts_with("pre-turn:"))
@@ -192,7 +189,7 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
         prune_undone_turn_context(app);
     }
 
-    // Show diff stat so the user knows what changed.
+    // 显示差异统计，让用户知道发生了什么变化。
     let diff_stat = Git::command()
         .map(|mut git| {
             git.args(["diff", "--stat"])
@@ -222,7 +219,7 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
         }
     };
 
-    // Post a system cell so the reverted state is visible in the transcript.
+    // 发布系统单元格，使回滚状态在对话记录中可见。
     app.push_history_cell(HistoryCell::System {
         content: format!(
             "/undo reverted workspace to snapshot '{}' ({})",
@@ -243,12 +240,11 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
     )
 }
 
-/// Load the last user message back into the composer for editing.
+/// 将最后一条用户消息加载回编辑器以供编辑。
 ///
-/// Searches `app.history` for the most recent `HistoryCell::User`, copies its
-/// content into `app.input`, and positions the cursor at the end so the user
-/// can edit and press Enter to resubmit. The original exchange stays visible
-/// in the transcript.
+/// 搜索 `app.history` 中最近的 `HistoryCell::User`，将其内容
+/// 复制到 `app.input`，并将游标定位在末尾，以便用户可以编辑
+/// 并按 Enter 重新提交。原始的交互保留在对话记录中可见。
 pub fn edit(app: &mut App) -> CommandResult {
     let last_user = app.history.iter().rev().find_map(|cell| match cell {
         HistoryCell::User { content } => Some(content.clone()),
@@ -268,11 +264,11 @@ pub fn edit(app: &mut App) -> CommandResult {
     }
 }
 
-/// Show git diff output since session start.
+/// 显示自会话开始以来的 git 差异输出。
 ///
-/// Runs `git diff --stat` and `git diff --name-only` in the workspace
-/// directory. Displays which files have changed and a stat summary. If no
-/// changes exist or git fails, returns an appropriate message.
+/// 在工作区目录中运行 `git diff --stat` 和 `git diff --name-only`。
+/// 显示哪些文件已更改以及统计摘要。如果没有更改或 git 失败，
+/// 返回适当的消息。
 pub fn diff(app: &mut App) -> CommandResult {
     let workspace = app.workspace.clone();
 
@@ -304,9 +300,8 @@ pub fn diff(app: &mut App) -> CommandResult {
             let file_count = files.len();
             let file_list = files.join("\n");
 
-            // Detect rename entries (e.g. "foo -> bar") and exclude them
-            // from the file-count header so the user sees only actual
-            // modifications.
+            // 检测重命名条目（例如 "foo -> bar"）并将其从
+            // 文件计数标题中排除，以便用户只看到实际修改。
             let renamed_count = files.iter().filter(|f| f.contains(" -> ")).count();
             let summary = if renamed_count > 0 {
                 format!("Changed files ({file_count}, {renamed_count} renamed):\n{file_list}")
@@ -328,7 +323,7 @@ pub fn diff(app: &mut App) -> CommandResult {
     }
 }
 
-/// Retry last request - remove last exchange and re-send the user's message
+/// 重试最后一条请求——移除最后一次交换并重新发送用户的消息
 pub fn retry(app: &mut App) -> CommandResult {
     let last_user_input = app.history.iter().rev().find_map(|cell| match cell {
         HistoryCell::User { content } => Some(content.clone()),

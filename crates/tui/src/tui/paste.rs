@@ -1,9 +1,9 @@
-//! Paste-burst handling — turn rapid keystrokes (terminals without bracketed
-//! paste) into a single committed buffer instead of N individual chars.
+//! 粘贴突发处理——将快速击键（没有括号粘贴的终端）转换为单个提交的
+//! 缓冲区，而不是 N 个单独的字符。
 //!
-//! Extracted from `tui/ui.rs` (P1.2). The owning state machine lives on
-//! `App.paste_burst` (`tui::paste_burst`); these helpers wire it to the key
-//! event loop and the composer's text buffer.
+//! 从 `tui/ui.rs`（P1.2）提取。所属状态机位于
+//! `App.paste_burst`（`tui::paste_burst`）；这些辅助函数将其连接到
+//! 按键事件循环和编辑器的文本缓冲区。
 
 use std::time::Instant;
 
@@ -12,20 +12,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::app::{App, looks_like_slash_command_input};
 use super::paste_burst::CharDecision;
 
-/// Process a key in the context of paste-burst detection. Returns `true`
-/// when the key was fully handled by the paste machinery (caller skips
-/// further input handling); `false` when the key still needs the normal
-/// composer path.
+/// 在粘贴突发检测的上下文中处理按键。当按键被粘贴机制完全处理时
+/// 返回 `true`（调用者跳过进一步的输入处理）；当按键仍然需要
+/// 正常的编辑器路径时返回 `false`。
 pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bool {
     if !app.use_paste_burst_detection {
         return false;
     }
-    // Once we've observed a real `Event::Paste` in this session, bracketed
-    // paste is verified working and the rapid-keystroke heuristic is
-    // unnecessary. Skipping it eliminates false positives on fast typing /
-    // IME commits / autocomplete on terminals with reliable bracketed
-    // paste (the dominant case on iTerm2 / Ghostty / WezTerm / Windows
-    // Terminal).
+    // 一旦我们在本次会话中观察到了真实的 `Event::Paste`，括号粘贴
+    // 已被验证工作正常，快速击键启发式方法就不再需要了。跳过它
+    // 可以消除在具有可靠括号粘贴功能的终端上（iTerm2 / Ghostty /
+    // WezTerm / Windows Terminal 上的主要情况）由快速打字/IME 提交/
+    // 自动完成引起的误报。
     if app.bracketed_paste_seen {
         return false;
     }
@@ -49,19 +47,17 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
         }
         KeyCode::Char(c) if !has_ctrl_alt_or_super => {
             if !c.is_ascii() {
-                // IME-committed characters (Chinese, Japanese, Korean)
-                // arrive as individual KeyCode::Char events, typically with
-                // tens-of-milliseconds gaps between each committed character.
-                // Paste-burst buffering would lose characters when the IME
-                // commits slower than the burst heuristic's timing window.
+                // IME 提交的字符（中文、日文、韩文）以单独的
+                // KeyCode::Char 事件到达，每个提交的字符之间
+                // 通常有数十毫秒的间隔。当 IME 提交速度慢于
+                // 突发启发式方法的定时窗口时，粘贴突发缓冲会丢失字符。
                 //
-                // We still call note_plain_char + extend_window so that:
-                //   1. The burst timing counter advances for non-IME fast
-                //      typing on terminals without bracketed paste support.
-                //   2. The Enter-suppression window stays open during a rapid
-                //      non-ASCII sequence, preventing premature submission.
-                // But the character is inserted directly into the composer
-                // rather than placed into the paste-burst buffer.
+                // 我们仍然调用 note_plain_char + extend_window，以便：
+                //   1. 对于没有括号粘贴支持的终端上的非 IME 快速打字，
+                //      突发定时计数器仍然推进。
+                //   2. 在快速非 ASCII 序列期间，Enter 抑制窗口保持打开，
+                //      防止过早提交。
+                // 但字符直接插入到编辑器中，而不是放入粘贴突发缓冲区。
                 if let Some(pending) = app.paste_burst.flush_before_modified_input() {
                     app.insert_str(&pending);
                 }
@@ -80,10 +76,9 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
     false
 }
 
-/// Apply a paste-burst decision to the composer buffer. Some decisions
-/// retroactively grab the last few chars from the input back into the
-/// pending paste buffer (when the heuristic decides the recent typing was
-/// actually a paste).
+/// 将粘贴突发决策应用到编辑器缓冲区。某些决策会将最后几个字符
+/// 从输入中回溯抓取到待处理的粘贴缓冲区（当启发式方法确定
+/// 最近的打字实际上是一次粘贴时）。
 pub fn handle_paste_burst_decision(
     app: &mut App,
     decision: CharDecision,
@@ -176,11 +171,10 @@ mod tests {
 
     #[test]
     fn raw_short_cjk_multiline_paste_buffers_enter_instead_of_submitting() {
-        // #1302: pasting short CJK content like "请联网搜索：\nSTM32 …" used
-        // to silently submit the first line because the heuristic decided
-        // it wasn't paste-like (no whitespace + under 16 chars). The
-        // non-ASCII bypass now classifies it as a paste so the Enter is
-        // absorbed into the burst buffer.
+        // #1302：粘贴短 CJK 内容如"请联网搜索：\nSTM32 …"过去会
+        // 静默提交第一行，因为启发式方法认为它不像粘贴（无空格且
+        // 少于 16 个字符）。非 ASCII 绕过现在将其分类为粘贴，因此
+        // Enter 被吸收到突发缓冲区中。
         let mut app = test_app();
         let t0 = Instant::now();
 
@@ -195,13 +189,12 @@ mod tests {
                 handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64));
             assert!(
                 handled,
-                "raw paste character {ch:?} must be handled by paste-burst detection"
+                "原始粘贴字符 {ch:?} 必须由粘贴突发检测处理"
             );
         }
 
-        // Non-ASCII characters are now inserted directly into the composer
-        // rather than buffered by paste burst. The Enter suppression window
-        // kept the newline from submitting prematurely.
+        // 非 ASCII 字符现在直接插入到编辑器中，而不是由粘贴突发缓冲。
+        // Enter 抑制窗口阻止了换行符过早提交。
         assert_eq!(app.input, pasted);
     }
 
@@ -227,7 +220,7 @@ mod tests {
             t0 + Duration::from_millis(3)
         ));
 
-        assert!(app.input.is_empty(), "paste remains buffered until idle");
+        assert!(app.input.is_empty(), "粘贴保持缓冲直到空闲");
         assert!(app.flush_paste_burst_if_due(
             t0 + Duration::from_millis(3)
                 + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
@@ -242,36 +235,33 @@ mod tests {
 
         assert!(handle_paste_burst_key(&mut app, &plain('?'), t0));
 
-        assert!(app.input.is_empty(), "shortcut char stays buffered first");
-        assert!(app.view_stack.is_empty(), "help modal must not open");
+        assert!(app.input.is_empty(), "快捷键字符先保持缓冲");
+        assert!(app.view_stack.is_empty(), "帮助弹窗不得打开");
         assert!(app.flush_paste_burst_if_due(
             t0 + crate::tui::paste_burst::PasteBurst::recommended_flush_delay()
         ));
         assert_eq!(app.input, "?");
     }
 
-    /// Pin the IME-input contract: macOS/Windows input methods commit
-    /// each Chinese character as a single `KeyCode::Char(c)` event
-    /// after the candidate popup closes. Each codepoint fits in a
-    /// `char` (no surrogate pair concerns for BMP chars), so a
-    /// straightforward sequence of plain-char events must land in
-    /// `app.input` verbatim — no ASCII filter, no byte-vs-char index
-    /// drift, no paste-burst false-positive that buffers the chars
-    /// indefinitely.
+    /// 固定 IME 输入契约：macOS/Windows 输入法在候选项弹窗关闭后
+    /// 将每个中文字符提交为单个 `KeyCode::Char(c)` 事件。每个码点
+    /// 适合一个 `char`（BMP 字符无需担心代理对），因此简单的纯字符
+    /// 事件序列必须逐字到达 `app.input`——无 ASCII 过滤、无字节与
+    /// 字符索引漂移、无无限缓冲字符的粘贴突发误报。
     #[test]
     fn ime_chinese_chars_route_through_to_composer() {
         let mut app = test_app();
         let t0 = Instant::now();
 
-        // Type the four Chinese codepoints "你好世界" one event at a
-        // time, with realistic ~50ms gaps so the paste-burst heuristic
-        // doesn't classify them as a paste burst.
+        // 逐个事件输入四个中文字符"你好世界"，每个事件之间有
+        // 大约 50ms 的间隔，使粘贴突发启发式方法不会将其分类
+        // 为粘贴突发。
         for (i, ch) in "你好世界".chars().enumerate() {
             let now = t0 + Duration::from_millis(50 * i as u64);
             let _ = handle_paste_burst_key(&mut app, &plain(ch), now);
         }
 
-        // Past the active-flush delay so any buffered burst commits.
+        // 超过活跃刷新延迟，使任何缓冲的突发提交。
         let after = t0
             + Duration::from_millis(50 * 4)
             + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay();
@@ -279,25 +269,23 @@ mod tests {
 
         assert_eq!(
             app.input, "你好世界",
-            "IME-typed Chinese characters must land in composer verbatim"
+            "IME 输入的中文字符必须逐字到达编辑器"
         );
         assert_eq!(
             app.cursor_position, 4,
-            "cursor advances by one per codepoint, not per UTF-8 byte"
+            "游标按每个码点前进，而不是按每个 UTF-8 字节"
         );
     }
 
-    /// Pin the bracketed-paste contract for CJK content: pasted
-    /// Chinese text (e.g. when a user copies a question from a
-    /// Chinese website and pastes into the composer) must preserve
-    /// every codepoint and not double-count multi-byte chars in the
-    /// cursor position.
+    /// 固定 CJK 内容的括号粘贴契约：粘贴的中文文本（例如用户从
+    /// 中文网站复制问题并粘贴到编辑器时）必须保留每个码点，并且
+    /// 不在游标位置中重复计算多字节字符。
     #[test]
     fn bracketed_paste_preserves_chinese_and_mixed_text() {
         let mut app = test_app();
         app.insert_paste_text("你好世界 hello 世界 café");
         assert_eq!(app.input, "你好世界 hello 世界 café");
-        // 4 + 1 + 5 + 1 + 2 + 1 + 4 = 18 codepoints (counting é as one).
+        // 4 + 1 + 5 + 1 + 2 + 1 + 4 = 18 个码点（将 é 计为一个）。
         assert_eq!(app.cursor_position, 18);
     }
 
@@ -318,11 +306,10 @@ mod tests {
         assert!(app.use_bracketed_paste);
     }
 
-    /// Once the session has observed a real `Event::Paste`, the
-    /// rapid-keystroke heuristic must short-circuit. This pins the new
-    /// "auto-disable paste-burst on verified bracketed paste" behavior so
-    /// fast typing / IME commits / autocomplete on capable terminals can't
-    /// be mis-classified as a paste burst.
+    /// 一旦会话观察到了真实的 `Event::Paste`，快速击键启发式方法
+    /// 必须短路。这固定了新的"验证括号粘贴后自动禁用粘贴突发"
+    /// 行为，使功能完备的终端上的快速打字/IME 提交/自动完成不会
+    /// 被误分类为粘贴突发。
     #[test]
     fn paste_burst_short_circuits_after_bracketed_paste_observed() {
         let mut app = test_app();
@@ -331,17 +318,16 @@ mod tests {
 
         let t0 = Instant::now();
         for (i, ch) in "abcdefgh".chars().enumerate() {
-            // Type fast enough that paste-burst would normally fire.
+            // 打字速度足够快，通常会让粘贴突发触发。
             let now = t0 + Duration::from_millis(i as u64);
             assert!(
                 !handle_paste_burst_key(&mut app, &plain(ch), now),
-                "paste-burst must NOT consume keys once bracketed paste verified"
+                "一旦括号粘贴被验证，粘贴突发不得消耗按键"
             );
         }
-        // No buffering — every char fell through to the normal composer
-        // path (the test harness doesn't insert chars when the burst
-        // handler returns false; we only assert the short-circuit
-        // contract here).
+        // 没有缓冲——每个字符都落入了正常的编辑器路径
+        //（当突发处理器返回 false 时，测试工具不会插入字符；
+        // 我们在这里只断言短路契约）。
         assert!(app.input.is_empty());
     }
 }

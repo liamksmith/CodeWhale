@@ -1,10 +1,9 @@
-//! Minimal PTY/frame-capture harness for TUI integration tests.
+//! TUI 集成测试的最小 PTY/帧捕获测试框架。
 //!
-//! Spawns the `codewhale-tui` binary in a real pseudo-terminal, sends scripted
-//! keystrokes / paste, and parses the ANSI output stream into terminal
-//! frames so tests can assert on visible text and on the filesystem.
+//! 在真实伪终端中启动 `codewhale-tui` 二进制文件，发送脚本化的按键/粘贴操作，
+//! 并将 ANSI 输出流解析为终端帧，使测试能够断言可见文本和文件系统状态。
 //!
-//! Tests opt in via:
+//! 测试通过以下方式启用：
 //! ```ignore
 //! #[path = "support/qa_harness/mod.rs"]
 //! mod qa_harness;
@@ -12,7 +11,7 @@
 //! use qa_harness::keys;
 //! ```
 //!
-//! Design notes live in `README.md` next to this module.
+//! 设计说明位于本模块旁边的 `README.md` 中。
 
 #![allow(dead_code)]
 

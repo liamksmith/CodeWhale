@@ -1,8 +1,8 @@
-//! Model-visible Xiaomi MiMo speech/TTS generation tool.
+//! 模型可见的小米 MiMo 语音/TTS 生成工具。
 //!
-//! This mirrors the CLI `speech` / `tts` command as a first-class API tool so
-//! the TUI model can generate narrated audio without shelling out to a nested
-//! CodeWhale process.
+//! 这将 CLI `speech` / `tts` 命令镜像为一级 API 工具，
+//! 以便 TUI 模型可以生成叙述音频，而无需通过嵌套的
+//! CodeWhale 进程执行 shell 命令。
 
 use std::path::{Path, PathBuf};
 
@@ -76,45 +76,45 @@ impl ToolSpec for SpeechTool {
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "Text to synthesize. This is sent as the assistant message and is the spoken content; MiMo TTS style/audio tags may be included here."
+                    "description": "要合成的文本。作为助手消息发送，是说的内容；MiMo TTS 风格/音频标签可以包含在此。"
                 },
                 "output": {
                     "type": "string",
-                    "description": "Audio file path to write, relative to the workspace unless absolute. Default: speech.<format> in output_dir, configured [speech].output_dir, or the workspace."
+                    "description": "要写入的音频文件路径，相对工作空间除非是绝对路径。默认：output_dir 中的 speech.<format>，配置的 [speech].output_dir 或工作空间。"
                 },
                 "output_dir": {
                     "type": "string",
-                    "description": "Directory for the default speech.<format> output file when output is omitted. Relative paths stay inside the workspace."
+                    "description": "当 output 省略时默认 speech.<format> 输出文件的目录。相对路径保持在工作空间内。"
                 },
                 "model": {
                     "type": "string",
-                    "description": "TTS model. Defaults to mimo-v2.5-tts, or infers voice-design/voice-clone models from voice_prompt/clone_voice.",
+                    "description": "TTS 模型。默认为 mimo-v2.5-tts，或根据 voice_prompt/clone_voice 推断 voice-design/voice-clone 模型。",
                     "enum": SPEECH_MODEL_EXAMPLES
                 },
                 "voice": {
                     "type": "string",
-                    "description": "Built-in voice ID (for example mimo_default, 冰糖, 茉莉, 苏打, 白桦, Mia, Chloe, Milo, Dean) or a data:audio/...;base64,... URI for voice clone."
+                    "description": "内置语音 ID（例如 mimo_default, 冰糖, 茉莉, 苏打, 白桦, Mia, Chloe, Milo, Dean）或语音克隆的 data:audio/...;base64,... URI。"
                 },
                 "instruction": {
                     "type": "string",
-                    "description": "Natural-language style, emotion, speed, scene, or performance instruction. It is not spoken verbatim."
+                    "description": "自然语言风格、情感、语速、场景或表现指令。它不是逐字说的内容。"
                 },
                 "voice_prompt": {
                     "type": "string",
-                    "description": "Voice design prompt. When model is omitted this uses mimo-v2.5-tts-voicedesign."
+                    "description": "语音设计提示。当 model 省略时，这使用 mimo-v2.5-tts-voicedesign。"
                 },
                 "clone_voice": {
                     "type": "string",
-                    "description": "Path to a .mp3 or .wav voice sample for cloning. When model is omitted this uses mimo-v2.5-tts-voiceclone."
+                    "description": "用于克隆的 .mp3 或 .wav 语音样本路径。当 model 省略时，这使用 mimo-v2.5-tts-voiceclone。"
                 },
                 "format": {
                     "type": "string",
-                    "description": "Requested audio format. Default: wav. MiMo-V2.5-TTS documentation examples use wav and pcm16; mp3 is accepted when the API returns it.",
+                    "description": "请求的音频格式。默认：wav。MiMo-V2.5-TTS 文档示例使用 wav 和 pcm16；当 API 返回 mp3 时它也接受。",
                     "enum": SUPPORTED_SPEECH_FORMATS
                 },
                 "stream": {
                     "type": "boolean",
-                    "description": "Low-latency streaming request. The direct tool currently writes complete audio files only, so leave this false."
+                    "description": "低延迟流式请求。直接工具当前只写入完整音频文件，因此保持为 false。"
                 }
             },
             "required": ["text"]
@@ -130,20 +130,20 @@ impl ToolSpec for SpeechTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // Speech generation is an explicit user-facing generation action.
-        // Path resolution still enforces workspace/trusted-root boundaries.
+        // 语音生成是显式的用户面向生成动作。
+        // 路径解析仍然强制工作空间/可信根边界。
         ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let text = required_str(&input, "text")?.trim().to_string();
         if text.is_empty() {
-            return Err(ToolError::invalid_input("speech text cannot be empty"));
+            return Err(ToolError::invalid_input("语音文本不能为空"));
         }
 
         let client = self.client.clone().ok_or_else(|| {
             ToolError::not_available(
-                "speech tool requires an active Xiaomi MiMo API client; configure provider = \"xiaomi-mimo\" and an API key first",
+                "语音工具需要活跃的小米 MiMo API 客户端；先配置 provider = \"xiaomi-mimo\" 和 API 密钥",
             )
         })?;
 
@@ -153,13 +153,13 @@ impl ToolSpec for SpeechTool {
             .unwrap_or(DEFAULT_FORMAT);
         let requested_format = normalize_speech_format(requested_format_raw).ok_or_else(|| {
             ToolError::invalid_input(format!(
-                "unsupported speech format '{requested_format_raw}' (allowed: {})",
+                "不支持的语音格式 '{requested_format_raw}'（允许：{}）",
                 SUPPORTED_SPEECH_FORMATS.join(", ")
             ))
         })?;
         if optional_bool(&input, "stream", false) {
             return Err(ToolError::invalid_input(
-                "stream=true low-latency speech output is not implemented in the direct tool yet; use stream=false to generate a complete audio file",
+                "stream=true 低延迟语音输出尚未在直接工具中实现；使用 stream=false 生成完整音频文件",
             ));
         }
         let output_raw = optional_str(&input, "output")
@@ -198,7 +198,7 @@ impl ToolSpec for SpeechTool {
             .is_some_and(|value| value.starts_with("data:audio/"));
         if clone_voice.is_some() && raw_voice.is_some() {
             return Err(ToolError::invalid_input(
-                "use either clone_voice or voice for cloned voice data, not both",
+                "同时使用 clone_voice 或 voice 用于克隆语音数据，不能同时使用",
             ));
         }
         let model = infer_speech_model(
@@ -209,7 +209,7 @@ impl ToolSpec for SpeechTool {
         let model_lower = model.to_ascii_lowercase();
         if !model_lower.contains("tts") {
             return Err(ToolError::invalid_input(format!(
-                "speech tool requires a TTS model (examples: {}), got '{model}'",
+                "语音工具需要 TTS 模型（示例：{}），收到 '{model}'",
                 SPEECH_MODEL_EXAMPLES.join(", ")
             )));
         }
@@ -223,7 +223,7 @@ impl ToolSpec for SpeechTool {
                 .is_none_or(|value| value.trim().is_empty())
         {
             return Err(ToolError::invalid_input(
-                "mimo-v2.5-tts-voicedesign requires voice_prompt or instruction",
+                "mimo-v2.5-tts-voicedesign 需要 voice_prompt 或 instruction",
             ));
         }
 
@@ -236,7 +236,7 @@ impl ToolSpec for SpeechTool {
             Some(value)
         } else if is_voice_clone {
             return Err(ToolError::invalid_input(
-                "mimo-v2.5-tts-voiceclone requires clone_voice <mp3|wav> or voice <data-uri>",
+                "mimo-v2.5-tts-voiceclone 需要 clone_voice <mp3|wav> 或 voice <data-uri>",
             ));
         } else {
             Some(DEFAULT_VOICE.to_string())
@@ -254,7 +254,7 @@ impl ToolSpec for SpeechTool {
             })
             .await
             .map_err(|err| {
-                ToolError::execution_failed(format!("speech synthesis failed: {err}"))
+                ToolError::execution_failed(format!("语音合成失败: {err}"))
             })?;
 
         if let Some(parent) = output_path
@@ -263,7 +263,7 @@ impl ToolSpec for SpeechTool {
         {
             tokio::fs::create_dir_all(parent).await.map_err(|err| {
                 ToolError::execution_failed(format!(
-                    "failed to create output directory {}: {err}",
+                    "创建输出目录 {} 失败: {err}",
                     parent.display()
                 ))
             })?;
@@ -272,7 +272,7 @@ impl ToolSpec for SpeechTool {
             .await
             .map_err(|err| {
                 ToolError::execution_failed(format!(
-                    "failed to write audio file {}: {err}",
+                    "写入音频文件 {} 失败: {err}",
                     output_path.display()
                 ))
             })?;
@@ -294,7 +294,7 @@ impl ToolSpec for SpeechTool {
             "supported_xiaomi_mimo_models": SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS,
         });
         ToolResult::json(&result).map_err(|err| {
-            ToolError::execution_failed(format!("failed to serialize result: {err}"))
+            ToolError::execution_failed(format!("序列化结果失败: {err}"))
         })
     }
 }
@@ -384,7 +384,7 @@ fn resolve_speech_output_path(
 async fn encode_voice_clone_data_uri(path: &Path) -> Result<String, ToolError> {
     let bytes = tokio::fs::read(path).await.map_err(|err| {
         ToolError::execution_failed(format!(
-            "failed to read voice clone sample {}: {err}",
+            "读取语音克隆样本 {} 失败: {err}",
             path.display()
         ))
     })?;
@@ -395,7 +395,7 @@ async fn encode_voice_clone_data_uri(path: &Path) -> Result<String, ToolError> {
 
 pub(crate) fn encode_voice_clone_sample_data_uri(path: &Path) -> anyhow::Result<String> {
     let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read voice clone sample {}", path.display()))?;
+        .with_context(|| format!("读取语音克隆样本 {} 失败", path.display()))?;
 
     voice_clone_data_uri_from_bytes(path, &bytes)
 }
@@ -404,7 +404,7 @@ fn voice_clone_data_uri_from_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<
     let base64_audio = general_purpose::STANDARD.encode(bytes);
     if base64_audio.len() > VOICE_CLONE_BASE64_MAX_BYTES {
         anyhow::bail!(
-            "voice clone sample is too large after base64 encoding ({} bytes > 10 MB)",
+            "语音克隆样本 base64 编码后过大（{} 字节 > 10 MB）",
             base64_audio.len()
         );
     }
@@ -418,7 +418,7 @@ fn voice_clone_data_uri_from_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
         other => {
-            anyhow::bail!("unsupported voice clone sample extension '{other}'. Use .mp3 or .wav.");
+            anyhow::bail!("不支持的语音克隆样本扩展名 '{other}'。请使用 .mp3 或 .wav。");
         }
     };
 
@@ -427,7 +427,7 @@ fn voice_clone_data_uri_from_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<
 
 pub(crate) fn describe_speech_voice(voice: &str) -> String {
     if voice.starts_with("data:") {
-        "embedded voice clone sample".to_string()
+        "嵌入的语音克隆样本".to_string()
     } else {
         voice.to_string()
     }
@@ -453,10 +453,10 @@ fn check_network_policy(context: &ToolContext, base_url: &str) -> Result<(), Too
     match decider.evaluate(&host, "speech") {
         Decision::Allow => Ok(()),
         Decision::Deny => Err(ToolError::permission_denied(format!(
-            "speech network call to '{host}' blocked by network policy"
+            "语音网络调用到 '{host}' 被网络策略阻止"
         ))),
         Decision::Prompt => Err(ToolError::permission_denied(format!(
-            "speech network call to '{host}' requires approval; re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+            "语音网络调用到 '{host}' 需要批准；在 `/network allow {host}` 后重新运行或设置 network.default = \"allow\""
         ))),
     }
 }
@@ -516,7 +516,7 @@ mod tests {
             SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS
                 .iter()
                 .all(|model| model.to_ascii_lowercase().contains("tts")),
-            "model-visible speech list must not include chat-only MiMo models"
+            "模型可见的语音列表不得包含仅聊天的 MiMo 模型"
         );
         assert!(SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS.contains(&"mimo-v2.5-tts"));
         assert!(!SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS.contains(&"mimo-v2.5-pro"));

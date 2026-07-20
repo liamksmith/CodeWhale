@@ -1,4 +1,4 @@
-//! `/hf` - Hugging Face MCP and provider concept helpers.
+//! `/hf` - Hugging Face MCP 和提供商概念帮助。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -41,7 +41,7 @@ const HF_MCP_CONFIG_SKELETON: &str = r#"{
   }
 }"#;
 
-/// Explainer shown by `/hf concepts`.
+/// `/hf concepts` 展示的解释说明。
 const HF_CONCEPTS: &str = "\
 CodeWhale has three distinct Hugging Face surfaces:
 

@@ -1,8 +1,7 @@
-//! Compact summaries for Cargo failures.
+//! Cargo 失败的紧凑摘要。
 //!
-//! Cargo output can be large and noisy. This module extracts stable failure
-//! signals for tool metadata so context compaction can preserve the actionable
-//! lines without re-running `cargo test | tail`.
+//! Cargo 输出可能又大又杂。此模块提取稳定的失败信号作为工具元数据，
+//! 以便上下文压缩可以保留可操作的行，而无需重新运行 `cargo test | tail`。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

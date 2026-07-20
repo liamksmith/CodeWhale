@@ -14,36 +14,36 @@ tokio::task_local! {
     static TOOL_EXECUTION_LOCK_HELD: ();
 }
 
-/// Capabilities that a tool may have or require.
+/// 工具可能拥有或需要的能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolCapability {
-    /// Tool only reads data, never modifies state.
+    /// 工具只读取数据，从不修改状态。
     ReadOnly,
-    /// Tool writes to the filesystem.
+    /// 工具写入文件系统。
     WritesFiles,
-    /// Tool executes arbitrary shell commands.
+    /// 工具执行任意 shell 命令。
     ExecutesCode,
-    /// Tool makes network requests.
+    /// 工具发起网络请求。
     Network,
-    /// Tool can be run in a sandbox.
+    /// 工具可以在沙箱中运行。
     Sandboxable,
-    /// Tool requires user approval before execution.
+    /// 工具在执行前需要用户批准。
     RequiresApproval,
 }
 
-/// Approval requirement for a tool.
+/// 工具的批准要求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalRequirement {
-    /// Never needs approval: safe read-only operations.
+    /// 从不需要批准：安全的只读操作。
     #[default]
     Auto,
-    /// Suggest approval but allow user to skip.
+    /// 建议批准但允许用户跳过。
     Suggest,
-    /// Always require explicit user approval.
+    /// 始终需要显式用户批准。
     Required,
 }
 
-/// Errors that can occur during tool execution.
+/// 工具执行期间可能发生的错误。
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolError {
     #[error("Failed to validate input: {message}")]
@@ -104,20 +104,20 @@ impl ToolError {
     }
 }
 
-/// Result of a tool execution.
+/// 工具执行的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
-    /// The output content, which may be JSON or plain text.
+    /// 输出内容，可以是 JSON 或纯文本。
     pub content: String,
-    /// Whether the execution was successful.
+    /// 执行是否成功。
     pub success: bool,
-    /// Optional structured metadata.
+    /// 可选的结构化元数据。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
 
 impl ToolResult {
-    /// Create a successful result with content.
+    /// 创建成功结果。
     #[must_use]
     pub fn success(content: impl Into<String>) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl ToolResult {
         }
     }
 
-    /// Create an error result with message.
+    /// 创建错误结果。
     #[must_use]
     pub fn error(message: impl Into<String>) -> Self {
         Self {
@@ -137,7 +137,7 @@ impl ToolResult {
         }
     }
 
-    /// Create a successful result from JSON.
+    /// 从 JSON 创建成功结果。
     pub fn json<T: Serialize>(value: &T) -> std::result::Result<Self, serde_json::Error> {
         Ok(Self {
             content: serde_json::to_string(value)?,
@@ -146,7 +146,7 @@ impl ToolResult {
         })
     }
 
-    /// Add metadata to the result.
+    /// 向结果添加元数据。
     #[must_use]
     pub fn with_metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
@@ -154,11 +154,11 @@ impl ToolResult {
     }
 }
 
-/// Helper to extract a required string field from JSON input.
+/// 从 JSON 输入中提取必填字符串字段的辅助函数。
 pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'a str, ToolError> {
     input.get(field).and_then(Value::as_str).ok_or_else(|| {
-        // When the field is missing, list the fields the caller *did*
-        // supply so the model can spot the mismatch without a retry.
+        // 当字段缺失时，列出调用方*确实*提供的字段，
+        // 以便模型无需重试即可发现不匹配。
         let provided: Vec<&str> = input
             .as_object()
             .map(|obj| obj.keys().map(|k| k.as_str()).collect())
@@ -175,13 +175,13 @@ pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'
     })
 }
 
-/// Helper to extract an optional string field from JSON input.
+/// 从 JSON 输入中提取可选字符串字段的辅助函数。
 #[must_use]
 pub fn optional_str<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
     input.get(field).and_then(Value::as_str)
 }
 
-/// Helper to extract a required u64 field from JSON input.
+/// 从 JSON 输入中提取必填 u64 字段的辅助函数。
 pub fn required_u64(input: &Value, field: &str) -> std::result::Result<u64, ToolError> {
     input
         .get(field)
@@ -189,81 +189,79 @@ pub fn required_u64(input: &Value, field: &str) -> std::result::Result<u64, Tool
         .ok_or_else(|| ToolError::missing_field(field))
 }
 
-/// Helper to extract an optional u64 field with default.
+/// 从 JSON 输入中提取可选 u64 字段并带默认值的辅助函数。
 #[must_use]
 pub fn optional_u64(input: &Value, field: &str, default: u64) -> u64 {
     input.get(field).and_then(Value::as_u64).unwrap_or(default)
 }
 
-/// Helper to extract an optional bool field with default.
+/// 从 JSON 输入中提取可选布尔字段并带默认值的辅助函数。
 #[must_use]
 pub fn optional_bool(input: &Value, field: &str, default: bool) -> bool {
     input.get(field).and_then(Value::as_bool).unwrap_or(default)
 }
 
-/// Descriptor that describes a tool available in the registry.
+/// 描述注册表中可用工具的描述符。
 ///
-/// Contains the tool's name, its JSON input/output schemas, and
-/// execution constraints such as timeout and parallelism.
+/// 包含工具的名称、JSON 输入/输出模式以及
+/// 执行约束，如超时和并行性。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
-    /// Unique name used to look up the tool.
+    /// 用于查找工具的唯一名称。
     pub name: String,
-    /// JSON Schema describing the tool's expected input parameters.
+    /// 描述工具预期输入参数的 JSON 模式。
     pub input_schema: Value,
-    /// JSON Schema describing the tool's output format.
+    /// 描述工具输出格式的 JSON 模式。
     pub output_schema: Value,
-    /// Whether multiple invocations of this tool may run concurrently.
+    /// 此工具的多次调用是否可以并发运行。
     pub supports_parallel_tool_calls: bool,
-    /// Optional per-call timeout in milliseconds; `None` means no timeout.
+    /// 每次调用的可选超时（毫秒）；`None` 表示无超时。
     pub timeout_ms: Option<u64>,
 }
 
-/// A [`ToolDescriptor`] together with its runtime configuration.
+/// [`ToolDescriptor`] 及其运行时配置。
 ///
-/// Wraps a `ToolDescriptor` and exposes the parallelism flag directly so the
-/// dispatcher can check it without digging into the inner spec.
+/// 包装 `ToolDescriptor` 并直接暴露并行标志，以便
+/// 调度器无需深入内部规范即可检查它。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfiguredToolDescriptor {
-    /// The underlying tool descriptor.
+    /// 底层工具描述符。
     pub spec: ToolDescriptor,
-    /// Whether this tool supports concurrent invocations.
+    /// 此工具是否支持并发调用。
     pub supports_parallel_tool_calls: bool,
 }
 
-/// Identifies where a tool call originated from.
+/// 标识工具调用的来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallSource {
-    /// Direct invocation from the model or user.
+    /// 直接来自模型或用户的调用。
     Direct,
-    /// Invocation through the JavaScript REPL environment.
+    /// 通过 JavaScript REPL 环境的调用。
     JsRepl,
 }
 
-/// A tool invocation request before it has been validated and dispatched.
+/// 已验证和分发之前的工具调用请求。
 ///
-/// Contains the tool name, its input payload, and metadata about where the
-/// call originated.
+/// 包含工具名称、输入载荷以及有关调用来源的元数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Name of the tool to invoke.
+    /// 要调用的工具的名称。
     pub name: String,
-    /// The input payload for the tool.
+    /// 工具的输入载荷。
     pub payload: ToolPayload,
-    /// Where this call originated (direct or REPL).
+    /// 此调用的来源（直接或 REPL）。
     pub source: ToolCallSource,
-    /// Optional raw tool-call identifier from the upstream provider.
+    /// 来自上游提供者的可选原始工具调用标识符。
     pub raw_tool_call_id: Option<String>,
 }
 
 impl ToolCall {
-    /// Derive the execution subject for this call.
+    /// 推导此调用的执行主题。
     ///
-    /// For local shell payloads this returns the shell command and its
-    /// working directory; for all other payloads the tool name and the
-    /// provided `fallback_cwd` are returned instead. The third element
-    /// of the tuple is a human-readable kind label (`"shell"` or `"tool"`).
+    /// 对于本地 shell 载荷，返回 shell 命令及其工作目录；
+    /// 对于所有其他载荷，返回工具名称和提供的 `fallback_cwd`。
+    /// 元组的第三个元素是人类可读的类型标签（`"shell"` 或 `"tool"`）。
     pub fn execution_subject(&self, fallback_cwd: &str) -> (String, String, &'static str) {
         match &self.payload {
             ToolPayload::LocalShell { params } => (
@@ -279,80 +277,79 @@ impl ToolCall {
     }
 }
 
-/// A validated tool invocation ready to be handled.
+/// 准备好处理的已验证工具调用。
 ///
-/// Created by the registry after a [`ToolCall`] passes validation, this
-/// carries all the context a [`ToolHandler`] needs to execute the tool.
+/// 在 [`ToolCall`] 通过验证后由注册表创建，这携带了
+/// [`ToolHandler`] 执行工具所需的所有上下文。
 #[derive(Debug, Clone)]
 pub struct ToolInvocation {
-    /// Unique identifier for this invocation (generated or from the provider).
+    /// 此调用的唯一标识符（生成或来自提供者）。
     pub call_id: String,
-    /// Name of the tool being invoked.
+    /// 正在调用的工具的名称。
     pub tool_name: String,
-    /// The input payload for the tool.
+    /// 工具的输入载荷。
     pub payload: ToolPayload,
-    /// Where this invocation originated.
+    /// 此调用的来源。
     pub source: ToolCallSource,
 }
 
-/// Errors that can occur during tool dispatch and execution.
+/// 工具分发和执行期间可能发生的错误。
 ///
-/// Unlike [`ToolError`], which represents input validation failures within
-/// a tool, `FunctionCallError` covers problems at the dispatch layer: the
-/// tool was not found, its kind did not match, it was rejected because it
-/// is mutating, it timed out, was cancelled, or its handler returned an
-/// error.
+/// 与表示工具内部输入验证失败的 [`ToolError`] 不同，
+/// `FunctionCallError` 涵盖分发层的问题：未找到工具、
+/// 类型不匹配、由于工具是可变的而被拒绝、超时、
+/// 取消或处理程序返回错误。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FunctionCallError {
-    /// No tool with the given name is registered.
+    /// 没有以该名称注册的工具。
     ToolNotFound { name: String },
-    /// The payload kind does not match the handler's expected kind.
+    /// 载荷类型与处理程序期望的类型不匹配。
     KindMismatch { expected: ToolKind, got: ToolKind },
-    /// The tool is mutating but `allow_mutating` was `false`.
+    /// 工具是可变的但 `allow_mutating` 为 `false`。
     MutatingToolRejected { name: String },
-    /// The tool execution exceeded its configured timeout.
+    /// 工具执行超过其配置的超时。
     TimedOut { name: String, timeout_ms: u64 },
-    /// The tool execution was cancelled.
+    /// 工具执行被取消。
     Cancelled { name: String },
-    /// The tool handler returned an error.
+    /// 工具处理程序返回错误。
     ExecutionFailed { name: String, error: String },
 }
 
-/// Trait implemented by concrete tool handlers.
+/// 具体工具处理程序实现的 trait。
 ///
-/// Each registered tool is backed by a handler that reports its kind,
-/// whether it is mutating, and performs the actual execution.
+/// 每个注册的工具由处理程序支持，该处理程序报告其类型、
+/// 是否可变，并执行实际操作。
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
-    /// The [`ToolKind`] this handler expects (e.g. `Function` or `Mcp`).
+    /// 此处理程序期望的 [`ToolKind`]（例如 `Function` 或 `Mcp`）。
     fn kind(&self) -> ToolKind;
 
-    /// Returns `true` if `kind` matches this handler's expected kind.
+    /// 如果 `kind` 与此处理程序期望的类型匹配，则返回 `true`。
     ///
-    /// The default implementation compares against [`kind()`](ToolHandler::kind).
+    /// 默认实现与 [`kind()`](ToolHandler::kind) 进行比较。
     fn matches_kind(&self, kind: ToolKind) -> bool {
         self.kind() == kind
     }
 
-    /// Whether this tool performs side-effects that require user approval.
+    /// 此工具是否执行需要用户批准的副作用。
     ///
-    /// Defaults to `false` (read-only / safe).
+    /// 默认为 `false`（只读/安全）。
     fn is_mutating(&self) -> bool {
         false
     }
 
-    /// Execute the tool with the given invocation context.
+    /// 使用给定的调用上下文执行工具。
     async fn handle(
         &self,
         invocation: ToolInvocation,
     ) -> std::result::Result<ToolOutput, FunctionCallError>;
 }
 
-/// Manages concurrent tool execution via a read/write lock.
+/// 通过读/写锁管理并发工具执行。
 ///
-/// Parallel-safe tools acquire a read lock (allowing overlap), while
-/// serial tools acquire a write lock (exclusive access). Reentrant calls
-/// (e.g. a tool invoking another tool) skip locking to avoid deadlock.
+/// 并行安全的工具获取读锁（允许重叠），而
+/// 串行工具获取写锁（独占访问）。重入调用
+///（例如工具调用另一个工具）跳过锁定以避免死锁。
 #[derive(Debug)]
 pub struct ToolCallRuntime {
     execution_lock: Arc<RwLock<()>>,
@@ -387,11 +384,11 @@ impl ToolCallRuntime {
     }
 }
 
-/// Central registry that maps tool names to their specs and handlers.
+/// 将工具名称映射到其规范和处理程序的中央注册表。
 ///
-/// Use [`register()`](ToolRegistry::register) to add tools, then
-/// [`dispatch()`](ToolRegistry::dispatch) to invoke them. The registry
-/// owns a [`ToolCallRuntime`] that manages concurrent execution.
+/// 使用 [`register()`](ToolRegistry::register) 添加工具，然后
+/// 使用 [`dispatch()`](ToolRegistry::dispatch) 调用它们。注册表
+/// 拥有管理并发执行的 [`ToolCallRuntime`]。
 #[derive(Default)]
 pub struct ToolRegistry {
     handlers: HashMap<String, Arc<dyn ToolHandler>>,
@@ -400,11 +397,10 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Register a tool with its specification and handler.
+    /// 使用其规范和处理程序注册工具。
     ///
-    /// The tool's name is taken from `spec.name`. Returns an error if
-    /// registration fails (currently infallible, but the `Result` is
-    /// reserved for future validation).
+    /// 工具名称取自 `spec.name`。如果注册失败则返回错误
+    ///（目前不会失败，但保留 `Result` 用于将来的验证）。
     pub fn register(&mut self, spec: ToolDescriptor, handler: Arc<dyn ToolHandler>) -> Result<()> {
         let name = spec.name.clone();
         self.specs.insert(
@@ -418,18 +414,17 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Return the configured specs for every registered tool.
+    /// 返回每个注册工具的配置规范。
     pub fn list_specs(&self) -> Vec<ConfiguredToolDescriptor> {
         self.specs.values().cloned().collect()
     }
 
-    /// Validate and execute a tool call.
+    /// 验证并执行工具调用。
     ///
-    /// Looks up the tool by name, verifies the payload kind matches the
-    /// handler, enforces the `allow_mutating` guard, acquires the
-    /// appropriate execution lock, and forwards the call to the handler.
-    /// Returns a [`FunctionCallError`] if any validation step fails or
-    /// the handler returns an error.
+    /// 按名称查找工具，验证载荷类型与处理程序匹配，
+    /// 应用 `allow_mutating` 守卫，获取适当的执行锁，
+    /// 并将调用转发给处理程序。如果任何验证步骤失败或
+    /// 处理程序返回错误，则返回 [`FunctionCallError`]。
     pub async fn dispatch(
         &self,
         call: ToolCall,

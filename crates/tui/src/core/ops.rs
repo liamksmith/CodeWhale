@@ -82,27 +82,24 @@ impl UserInputProvenance {
 /// Op枚举的每一个变体都是一个提交给引擎的"操作指令"。Rust枚举的变体可以像结构体一样携带命名字段。
 #[derive(Debug, Clone)]
 pub enum Op {
-    /// Send a message to the AI
+    /// 向 AI 发送消息
     SendMessage {
         content: String,  // 用户输入的文本
         mode: AppMode,    // 当前模式（Agent / Plan / YOLO）
-        /// Provider route to use for this turn. `None` keeps the session
-        /// provider; auto model routing sets this when the inventory selects a
-        /// different authenticated provider.
+        /// 本轮的提供商路由。`None` 表示沿用会话提供商；自动模型路由在库存选择不同已验证提供商时设置此项。
         /// API 提供商路由，None 表示沿用会话默认
         provider: Option<ApiProvider>,
         model: String,  // 模型名称
         goal_objective: Option<String>,  // 目标描述（/goal 设置的目标）
         goal_token_budget: Option<u32>,  // 目标 token 预算
         goal_status: GoalStatus,         // 目标当前状态
-        /// 推理深度: `"off" | "low" | "medium" | "high" | "max"`.
-        /// `None` lets the provider apply its default.
+        /// 推理深度: `"off" | "low" | "medium" | "high" | "max"`。
+        /// `None` 让提供商应用其默认值。
         reasoning_effort: Option<String>,
-        /// True when the user selected auto thinking, even though the UI sends
-        /// a concrete per-turn value to the model API.
+        /// 当用户选择了自动推理时为 true，尽管 UI 向模型 API 发送的是具体的每轮值。
         /// 用户是否选了"自动推理"
         reasoning_effort_auto: bool,
-        /// True when the user selected auto model routing.
+        /// 当用户选择了自动模型路由时为 true。
         /// 用户是否选了"自动选择模型"
         auto_model: bool,
         allow_shell: bool,    // 是否允许执行 shell 命令
@@ -111,27 +108,26 @@ pub enum Op {
         approval_mode: ApprovalMode,   // 审批模式
         translation_enabled: bool,     // 是否开启翻译
         show_thinking: bool,  // 是否显示模型思考过程
-        /// Tool restriction from custom slash command frontmatter.
-        /// `None` means the current turn may use the normal tool set.
+        /// 自定义斜杠命令前置元数据中的工具限制。
+        /// `None` 表示本轮可以使用正常的工具集。
         /// 本次允许的工具列表（None=全部允许）
         allowed_tools: Option<Vec<String>>,
-        /// Runtime-supplied tools available only for this turn.
+        /// 运行时提供的仅限本轮可用的工具。
         /// 本次临时可用的动态工具
         dynamic_tools: Vec<DynamicToolSpec>,
-        /// Hook executor for control-plane hooks.
-        /// `ToolCallBefore` hooks may deny a tool call with exit code 2.
+        /// 控制平面钩子的钩子执行器。
+        /// `ToolCallBefore` 钩子可能以退出码 2 拒绝工具调用。
         /// 钩子执行器
         hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
         verbosity: Option<String>,    // 详细程度
-        /// Structural input origin. This gates whether the turn may inherit
-        /// YOLO/auto-approval authority; user-shaped text is not enough.
+        /// 结构化输入来源。这控制了本轮是否可以继承 YOLO/自动批准权限；
+        /// 仅用户形态的文本是不够的。
         /// 输入来源——这是安全门控：只有 ExternalUser 才能继承 YOLO/自动批准权限
         provenance: UserInputProvenance,
     },
 
-    /// Execute a user-submitted composer shell command (`! <command>`) without
-    /// sending a model turn. This still routes through `exec_shell`, approval,
-    /// sandbox, and command-safety handling.
+    /// 执行用户提交的组合器 shell 命令（`! <command>`），
+    /// 不发送模型轮次。这仍然经过 `exec_shell`、审批、沙箱和命令安全处理。
     /// 这个操作是用户输入!ls 这种快捷shell命令时发送的。注意它不发送模型请求
     /// （不需要 AI 回复），只是执行一条 shell 命令，但仍然经过安全审批流程。
     RunShellCommand {
@@ -143,41 +139,40 @@ pub enum Op {
         approval_mode: ApprovalMode,
     },
 
-    /// Set the runtime goal status without dispatching a model turn. Used by
-    /// `/goal pause`, `/goal resume`, `/goal clear`, etc. so the engine's
-    /// `SharedGoalState` learns the new status immediately and a queued
-    /// continuation doesn't overwrite it back to Active.
+    /// 设置运行时目标状态，不发送模型轮次。由 `/goal pause`、`/goal resume`、
+    /// `/goal clear` 等使用，以便引擎的 `SharedGoalState` 立即获知新状态，
+    /// 并且排队的连续性不会将其覆盖回 Active。
     /// 对应 /goal pause、/goal resume、/goal clear 等命令。不触发模型——只更新
     /// 引擎内部的 SharedGoalState。
     SetGoalStatus {
         status: GoalStatus,
-        /// When `true`, clear the objective entirely (`/goal clear`).
+        /// 当为 `true` 时，完全清除目标（`/goal clear`）。
         clear: bool,
     },
 
-    /// Cancel the current request
+    /// 取消当前请求
     #[allow(dead_code)]
     CancelRequest,
 
-    /// Approve a tool call that requires permission
+    /// 批准需要权限的工具调用
     #[allow(dead_code)]
     ApproveToolCall { id: String },
 
-    /// Deny a tool call that requires permission
+    /// 拒绝需要权限的工具调用
     #[allow(dead_code)]
     DenyToolCall { id: String },
 
-    /// Spawn a sub-agent
+    /// 生成子代理
     #[allow(dead_code)]
     SpawnSubAgent { prompt: String },
 
-    /// List current sub-agents and their status
+    /// 列出当前子代理及其状态
     ListSubAgents,
 
-    /// Cancel a running sub-agent by id or session name.
+    /// 通过 ID 或会话名称取消正在运行的子代理。
     CancelSubAgent { agent_id: String },
 
-    /// Change the operating mode
+    /// 更改操作模式
     #[allow(dead_code)]
     ChangeMode {
         mode: AppMode,
@@ -187,7 +182,7 @@ pub enum Op {
         approval_mode: ApprovalMode,
     },
 
-    /// Update the model being used and refresh stable prompt context.
+    /// 更新正在使用的模型并刷新稳定提示上下文。
     #[allow(dead_code)]
     SetModel {
         model: String,
@@ -195,15 +190,15 @@ pub enum Op {
         route_limits: Option<codewhale_config::route::RouteLimits>,
     },
 
-    /// Update auto-compaction settings
+    /// 更新自动压缩设置
     /// 设置自动压缩
     SetCompaction { config: CompactionConfig },
 
-    /// Update the SSE idle timeout used for subsequent streamed turns.
+    /// 更新后续流式轮次使用的 SSE 空闲超时。
     /// SSE 超时
     SetStreamChunkTimeout { timeout_secs: u64 },
 
-    /// Update sub-agent runtime controls for subsequent turns.
+    /// 更新后续轮次的子代理运行时控制。
     /// 子代理运行时限制
     SetSubagentRuntimeConfig {
         enabled: bool,
@@ -214,7 +209,7 @@ pub enum Op {
         heartbeat_timeout_secs: u64,
     },
 
-    /// Sync engine session state (used for resume/load)
+    /// 同步引擎会话状态（用于恢复/加载）
     /// 恢复/加载会话
     SyncSession {
         session_id: Option<String>,
@@ -226,35 +221,34 @@ pub enum Op {
         mode: AppMode,
     },
 
-    /// Run context compaction immediately.
+    /// 立即运行上下文压缩。
     /// 手动触发压缩
     CompactContext,
 
-    /// Get a snapshot of the current session state (messages, tokens, etc.)
-    /// for saving to disk. Returns the result via the oneshot sender so
-    /// the caller doesn't have to compete with the SSE event stream.
+    /// 获取当前会话状态的快照（消息、令牌等）以保存到磁盘。
+    /// 通过 oneshot 发送器返回结果，这样调用者不必与 SSE 事件流竞争。
     GetSessionSnapshot {
         tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<SessionSnapshot>>>>,
     },
 
-    /// Get active provider request concurrency state for readiness surfaces.
+    /// 获取活跃提供商的请求并发状态，用于就绪状态展示。
     GetProviderRuntimeStatus {
         tx: std::sync::Arc<
             std::sync::Mutex<Option<tokio::sync::oneshot::Sender<ProviderRuntimeStatus>>>,
         >,
     },
 
-    /// Run agent-driven context purging.
+    /// 运行代理驱动的上下文清除。
     /// 清除上下文
     PurgeContext,
 
-    /// Edit the last user message: remove the last user+assistant exchange
-    /// from the session, then re-send with the new content.
+    /// 编辑最后一条用户消息：从会话中移除最后一次用户+助手的交换，
+    /// 然后使用新内容重新发送。
     /// 编辑上一条消息
     #[allow(dead_code)]
     EditLastTurn { new_message: String },
 
-    /// Shutdown the engine.
+    /// 关闭引擎。
     /// 关闭引擎
     Shutdown,
 }

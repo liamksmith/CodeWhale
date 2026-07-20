@@ -1,4 +1,4 @@
-//! API key entry screen for onboarding.
+//! 新手引导的 API 密钥输入界面。
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -115,11 +115,11 @@ fn mask_key(input: &str) -> String {
     format!("{}{}", "*".repeat(len - 4), visible)
 }
 
-/// Display path for the effective config.toml (#3986).
+/// 显示有效的 config.toml 路径 (#3986)。
 ///
-/// Prefers the App's session `config_path` override, then the same resolution
-/// used by persistence (`CODEWHALE_CONFIG_PATH` / `CODEWHALE_HOME` / default).
-/// Collapses `$HOME` to `~` when the path is under the process home.
+/// 优先使用 App 会话的 `config_path` 覆盖，然后是持久化使用的相同解析
+/// （`CODEWHALE_CONFIG_PATH` / `CODEWHALE_HOME` / 默认值）。
+/// 当路径在进程 home 目录下时，将 `$HOME` 折叠为 `~`。
 fn effective_config_path_display(app: &App) -> String {
     let path = app
         .config_path
@@ -179,8 +179,8 @@ mod tests {
 
     #[test]
     fn api_key_saved_hint_uses_effective_config_path() {
-        // Isolated installs set CODEWHALE_CONFIG_PATH; the UI must not hardcode
-        // ~/.codewhale/config.toml (#3986).
+        // 隔离安装会设置 CODEWHALE_CONFIG_PATH；UI 不得硬编码
+        // ~/.codewhale/config.toml (#3986)。
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = tmp.path().join("isolated-config.toml");
@@ -198,20 +198,18 @@ mod tests {
         assert!(
             body.contains(config.to_string_lossy().as_ref())
                 || body.contains("isolated-config.toml"),
-            "saved hint should show effective path, body was:\n{body}"
+            "保存提示应显示有效路径，body 为：\n{body}"
         );
         assert!(
             !body.contains("~/.codewhale/config.toml"),
-            "must not hardcode default home path when isolated: {body}"
+            "隔离时不得硬编码默认 home 路径：{body}"
         );
     }
 
     #[test]
     fn api_key_screen_renders_in_selected_locale() {
-        // The most-visible regression of the missing onboarding-localization:
-        // after the user picks 简体中文 at step 2, step 3 used to remain
-        // English. Pin that the rendered lines actually contain the
-        // translated strings for each locale we ship.
+        // 缺失新手引导本地化时最明显的回归：用户在步骤 2 选择了简体中文后，
+        // 步骤 3 原本保持为英文。确保渲染的行实际包含我们发布的每个语言环境的翻译字符串。
         let zh = test_app_with_locale(Locale::ZhHans);
         let body: String = lines(&zh)
             .iter()
@@ -220,19 +218,19 @@ mod tests {
             .join("\n");
         assert!(
             body.contains("连接你的 API 密钥"),
-            "title is provider-neutral and localized for zh-Hans"
+            "标题应提供商中立且已本地化为简体中文"
         );
         assert!(
             body.contains("z.ai/model-api"),
-            "expected default provider credential URL, got: {body}"
+            "期望得到默认提供商凭据 URL，实际：{body}"
         );
         assert!(
             body.contains("密钥"),
-            "expected zh-Hans 'key' label, got: {body}"
+            "期望简体中文'密钥'标签，实际：{body}"
         );
         assert!(
             body.contains("Enter 保存"),
-            "expected zh-Hans footer, got: {body}"
+            "期望简体中文底部提示，实际：{body}"
         );
 
         let ja = test_app_with_locale(Locale::Ja);
@@ -243,7 +241,7 @@ mod tests {
             .join("\n");
         assert!(
             body.contains("キー"),
-            "expected ja 'key' label, got: {body}"
+            "期望日语'キー'标签，实际：{body}"
         );
 
         let en = test_app_with_locale(Locale::En);
@@ -254,7 +252,7 @@ mod tests {
             .join("\n");
         assert!(
             body.contains("Press Enter to save"),
-            "expected en footer, got: {body}"
+            "期望英文底部提示，实际：{body}"
         );
     }
 }

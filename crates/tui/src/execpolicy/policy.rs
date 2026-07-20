@@ -61,7 +61,7 @@ impl Policy {
         Evaluation::from_matches(matched_rules)
     }
 
-    /// Checks multiple commands and aggregates the results.
+    /// 检查多条命令并聚合结果。
     pub fn check_multiple<Commands, F>(
         &self,
         commands: Commands,
@@ -82,13 +82,10 @@ impl Policy {
         Evaluation::from_matches(matched_rules)
     }
 
-    /// Returns matching rules for the given command. If no rules match and
-    /// `heuristics_fallback` is provided, returns a single
-    /// `HeuristicsRuleMatch` with the decision rendered by
-    /// `heuristics_fallback`.
+    /// 返回与给定命令匹配的规则。如果没有规则匹配且 `heuristics_fallback` 已提供，
+    /// 则返回一个包含 `heuristics_fallback` 所做决策的单条 `HeuristicsRuleMatch`。
     ///
-    /// If `heuristics_fallback.is_some()`, then the returned vector is
-    /// guaranteed to be non-empty.
+    /// 如果 `heuristics_fallback.is_some()`，则返回的向量保证非空。
     pub fn matches_for_command(
         &self,
         cmd: &[String],
@@ -131,7 +128,7 @@ impl Evaluation {
             .any(|rule_match| !matches!(rule_match, RuleMatch::HeuristicsRuleMatch { .. }))
     }
 
-    /// Caller is responsible for ensuring that `matched_rules` is non-empty.
+    /// 调用方负责确保 `matched_rules` 非空。
     fn from_matches(matched_rules: Vec<RuleMatch>) -> Self {
         let decision = matched_rules.iter().map(RuleMatch::decision).max();
         #[expect(clippy::expect_used)]

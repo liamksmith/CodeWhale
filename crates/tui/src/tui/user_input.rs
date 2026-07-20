@@ -1,4 +1,4 @@
-//! Modal for request_user_input tool prompts.
+//! request_user_input 工具提示的模态框。
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
@@ -49,8 +49,8 @@ fn push_option_lines(
         Style::default().fg(palette::TEXT_MUTED)
     };
     let prefix = if selected { ">" } else { " " };
-    // Multi-select rows get a check-mark gutter when toggled into the pending
-    // set, mirroring the affordance used in other multi-option pickers.
+    // 多选行在被切换到待处理集时显示复选标记槽，
+    // 镜像其他多选项选择器中使用的互动元素。
     let mark = if ticked { "✔ " } else { "  " };
 
     lines.push(Line::from(Span::styled(
@@ -78,8 +78,8 @@ pub struct UserInputView {
     mode: InputMode,
     other_input: String,
     answers: Vec<UserInputAnswer>,
-    /// Indices toggled into the pending multi-select set for the current
-    /// question. Only used when `question.multi_select` is true.
+    /// 已切换到当前问题待处理多选集的索引。
+    /// 仅当 `question.multi_select` 为 true 时使用。
     multi_pending: Vec<usize>,
 }
 
@@ -101,13 +101,13 @@ impl UserInputView {
         &self.request.questions[self.question_index]
     }
 
-    /// Whether the "Other" free-text row is offered for the current question.
+    /// 当前问题是否提供"其他"自由文本行。
     fn offers_other(&self) -> bool {
         self.current_question().allow_free_text
     }
 
     fn option_count(&self) -> usize {
-        // Options + conditional "Other" row + conditional "Confirm" row.
+        // 选项 + 条件"Other"行 + 条件"Confirm"行。
         let mut count = self.current_question().options.len();
         count += usize::from(self.offers_other());
         count += usize::from(self.is_multi_select());
@@ -115,8 +115,7 @@ impl UserInputView {
     }
 
     fn is_other_selected(&self) -> bool {
-        // "Other" sits immediately before the Confirm row when both exist, and
-        // is last otherwise.
+        // 当两者都存在时，"Other"位于确认行之前一位，否则在末尾。
         let other_last = !self.is_multi_select();
         if other_last {
             self.offers_other() && self.selected + 1 == self.option_count()
@@ -125,7 +124,7 @@ impl UserInputView {
         }
     }
 
-    /// True when the multi-select "Confirm selection" row is highlighted.
+    /// 当多选"确认选择"行被高亮时返回 true。
     fn is_confirm_selected(&self) -> bool {
         self.is_multi_select() && self.selected + 1 == self.option_count()
     }
@@ -142,8 +141,8 @@ impl UserInputView {
         }
     }
 
-    /// Build the answer(s) for the current question from a single selected
-    /// option index (single-select and the confirm step of multi-select).
+    /// 从单个选中的选项索引为当前问题构建答案
+    ///（单选和多选的确认步骤）。
     fn answers_for_selection(&self, index: usize) -> Vec<UserInputAnswer> {
         let question = self.current_question();
         let option = &question.options[index];
@@ -198,8 +197,8 @@ impl UserInputView {
                 self.activate_or_confirm_selection()
             }
             KeyCode::Char(' ') if self.is_multi_select() => {
-                // Space toggles the highlighted option in the pending set
-                // without leaving the picker (standard multi-select affordance).
+                // 空格切换待处理集中的高亮选项，
+                // 而不离开选择器（标准多选互动元素）。
                 if !self.is_other_selected() {
                     self.toggle_pending(self.selected);
                 }
@@ -213,12 +212,12 @@ impl UserInputView {
         }
     }
 
-    /// Resolve a digit/Enter activation for the currently highlighted row.
+    /// 解析当前高亮行的数字/Enter 激活。
     ///
-    /// - "Other" row → enter free-text input mode.
-    /// - multi-select option → toggle into the pending set (Enter confirms on
-    ///   the dedicated "Confirm" step; here it just toggles, like Space).
-    /// - single-select option → submit immediately (legacy behavior).
+    /// - "Other"行 → 进入自由文本输入模式。
+    /// - 多选选项 → 切换到待处理集（Enter 在专用的"确认"步骤上确认；
+    ///   这里它只是切换，如 Space）。
+    /// - 单选选项 → 立即提交（遗留行为）。
     fn activate_or_confirm_selection(&mut self) -> ViewAction {
         if self.is_other_selected() {
             self.mode = InputMode::OtherInput;
@@ -227,9 +226,9 @@ impl UserInputView {
         }
         if self.is_multi_select() {
             if self.is_confirm_selected() {
-                // Flush the pending set as this question's answers. An empty
-                // set is allowed (skip-like) — the model is expected to offer a
-                // sensible default, but we don't deadlock.
+                // 将待处理集刷新为此问题的答案。空集
+                // 是允许的（类似跳过）——模型应提供
+                // 合理的默认值，但我们不会死锁。
                 let question = self.current_question();
                 let answers: Vec<UserInputAnswer> = self
                     .multi_pending
@@ -243,11 +242,11 @@ impl UserInputView {
                     .collect();
                 return self.advance_question(answers);
             }
-            // Enter/Space on a real option toggles it into the pending set.
+            // 在真实选项上按 Enter/Space 将其切换到待处理集。
             self.toggle_pending(self.selected);
             return ViewAction::None;
         }
-        // Single-select: submit immediately.
+        // 单选：立即提交。
         let answers = self.answers_for_selection(self.selected);
         self.advance_question(answers)
     }
@@ -266,8 +265,8 @@ impl UserInputView {
                     label: "Other".to_string(),
                     value: self.other_input.trim().to_string(),
                 };
-                // In multi-select mode a free-text "Other" is still a single
-                // answer appended to whatever options were toggled.
+                // 在多选模式下，自由文本"Other"仍是单个答案，
+                // 附加到已切换的任何选项后。
                 let mut answers: Vec<UserInputAnswer> = self
                     .multi_pending
                     .iter()
@@ -332,7 +331,7 @@ impl ModalView for UserInputView {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            "需要操作",
             Style::default().fg(palette::WHALE_INFO).bold(),
         )]));
         lines.push(Line::from(vec![
@@ -341,7 +340,7 @@ impl ModalView for UserInputView {
                 Style::default().fg(palette::TEXT_PRIMARY).bold(),
             ),
             Span::styled(
-                format!("  Question {} of {}", self.question_index + 1, total),
+                format!("  问题 {}/{}", self.question_index + 1, total),
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]));
@@ -365,7 +364,7 @@ impl ModalView for UserInputView {
             );
         }
 
-        // The free-text "Other" row is now conditional on allow_free_text.
+        // 自由文本"Other"行现在取决于 allow_free_text。
         if self.offers_other() {
             let other_index = question.options.len();
             let other_number = other_index + 1;
@@ -373,15 +372,14 @@ impl ModalView for UserInputView {
                 &mut lines,
                 self.selected == other_index,
                 other_number,
-                "Other".to_string(),
-                "Type a custom response".to_string(),
+                "其他".to_string(),
+                "输入自定义回复".to_string(),
                 false,
             );
         }
 
-        // Multi-select gets a dedicated "Confirm selection" row after the
-        // options (and after "Other" when present). Selecting and pressing
-        // Enter on it flushes the pending set as the question's answers.
+        // 多选在选项（以及存在时的"Other"）后有一个专用的"确认选择"行。
+        // 选中并在其上按 Enter 将待处理集刷新为问题的答案。
         if self.is_multi_select() {
             let confirm_index = self.option_count();
             let confirm_number = confirm_index + 1;
@@ -389,8 +387,8 @@ impl ModalView for UserInputView {
                 &mut lines,
                 self.selected == confirm_index,
                 confirm_number,
-                "Confirm selection".to_string(),
-                format!("Submit {} selected", self.multi_pending.len()),
+                "确认选择".to_string(),
+                format!("提交 {} 个已选择", self.multi_pending.len()),
                 false,
             );
         }
@@ -399,13 +397,13 @@ impl ModalView for UserInputView {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled(
-                    "> Custom response:",
+                    "> 自定义回复:",
                     Style::default().fg(palette::TEXT_PRIMARY).bold(),
                 ),
                 Span::raw(" "),
                 Span::styled(
                     if self.other_input.is_empty() {
-                        "(type your response)".to_string()
+                        "（输入您的回复）".to_string()
                     } else {
                         self.other_input.clone()
                     },
@@ -418,17 +416,17 @@ impl ModalView for UserInputView {
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
                 Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(" 提交", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(" 返回", Style::default().fg(palette::TEXT_MUTED)),
             ]));
         } else {
             let opt_count = self.option_count();
             let quick_pick_label = if opt_count <= 9 {
                 format!("1-{opt_count}")
             } else {
-                "digit".to_string()
+                "数字".to_string()
             };
             if self.is_multi_select() {
                 lines.push(Line::from(vec![
@@ -436,16 +434,16 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_INFO).bold(),
                     ),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 移动", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Space", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" toggle", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 切换", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" toggle/confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 切换/确认", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 取消", Style::default().fg(palette::TEXT_MUTED)),
                 ]));
             } else {
                 lines.push(Line::from(vec![
@@ -453,16 +451,16 @@ impl ModalView for UserInputView {
                         quick_pick_label,
                         Style::default().fg(palette::WHALE_INFO).bold(),
                     ),
-                    Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 快速选择", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Up/Down", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 移动", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Enter", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 确认", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw("  "),
                     Span::styled("Esc", Style::default().fg(palette::WHALE_INFO).bold()),
-                    Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(" 取消", Style::default().fg(palette::TEXT_MUTED)),
                 ]));
             }
         }
@@ -519,17 +517,17 @@ mod tests {
             "tool-1",
             UserInputRequest {
                 questions: vec![UserInputQuestion {
-                    header: "Confirm".to_string(),
+                    header: "确认".to_string(),
                     id: "confirm".to_string(),
-                    question: "What should happen next?".to_string(),
+                    question: "接下来应该做什么？".to_string(),
                     options: vec![
                         UserInputOption {
-                            label: "Ship it".to_string(),
-                            description: "Proceed with the current change set".to_string(),
+                            label: "提交".to_string(),
+                            description: "继续当前更改集".to_string(),
                         },
                         UserInputOption {
-                            label: "Revise it".to_string(),
-                            description: "Return to editing before continuing".to_string(),
+                            label: "修改".to_string(),
+                            description: "在继续前返回编辑".to_string(),
                         },
                     ],
                     allow_free_text: true,
@@ -543,11 +541,11 @@ mod tests {
     fn user_input_modal_calls_out_required_action_and_controls() {
         let rendered = render_view(&sample_view(), 110, 36);
 
-        assert!(rendered.contains("Action required"));
-        assert!(rendered.contains("Question 1 of 1"));
-        assert!(rendered.contains("quick pick"));
-        // allow_free_text=true surfaces the Other row.
-        assert!(rendered.contains("Other"));
+        assert!(rendered.contains("需要操作"));
+        assert!(rendered.contains("问题 1/1"));
+        assert!(rendered.contains("快速选择"));
+        // allow_free_text=true 会显示"其他"行。
+        assert!(rendered.contains("其他"));
     }
 
     #[test]
@@ -555,53 +553,52 @@ mod tests {
         let mut view = sample_view();
         view.selected = 2;
         view.mode = InputMode::OtherInput;
-        view.other_input = "Need one more pass".to_string();
+        view.other_input = "需要再次检查".to_string();
 
         let rendered = render_view(&view, 110, 36);
 
-        assert!(rendered.contains("Custom response"));
-        assert!(rendered.contains("Need one more pass"));
+        assert!(rendered.contains("自定义回复"));
+        assert!(rendered.contains("需要再次检查"));
         assert!(rendered.contains("Enter"));
-        assert!(rendered.contains("submit"));
+        assert!(rendered.contains("提交"));
     }
 
     #[test]
     fn user_input_modal_hides_other_row_when_free_text_disabled() {
-        // Issue #3102: allow_free_text=false must NOT render the hardcoded
-        // "Other" pseudo-option. Previously "Other" was always appended.
+        // 问题 #3102：allow_free_text=false 绝不能渲染硬编码的
+        // "Other" 伪选项。以前"Other"总是被追加。
         let mut view = sample_view();
         view.request.questions[0].allow_free_text = false;
-        // Reset selection to a valid option index (no Other row to land on).
+        // 将选择重置为有效选项索引（没有"Other"行可定位）。
         view.selected = 0;
 
         let rendered = render_view(&view, 110, 36);
         assert!(
-            !rendered.contains("Type a custom response"),
-            "Other row should be hidden when allow_free_text is false"
+            !rendered.contains("输入自定义回复"),
+            "当 allow_free_text 为 false 时，其他行应隐藏"
         );
-        assert!(!rendered.contains("\nOther\n"));
+        assert!(!rendered.contains("\n其他\n"));
     }
 
     #[test]
     fn user_input_modal_renders_multi_select_ticks_and_confirm() {
-        // Issue #3102: multi_select=true renders a check-mark gutter on
-        // toggled options plus a trailing "Confirm selection" row, and the
-        // controls hint advertises Space/Enter toggle semantics.
+        // 问题 #3102：multi_select=true 在切换的选项上渲染复选标记槽，
+        // 以及尾随的"确认选择"行，控制提示提示 Space/Enter 切换语义。
         let mut view = sample_view();
         view.request.questions[0].multi_select = true;
         view.request.questions[0].allow_free_text = false;
-        // Toggle the first option into the pending set.
+        // 将第一个选项切换到待处理集。
         view.multi_pending.push(0);
-        // Highlight the confirm row (last selectable row).
+        // 高亮确认行（最后一个可选择行）。
         view.selected = view.option_count() - 1;
 
         let rendered = render_view(&view, 120, 40);
-        assert!(rendered.contains("✔"), "toggled option shows a check mark");
+        assert!(rendered.contains("✔"), "切换的选项显示复选标记");
         assert!(
-            rendered.contains("Confirm selection"),
-            "multi-select renders a confirm row"
+            rendered.contains("确认选择"),
+            "多选渲染确认行"
         );
-        assert!(rendered.contains("Submit 1 selected"));
-        assert!(rendered.contains("toggle"));
+        assert!(rendered.contains("提交 1 个已选择"));
+        assert!(rendered.contains("切换"));
     }
 }

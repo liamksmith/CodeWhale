@@ -7,11 +7,10 @@ use super::manifest::LoadedPlugin;
 pub struct PluginRegistry {
     plugins: HashMap<String, LoadedPlugin>,
     user_overrides: HashMap<String, bool>,
-    /// Where `user_overrides` is persisted. Discovery always sets this via
-    /// [`set_overrides_store`](Self::set_overrides_store); it is `None` only
-    /// when a registry is built without a persistence store (e.g. a direct
-    /// `PluginRegistry::new()` in unit tests), in which case enable/disable
-    /// stays in-memory.
+    /// `user_overrides` 的持久化路径。Discovery 总是通过
+    /// [`set_overrides_store`](Self::set_overrides_store) 设置此路径；
+    /// 当注册表在没有持久化存储的情况下构建（例如单元测试中直接 `PluginRegistry::new()`）时
+    /// 该值为 `None`，此时启用/禁用仅保留在内存中。
     overrides_path: Option<PathBuf>,
 }
 
@@ -20,17 +19,17 @@ impl PluginRegistry {
         Self::default()
     }
 
-    /// Seed the persisted enable/disable overrides and remember where to write
-    /// them back. Called by discovery before plugins are registered; the
-    /// overrides are then applied with [`apply_overrides`](Self::apply_overrides).
+    /// 注入已持久化的启用/禁用覆盖，并记住写入回存的位置。
+    /// 由 discovery 在插件注册前调用；
+    /// 之后通过 [`apply_overrides`](Self::apply_overrides) 应用这些覆盖。
     pub fn set_overrides_store(&mut self, path: PathBuf, overrides: HashMap<String, bool>) {
         self.overrides_path = Some(path);
         self.user_overrides = overrides;
     }
 
-    /// Apply every persisted override onto the currently-registered plugins.
-    /// Discovery recomputes `enabled` from scratch (`!builtin`) on each launch,
-    /// so this is what makes a prior `/plugin enable|disable` actually stick.
+    /// 将所有已持久化的覆盖应用到当前已注册的插件上。
+    /// Discovery 在每次启动时会从零重新计算 `enabled`（`!builtin`），
+    /// 因此此方法使之前的 `/plugin enable|disable` 实际生效。
     pub fn apply_overrides(&mut self) {
         for (name, &enabled) in &self.user_overrides {
             if let Some(plugin) = self.plugins.get_mut(name) {
@@ -65,9 +64,8 @@ impl PluginRegistry {
         }
     }
 
-    /// Write the current override map to disk (best-effort). A failure here is
-    /// logged but never fails the command — the in-memory toggle still applies
-    /// for the current session.
+    /// 将当前覆盖映射写入磁盘（尽力而为）。失败时仅记录日志，
+    /// 不会导致命令失败——内存中的开关在当前会话中仍然生效。
     fn persist_overrides(&self) {
         if let Some(path) = &self.overrides_path
             && let Err(e) = super::discovery::save_overrides(path, &self.user_overrides)

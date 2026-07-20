@@ -1,11 +1,9 @@
-//! `/workflow` command — the user's opt-in to workflow orchestration.
+//! `/workflow` 命令——用户选择使用工作流编排。
 //!
-//! The invocation carries authorization, not payload: bare `/workflow` asks
-//! the model to synthesize the objective from the conversation context and
-//! orchestrate it through the `workflow` tool (the same contract as goal-mode
-//! `/goal`: context-dependent, no argument required). `/workflow <objective>`
-//! narrows the run to an explicit objective, and `/workflow status` relays
-//! typed run receipts without starting anything new.
+//! 调用携带的是授权而非负载：裸 `/workflow` 让模型从对话上下文中综合目标
+//! 并通过 `workflow` 工具进行编排（与 goal 模式的 `/goal` 合约相同：
+//! 依赖上下文，无需参数）。`/workflow <objective>` 将运行限定到显式目标，
+//! `/workflow status` 则将在不启动新任务的情况下中继类型化运行回执。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -32,9 +30,8 @@ impl RegisterCommand for WorkflowCmd {
     }
 }
 
-/// Shared orchestration contract appended to every start instruction. Mirrors
-/// what makes opt-in orchestration work well: the user's invocation is the
-/// authorization, fan-out scales to the ask, and receipts close the loop.
+/// 共享编排合约，附加到每条启动指令中。反映了选择式编排的良好实践：
+/// 用户的调用就是授权，扇出规模随任务需求伸缩，回执闭环。
 const ORCHESTRATION_CONTRACT: &str = "Author a workflow script for the `workflow` tool (task()/parallel()/pipeline()/phase()/log()); \
      you are the fan-in owner — fan out, wait for receipts, aggregate, verify, and synthesize one result. \
      scale the fan-out to the size of the ask — a quick check gets a few tasks, an audit gets a wider sweep. \
@@ -53,7 +50,7 @@ pub fn workflow(_app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 
     match arg {
-        // Explicit objective: the argument narrows the run.
+        // 显式目标：参数限定了运行范围。
         Some(objective) => {
             let message = format!(
                 "The user invoked /workflow with an explicit objective — this is authorization to \
@@ -66,8 +63,7 @@ pub fn workflow(_app: &mut App, arg: Option<&str>) -> CommandResult {
                 AppAction::SendMessage(message),
             )
         }
-        // Bare invocation: context-dependent. The model derives the objective
-        // from what the session is already doing — no restating required.
+        // 裸调用：依赖上下文。模型从会话当前工作内容推导目标——无需重复说明。
         None => {
             let message = format!(
                 "The user invoked /workflow with no argument — this is authorization to orchestrate \
@@ -84,7 +80,7 @@ pub fn workflow(_app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-/// Route `status`/`cancel` through the `workflow` tool without starting a run.
+/// 通过 `workflow` 工具路由 `status`/`cancel` 操作，不启动新运行。
 fn parse_workflow_control_action(arg: Option<&str>) -> Option<CommandResult> {
     let arg = arg?;
     let (verb, rest) = match arg.split_once(char::is_whitespace) {
@@ -172,12 +168,12 @@ mod tests {
         let Some(AppAction::SendMessage(message)) = result.action else {
             panic!("expected SendMessage action");
         };
-        // The bare form must not demand an objective from the user.
+        // 裸形式不得要求用户提供目标。
         assert!(message.contains("Synthesize the objective from the conversation"));
         assert!(message.contains("authorization to orchestrate"));
         assert!(message.contains("`workflow` tool"));
 
-        // Whitespace-only behaves like bare.
+        // 仅空白字符的表现与裸调用相同。
         let result = workflow(&mut app, Some("   "));
         assert!(matches!(result.action, Some(AppAction::SendMessage(_))));
     }

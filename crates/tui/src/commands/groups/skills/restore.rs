@@ -1,12 +1,10 @@
-//! `/restore` slash command — roll back the workspace to a prior snapshot.
+//! `/restore` 斜杠命令——将工作区回滚到之前的快照。
 //!
-//! `/restore` (no arg) lists the 20 most recent snapshots so the user can
-//! see what's available. `/restore list [N]` lists more snapshots, capped
-//! at 100. `/restore <N>` restores the *N*th-most-recent snapshot, where
-//! `N=1` is the newest. In non-YOLO mode we refuse to mutate files unless
-//! the user has explicitly trusted the workspace (`/trust on` or YOLO) —
-//! the user can always view the list, just not one-shot revert without a
-//! safety net.
+//! `/restore`（无参数）列出最近的 20 个快照，方便用户查看可用内容。
+//! `/restore list [N]` 列出更多快照，上限 100 个。
+//! `/restore <N>` 恢复第 N 个最近的快照，其中 `N=1` 是最新的。
+//! 在非 YOLO 模式下，除非用户已明确信任工作区（`/trust on` 或 YOLO），
+//! 否则拒绝修改文件——用户始终可以查看列表，只是不能在没有安全网的情况下一次性回退。
 
 use crate::commands::CommandResult;
 use crate::snapshot::{Snapshot, SnapshotRepo};
@@ -17,7 +15,7 @@ const DEFAULT_LIST_LIMIT: usize = 20;
 const MAX_LIST_LIMIT: usize = 100;
 const MAX_RESTORE_INDEX: usize = 1000;
 
-/// Entry point for `/restore [N|list [N]]`.
+/// `/restore [N|list [N]]` 的入口点。
 fn restore(app: &mut App, arg: Option<&str>) -> CommandResult {
     let workspace = app.workspace.clone();
     let repo = match SnapshotRepo::open_or_init(&workspace) {
@@ -83,10 +81,9 @@ fn restore(app: &mut App, arg: Option<&str>) -> CommandResult {
         ));
     }
 
-    // Non-YOLO sessions get a confirmation gate. We don't have a true
-    // modal-confirmation path inside slash commands today, so the gate
-    // is "require trust mode" — `/trust on` or YOLO. Users in plain
-    // Agent mode get a clear message explaining how to proceed.
+    // 非 YOLO 会话需要确认门控。目前斜杠命令内部没有真正的
+    // 模态确认路径，所以门控是"需要信任模式"——`/trust on` 或 YOLO。
+    // 普通 Agent 模式的用户会收到一条明确的消息解释如何继续。
     if !(app.yolo || app.trust_mode) {
         return CommandResult::message(format!(
             "Refusing to restore snapshot #{n} ('{}') outside trusted mode.\n\
@@ -226,8 +223,7 @@ mod tests {
         App::new(options, &Config::default())
     }
 
-    /// Pins HOME to a tempdir for the duration of the test under the
-    /// crate-wide env mutex.
+    /// 在 crate 级环境互斥锁下，将 HOME 固定到测试期间的临时目录。
     struct ScopedHome {
         prev: Option<std::ffi::OsString>,
         _home: TempDir,
@@ -235,7 +231,7 @@ mod tests {
     }
     impl Drop for ScopedHome {
         fn drop(&mut self) {
-            // SAFETY: process-wide lock still held.
+            // 安全性：仍持有进程级锁。
             unsafe {
                 match self.prev.take() {
                     Some(v) => std::env::set_var("HOME", v),
@@ -248,7 +244,7 @@ mod tests {
         let guard = lock_test_env();
         let prev = std::env::var_os("HOME");
         let home = TempDir::new().expect("home tempdir");
-        // SAFETY: serialised by the global env lock.
+        // 安全性：由全局环境锁串行化。
         unsafe {
             std::env::set_var("HOME", home.path());
         }
@@ -452,8 +448,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _home = scoped_home(&tmp);
         let mut app = make_app(&tmp, true);
-        // Need at least one snapshot so we exercise the parse-index
-        // branch instead of the "no snapshots" early return.
+        // 需要至少一个快照，这样我们执行解析索引分支
+        // 而不是"无快照"的提前返回。
         let repo = SnapshotRepo::open_or_init(&app.workspace).unwrap();
         std::fs::write(app.workspace.join("a.txt"), b"v1").unwrap();
         repo.snapshot("pre-turn:1").unwrap();

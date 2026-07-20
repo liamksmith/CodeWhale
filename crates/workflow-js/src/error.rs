@@ -1,53 +1,45 @@
-//! Error types for the dynamic Workflow runtime.
+//! 动态 Workflow 运行时的错误类型。
 
 use thiserror::Error;
 
-/// Errors surfaced by [`crate::WorkflowVm::run_script`].
+/// [`crate::WorkflowVm::run_script`] 暴露的错误。
 ///
-/// Script-visible failures (thrown JS exceptions, rejected promises, host
-/// function errors that were not caught inside the script) all collapse into
-/// [`WorkflowJsError::Script`] with the exception message and stack. The
-/// remaining variants describe runtime-level failures that never reached the
-/// script.
+/// 脚本可见的失败（抛出的 JS 异常、拒绝的 promise、脚本内部未捕获的主机函数错误）
+/// 全部归为 [`WorkflowJsError::Script`]，包含异常消息和堆栈。
+/// 其余变体描述了从未到达脚本的运行时级失败。
 #[derive(Debug, Error)]
 pub enum WorkflowJsError {
-    /// The QuickJS runtime or context could not be created.
+    /// 无法创建 QuickJS 运行时或上下文。
     #[error("failed to initialize the Workflow JS VM: {0}")]
     VmInit(String),
-    /// The script threw (or a promise rejected) and nothing caught it.
-    /// Carries the exception message plus stack when available.
+    /// 脚本抛出异常（或 promise 被拒绝）且未被捕获。
+    /// 携带异常消息和堆栈（如果有）。
     #[error("script error: {0}")]
     Script(String),
-    /// The run was cancelled — either the caller dropped the run future or
-    /// the cooperative cancel signal fired mid-script.
+    /// 运行被取消 — 调用者丢弃了 run future，或合作取消信号在脚本执行过程中触发。
     #[error("workflow run cancelled")]
     Cancelled,
-    /// The script completed but its return value could not be encoded as
-    /// JSON (e.g. it returned a function or a cyclic object).
+    /// 脚本完成但其返回值无法编码为 JSON（例如返回了函数或循环对象）。
     #[error("script result is not JSON-encodable: {0}")]
     ResultEncoding(String),
-    /// The invocation arguments could not be injected into the VM.
+    /// 调用参数无法注入到 VM 中。
     #[error("invalid workflow arguments: {0}")]
     InvalidArgs(String),
-    /// The dedicated VM thread exited without reporting a result (panic or
-    /// spawn failure). Outstanding driver tasks are cancelled when this is
-    /// observed.
+    /// 专用 VM 线程退出而未报告结果（panic 或 spawn 失败）。观察到此时会取消未完成的 driver 任务。
     #[error("Workflow VM thread terminated unexpectedly: {0}")]
     VmTerminated(String),
 }
 
-/// Errors a [`crate::WorkflowDriver`] can return from `spawn_task`.
+/// [`crate::WorkflowDriver`] 从 `spawn_task` 可能返回的错误。
 ///
-/// Both variants surface inside the script as a thrown exception on the
-/// corresponding `task()` call, so a script can `try`/`catch` an individual
-/// rejection (admission, depth, budget) without the whole run failing.
+/// 两种变体在脚本内部都表现为对应 `task()` 调用上抛出的异常，
+/// 因此脚本可以 `try`/`catch` 单个拒绝（准入、深度、预算）而不会导致整个运行失败。
 #[derive(Debug, Clone, Error)]
 pub enum DriverError {
-    /// The driver refused to spawn this task (admission cap, depth ceiling,
-    /// budget reservation failure, invalid subagent type, ...).
+    /// driver 拒绝生成此任务（准入上限、深度上限、预算预留失败、无效的子代理类型等）。
     #[error("spawn rejected: {0}")]
     Rejected(String),
-    /// The driver is gone or its channel closed; no more spawns will work.
+    /// driver 已消失或其通道已关闭；后续的 spawn 将无法工作。
     #[error("driver unavailable: {0}")]
     Unavailable(String),
 }

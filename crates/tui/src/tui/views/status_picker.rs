@@ -1,13 +1,12 @@
-//! `/statusline` multi-select picker.
+//! `/statusline` 多选选择器。
 //!
-//! Mirrors codex-rs's `bottom_pane::status_line_setup` ergonomically: a
-//! checklist of footer items the user can toggle on/off with Space (or
-//! Enter), reordered by ↑/↓, applied immediately so the live footer
-//! reflects every change. Enter saves to `~/.deepseek/config.toml` under
-//! `tui.status_items`; Esc reverts to the snapshot taken on open.
+//! 在人体工学上镜像 codex-rs 的 `bottom_pane::status_line_setup`：
+//! 一个页脚项目复选框列表，用户可以用 Space（或 Enter）切换开关，
+//! 通过 ↑/↓ 重新排序，立即应用以使实时页脚反映每个更改。
+//! Enter 保存到 `~/.deepseek/config.toml` 的 `tui.status_items` 下；
+//! Esc 恢复到打开时拍摄的快照。
 //!
-//! The picker enumerates [`StatusItem::all`] so adding a new variant in
-//! `crates/tui/src/config.rs` automatically surfaces a new row here.
+//! 选择器枚举 [`StatusItem::all`]，因此在 `crates/tui/src/config.rs` 中添加新变体会自动在此显示新行。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -29,18 +28,17 @@ use unicode_width::UnicodeWidthStr;
 
 const STATUS_PICKER_SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(54, 72, 104);
 
-/// Picker state. We hold both the user's working selection AND the original
-/// snapshot so Esc can perfectly revert the live preview.
+/// 选择器状态。我们同时持有用户的工作选择和原始快照，
+/// 以便 Esc 可以完美地恢复实时预览。
 pub struct StatusPickerView {
-    /// Every available item, in the order shown to the user. We keep this
-    /// list ordered so toggles produce a stable on-screen layout that
-    /// doesn't shuffle as items flip.
+    /// 每个可用项目，按显示给用户的顺序排列。我们保持此列表有序，
+    /// 以便切换产生稳定的屏幕布局，不会随着项目翻转而重新排列。
     rows: Vec<StatusItem>,
-    /// Indices in `rows` currently checked on (the user's working set).
+    /// `rows` 中当前选中的索引（用户的工作集）。
     selected: Vec<bool>,
-    /// Highlighted row.
+    /// 高亮行。
     cursor: usize,
-    /// Snapshot of `app.status_items` at open time so Esc reverts cleanly.
+    /// 打开时 `app.status_items` 的快照，以便 Esc 干净地恢复。
     original: Vec<StatusItem>,
     locale: Locale,
 }
@@ -63,9 +61,9 @@ impl StatusPickerView {
         }
     }
 
-    /// Build the current selection in the same order the user sees it.
-    /// Preserves `StatusItem::all()` order so toggling produces deterministic
-    /// `tui.status_items` output (no churn-induced diffs in config.toml).
+    /// 以用户看到的相同顺序构建当前选择。
+    /// 保持 `StatusItem::all()` 顺序，以便切换产生确定性的
+    /// `tui.status_items` 输出（config.toml 中没有波动引起的差异）。
     fn current_selection(&self) -> Vec<StatusItem> {
         self.rows
             .iter()

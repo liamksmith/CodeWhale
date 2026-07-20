@@ -1,4 +1,4 @@
-//! Durable lane registry under `$CODEWHALE_HOME/lanes/`.
+//! `$CODEWHALE_HOME/lanes/` 下的持久化 lane 注册表。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use crate::runtime::RuntimeBackendKind;
 const LANES_SUBDIR: &str = "lanes";
 const LOGS_SUBDIR: &str = "logs";
 
-/// Lifecycle status for a running workflow instance.
+/// 运行中工作流实例的生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneStatus {
@@ -39,7 +39,7 @@ impl LaneStatus {
     }
 }
 
-/// One lane record: a running (or completed) workflow instance.
+/// 一条 lane 记录：一个运行中（或已完成）的工作流实例。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaneRecord {
     pub id: String,
@@ -57,18 +57,18 @@ pub struct LaneRecord {
     pub worktree_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// tmux session name when `runtime == tmux`.
+    /// 当 `runtime == tmux` 时的 tmux 会话名称。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_session: Option<String>,
-    /// Absolute path to the stream-json / NDJSON journal for this lane.
+    /// 此 lane 的流式 JSON / NDJSON 日志的绝对路径。
     pub log_path: PathBuf,
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_at: Option<String>,
-    /// Optional human-readable attach target (e.g. `tmux attach -t …`).
+    /// 可选的人类可读附加目标（例如 `tmux attach -t …`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach_target: Option<String>,
-    /// Worktree cleanup TTL in seconds (None = no auto-cleanup).
+    /// 工作目录清理 TTL，以秒为单位（None = 不自动清理）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_ttl_secs: Option<u64>,
 }
@@ -84,24 +84,24 @@ impl LaneRecord {
     }
 }
 
-/// Registry root: `$CODEWHALE_HOME/lanes`.
+/// 注册表根目录：`$CODEWHALE_HOME/lanes`。
 pub fn lanes_dir() -> Result<PathBuf> {
     codewhale_config::ensure_state_dir(LANES_SUBDIR)
 }
 
-/// Persist and load lane records.
+/// 持久化和加载 lane 记录。
 #[derive(Debug, Clone)]
 pub struct LaneRegistry {
     root: PathBuf,
 }
 
 impl LaneRegistry {
-    /// Open the default registry under `$CODEWHALE_HOME/lanes`.
+    /// 打开 `$CODEWHALE_HOME/lanes` 下的默认注册表。
     pub fn open_default() -> Result<Self> {
         Self::open(lanes_dir()?)
     }
 
-    /// Open a registry at an explicit root (tests / custom homes).
+    /// 在显式根目录下打开注册表（测试/自定义 home）。
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root)
@@ -161,7 +161,7 @@ impl LaneRegistry {
             match serde_json::from_str::<LaneRecord>(&text) {
                 Ok(record) => records.push(record),
                 Err(err) => {
-                    // Skip corrupt records rather than failing the whole list.
+                    // 跳过损坏的记录，而不是使整个列表失败。
                     eprintln!(
                         "warning: skip corrupt lane record {}: {err}",
                         path.display()
@@ -173,7 +173,7 @@ impl LaneRegistry {
         Ok(records)
     }
 
-    /// Create a pending lane with log file reserved.
+    /// 创建待处理的 lane 并保留日志文件。
     pub fn create_pending(
         &self,
         workflow: Option<String>,
@@ -185,7 +185,7 @@ impl LaneRegistry {
     ) -> Result<LaneRecord> {
         let id = LaneRecord::new_id();
         let log_path = self.log_path_for(&id);
-        // Touch the log so `lane logs` works immediately.
+        // 创建日志文件，以便 `lane logs` 立即可用。
         fs::write(&log_path, "").with_context(|| format!("create log {}", log_path.display()))?;
         let record = LaneRecord {
             id,

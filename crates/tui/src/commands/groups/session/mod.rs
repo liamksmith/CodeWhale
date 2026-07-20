@@ -1,5 +1,4 @@
-//! Session command area: saving, forking, resuming, exporting, and the
-//! `/relay` session-handoff artifact.
+//! 会话命令区域：保存、复刻、恢复、导出以及 `/relay` 会话交接产物。
 
 #[cfg(all(test, feature = "long-running-tests"))]
 mod acceptance;
@@ -13,9 +12,7 @@ mod relay;
 mod rename;
 mod save;
 mod sessions;
-// This group dir intentionally has a `session.rs` child module with the same
-// name. The module_inception allow is a permanent structure rationale, not
-// migration scaffolding; see docs/architecture/command-dispatch.md.
+// 此组目录有意包含一个同名的 `session.rs` 子模块。module_inception 允许是永久性的结构设计考量，而非迁移脚手架；参见 docs/architecture/command-dispatch.md。
 #[allow(clippy::module_inception)]
 mod session;
 

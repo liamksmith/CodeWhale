@@ -1,4 +1,4 @@
-//! Persistent RLM session state for the v0.8.33 head/hands tool surface.
+//! v0.8.33 头/手工具表面的持久化 RLM 会话状态。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -203,7 +203,7 @@ impl SessionObjectSnapshot {
         ResolvedSessionObject::new(
             "session://active/session",
             "session_metadata",
-            "Active session metadata",
+            "活跃会话元数据",
             body,
         )
     }
@@ -213,7 +213,7 @@ impl SessionObjectSnapshot {
         Some(ResolvedSessionObject::new(
             "session://active/system_prompt",
             "system_prompt",
-            "Active system prompt",
+            "活跃系统提示词",
             render_system_prompt(prompt),
         ))
     }
@@ -229,7 +229,7 @@ impl SessionObjectSnapshot {
         ResolvedSessionObject::new(
             "session://active/transcript",
             "transcript",
-            "Active transcript as JSONL",
+            "活跃会话记录（JSONL 格式）",
             body,
         )
     }
@@ -240,7 +240,7 @@ impl SessionObjectSnapshot {
             .enumerate()
             .rev()
             .find(|(_, message)| message.role == "user")
-            .map(|(index, message)| message_resolved_object(index, message, "Latest user message"))
+            .map(|(index, message)| message_resolved_object(index, message, "最新用户消息"))
     }
 
     fn message_object(&self, normalized: &str) -> Option<ResolvedSessionObject> {
@@ -250,7 +250,7 @@ impl SessionObjectSnapshot {
             .ok()?;
         self.messages
             .get(index)
-            .map(|message| message_resolved_object(index, message, "Transcript message"))
+            .map(|message| message_resolved_object(index, message, "会话记录消息"))
     }
 }
 
@@ -506,7 +506,7 @@ mod tests {
 
         let transcript = snapshot
             .resolve("session://active/transcript")
-            .expect("transcript object");
+            .expect("会话记录对象");
         assert!(transcript.body.contains("hello RLM"));
     }
 
@@ -531,7 +531,7 @@ mod tests {
 
         let object = snapshot
             .resolve("session://active/messages/0")
-            .expect("message object");
+            .expect("消息对象");
         assert!(object.body.contains("\"content_redacted\":true"));
         assert!(object.body.len() < large.len());
     }

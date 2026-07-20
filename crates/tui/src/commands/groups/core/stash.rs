@@ -1,9 +1,7 @@
-//! `/stash` slash command — list / pop parked composer drafts (#440).
+//! `/stash` 斜杠命令 — 列出/提取已暂存的编辑器草稿 (#440)。
 //!
-//! See `crates/tui/src/composer_stash.rs` for the on-disk format
-//! and persistence rules. The slash command is the user-facing
-//! surface; Ctrl+S in the composer is the corresponding push entry
-//! point.
+//! 磁盘格式和持久化规则参见 `crates/tui/src/composer_stash.rs`。
+//! 斜杠命令是用户交互界面；编辑器中的 Ctrl+S 是对应的推入入口。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::composer_stash;
@@ -31,14 +29,12 @@ impl RegisterCommand for StashCmd {
     }
 }
 
-/// Top-level dispatch for `/stash`. Subcommands:
+/// `/stash` 的顶层调度。子命令：
 ///
-/// * `/stash`        — same as `/stash list`.
-/// * `/stash list`   — show parked drafts, oldest first.
-/// * `/stash pop`    — restore the most recently parked draft into
-///   the composer; the popped entry is removed from disk.
-/// * `/stash clear`  — wipe the entire stash file. Reports how many
-///   entries were dropped so the user knows what they deleted.
+/// * `/stash`        — 等同于 `/stash list`。
+/// * `/stash list`   — 显示已暂存的草稿，最早的在前。
+/// * `/stash pop`    — 将最近暂存的草稿恢复到编辑器中；弹出的条目从磁盘删除。
+/// * `/stash clear`  — 清空整个暂存文件。报告丢弃了多少条目，以便用户知晓删除内容。
 pub fn stash(app: &mut App, arg: Option<&str>) -> CommandResult {
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     match sub.as_str() {
@@ -84,17 +80,13 @@ fn clear() -> CommandResult {
 fn pop(app: &mut App) -> CommandResult {
     match composer_stash::pop_stash() {
         Some(entry) => {
-            // Replace the current composer contents with the popped
-            // draft. We don't merge — replacing is the predictable
-            // behaviour and matches the "restore the parked draft"
-            // mental model. Mirror the queue-edit pattern for the
-            // cursor reset.
+            // 用弹出的草稿替换当前编辑器内容。我们不合并 — 替换是可预测的行为，
+            // 符合"恢复已暂存的草稿"的心智模型。镜像队列编辑模式以实现光标重置。
             app.input = entry.text.clone();
             app.cursor_position = app.input.len();
             let preview = preview_first_line(&entry.text, 60);
-            // Tell the user how many drafts remain so they can plan
-            // whether to keep popping or move on. Matches the
-            // confirmation pattern used by the queue surface.
+            // 告知用户剩余草稿数量，以便他们计划是继续弹出还是继续其他操作。
+            // 匹配队列界面使用的确认模式。
             let remaining = composer_stash::load_stash().len();
             let suffix = match remaining {
                 0 => " (stash now empty)".to_string(),
@@ -107,9 +99,8 @@ fn pop(app: &mut App) -> CommandResult {
     }
 }
 
-/// Take a one-line preview of `text`, capped at `max_chars`.
-/// Multi-line drafts get a single-line summary so the listing
-/// stays scannable.
+/// 取 `text` 的单行预览，截断至 `max_chars` 字符。
+/// 多行草稿将显示单行摘要，使列表保持可浏览性。
 fn preview_first_line(text: &str, max_chars: usize) -> String {
     let head = text.lines().next().unwrap_or("").trim();
     if head.chars().count() <= max_chars {

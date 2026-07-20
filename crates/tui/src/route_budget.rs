@@ -7,17 +7,15 @@ use crate::models::{
     compaction_threshold_for_model_at_percent,
 };
 
-/// Preserve only route limits that came from a concrete offering.
+/// 仅保留来自具体产品的路由限制。
 #[must_use]
 pub(crate) fn known_route_limits(limits: RouteLimits) -> Option<RouteLimits> {
     limits.has_known_limit().then_some(limits)
 }
 
-/// Context window for a resolved runtime route.
+/// 已解析运行时路由的上下文窗口。
 ///
-/// Route/offering facts win when known; otherwise this falls back to the
-/// existing provider+model capability matrix so startup and custom/local
-/// routes keep their previous conservative behavior.
+/// 已知的路由/产品事实优先；否则回退到现有的提供商+模型能力矩阵，以便启动和自定义/本地路由保持其之前的保守行为。
 #[must_use]
 pub(crate) fn route_context_window_tokens(
     provider: ApiProvider,
@@ -31,7 +29,7 @@ pub(crate) fn route_context_window_tokens(
         .unwrap_or_else(|| provider_capability(provider, model).context_window)
 }
 
-/// Provider/offering output cap, when the resolved route reports one.
+/// 提供商/产品输出上限，当已解析的路由报告时。
 #[must_use]
 pub(crate) fn route_output_limit_tokens(route_limits: Option<RouteLimits>) -> Option<u32> {
     route_limits

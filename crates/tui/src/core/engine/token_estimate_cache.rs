@@ -1,21 +1,20 @@
-//! Process-local memoization for [`crate::compaction::estimate_input_tokens_conservative`].
+//! [`crate::compaction::estimate_input_tokens_conservative`] 的进程级记忆化。
 //!
-//! The token estimator walks the full [`crate::models::Message`] history and the
-//! active system prompt, which is by far the most expensive per-turn CPU cost
-//! in the engine hot path. The same input data is queried from at least five
-//! sites per turn: capacity pre/post tool checkpoints, error escalation,
-//! the seam manager, and the trimmed-message budget check, plus four more
-//! from the TUI footer, `/status`, `/debug`, and the context inspector.
+//! Token 估算器会遍历完整的 [`crate::models::Message`] 历史记录和
+//! 活跃的系统提示词，这是引擎热路径中每个轮次最昂贵的 CPU 开销。
+//! 相同的输入数据在每个轮次中至少被五个位置查询：容量前/后工具检查点、
+//! 错误升级、接缝管理器以及修剪消息预算检查，另外还有来自 TUI 页脚、
+//! `/status`、`/debug` 和上下文检查器的四个查询位置。
 //!
-//! Without memoization, a 200-message history with 5 KB of tool results costs
-//! ~2 ms per call; that is 20 ms of pure waste on a single turn. The estimator
-//! itself is a pure function of `(messages, system_prompt)`, so a
-//! content-versioned cache is safe: the caller bumps `messages_revision`
-//! on every mutation, and we also include a fast fingerprint of the system
-//! prompt as part of the key.
+//! 没有记忆化时，包含 200 条消息历史和 5 KB 工具结果的场景
+//! 每次调用约需 2 ms；一个轮次中就是 20 ms 的纯浪费。估算器
+//! 本身是 `(messages, system_prompt)` 的纯函数，因此
+//! 内容版本化的缓存是安全的：调用者在每次变更时递增
+//! `messages_revision`，我们还将系统提示词的快速指纹
+//! 作为键的一部分。
 //!
-//! The cache is process-local only — cross-session persistence is intentionally
-//! out of scope (see PR #2520 for the cross-session prompt-base disk cache).
+//! 该缓存仅为进程级——跨会话持久化被有意排除在范围之外
+//!（跨会话的提示词基磁盘缓存请参见 PR #2520）。
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -23,52 +22,51 @@ use std::hash::{Hash, Hasher};
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::models::{Message, SystemPrompt};
 
-/// Default capacity for the rolling audit ring. Sized so a 64-entry window
-/// covers a full capacity controller observation cycle without unbounded
-/// growth on long-running sessions.
+/// 滚动审计环的默认容量。设计为 64 条目的窗口
+/// 可在无界增长的情况下覆盖完整的容量控制器观察周期。
 const AUDIT_RING_CAPACITY: usize = 64;
 
-/// Process-local memoization for `estimate_input_tokens_conservative`.
+/// `estimate_input_tokens_conservative` 的进程级记忆化。
 ///
-/// The cache is keyed on the `(messages_revision, system_fingerprint)`
-/// pair, both of which the engine bumps on every content change. On a hit
-/// the previously stored token estimate is returned without re-walking the
-/// message list. On a miss, the estimator runs and the result is stored
-/// alongside the audit ring entry.
+/// 缓存键为 `(messages_revision, system_fingerprint)`
+/// 对，引擎在每次内容变更时都会递增两者。命中时
+/// 返回先前存储的 Token 估算值，无需重新遍历
+/// 消息列表。未命中时，运行估算器并将结果存储
+/// 在审计环条目旁边。
 #[derive(Debug, Default, Clone)]
 pub struct TokenEstimateCache {
-    /// Monotonic counter bumped by the engine on every message mutation.
+    /// 引擎在每次消息变更时递增的单调计数器。
     messages_revision: u64,
-    /// Stable 64-bit hash of the current system prompt text. Computed once
-    /// per `lookup_or_compute` call when the cache misses.
+    /// 当前系统提示词文本的稳定 64 位哈希。在缓存未命中时
+    /// 每次 `lookup_or_compute` 调用计算一次。
     system_fingerprint: u64,
-    /// Cached token count, valid iff both keys match the current inputs.
+    /// 缓存的 Token 计数，仅当两个键都匹配当前输入时有效。
     cached_tokens: Option<usize>,
-    /// Audit ring of recent (revision, tokens) pairs. The most recent entry
-    /// is the tail; the oldest is dropped when capacity is exceeded. Used by
-    /// observability to surface cache effectiveness to `/status`.
+    /// 最近 (revision, tokens) 对的审计环。最新条目
+    /// 是尾部；超出容量时丢弃最旧的。用于
+    /// 可观测性，向 `/status` 展示缓存效果。
     audit_ring: Vec<(u64, usize)>,
-    /// Number of cache hits since the cache was last cleared. Saturates at
-    /// `u64::MAX` (effectively never in practice).
+    /// 自上次缓存清除以来的缓存命中次数。饱和于
+    /// `u64::MAX`（实践中几乎不可能达到）。
     hits: u64,
-    /// Number of cache misses since the cache was last cleared.
+    /// 自上次缓存清除以来的缓存未命中次数。
     misses: u64,
 }
 
 impl TokenEstimateCache {
-    /// Construct a fresh, empty cache. `messages_revision` defaults to 0; the
-    /// engine must call [`bump_messages_revision`](Self::bump_messages_revision)
-    /// whenever a mutation occurs so the next lookup correctly invalidates.
+    /// 构造一个全新的空缓存。`messages_revision` 默认为 0；
+    /// 引擎必须在发生变更时调用 [`bump_messages_revision`](Self::bump_messages_revision)
+    /// 以便下次查找正确失效。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns the cached token estimate, recomputing on miss.
+    /// 返回缓存的 Token 估算值，未命中时重新计算。
     ///
-    /// `messages_revision` is the engine's monotonic counter; bump it on
-    /// every add/remove/clear. `system_prompt` may be `None`. `messages` is
-    /// borrowed for the duration of the call so a miss can re-tokenize.
+    /// `messages_revision` 是引擎的单调计数器；在每次
+    /// 添加/删除/清除时递增。`system_prompt` 可以为 `None`。`messages`
+    /// 在调用期间被借用，以便未命中时可以重新 Token 化。
     pub fn lookup_or_compute(
         &mut self,
         messages_revision: u64,
@@ -94,10 +92,10 @@ impl TokenEstimateCache {
         tokens
     }
 
-    /// Record a messages-revision bump. The engine calls this whenever
-    /// `session.messages` is mutated. Calling it with a value smaller than
-    /// the current value is a no-op (the cache is monotonic).
-    #[allow(dead_code)] // exposed for future wiring of /clear and reset paths; tests exercise it
+    /// 记录消息修订版本递增。引擎在
+    /// `session.messages` 被变更时调用此方法。使用小于
+    /// 当前值的值调用是空操作（缓存是单调的）。
+    #[allow(dead_code)] // 为将来 /clear 和重置路径的接线而暴露；测试会用到
     pub fn bump_messages_revision(&mut self, revision: u64) {
         if revision > self.messages_revision {
             self.messages_revision = revision;
@@ -105,8 +103,8 @@ impl TokenEstimateCache {
         }
     }
 
-    /// Forget all cached state. Used by `/clear` and session reset paths.
-    #[allow(dead_code)] // exposed for future wiring of /clear and reset paths; tests exercise it
+    /// 忘记所有缓存状态。由 `/clear` 和会话重置路径使用。
+    #[allow(dead_code)] // 为将来 /clear 和重置路径的接线而暴露；测试会用到
     pub fn invalidate(&mut self) {
         self.cached_tokens = None;
         self.system_fingerprint = 0;
@@ -115,16 +113,16 @@ impl TokenEstimateCache {
         self.misses = 0;
     }
 
-    /// Returns `(hits, misses)` counters since the last `invalidate` call.
-    #[allow(dead_code)] // surfaced via /status in a follow-up; tests exercise it
+    /// 返回自上次 `invalidate` 调用以来的 `(hits, misses)` 计数器。
+    #[allow(dead_code)] // 通过后续的 /status 展现；测试会用到
     #[must_use]
     pub fn stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
     }
 
-    /// Returns the most recent `(revision, tokens)` audit entries, newest
-    /// first. Bounded by [`AUDIT_RING_CAPACITY`].
-    #[allow(dead_code)] // surfaced via /status in a follow-up; tests exercise it
+    /// 返回最新的 `(revision, tokens)` 审计条目，最新的
+    /// 在最前面。受 [`AUDIT_RING_CAPACITY`] 限制。
+    #[allow(dead_code)] // 通过后续的 /status 展现；测试会用到
     #[must_use]
     pub fn recent_audit(&self) -> &[(u64, usize)] {
         &self.audit_ring
@@ -138,9 +136,9 @@ impl TokenEstimateCache {
     }
 }
 
-/// Stable 64-bit hash of the system prompt text. Walks the same shape the
-/// estimator consumes: a `Text` variant or a list of `Blocks`. Returns 0
-/// for `None` so the empty case is distinguishable but cheap to compare.
+/// 系统提示词文本的稳定 64 位哈希。遍历与估算器
+/// 消费的相同形状：一个 `Text` 变体或 `Blocks` 列表。
+/// 为 `None` 返回 0，使空情况可区分但比较廉价。
 fn fingerprint_system_prompt(system: Option<&SystemPrompt>) -> u64 {
     let Some(system) = system else {
         return 0;
@@ -211,7 +209,7 @@ mod tests {
         let a = cache.lookup_or_compute(1, None, &messages);
         let b = cache.lookup_or_compute(2, None, &messages);
         let (hits, misses) = cache.stats();
-        // Both calls were misses (different revisions), neither hit the cache.
+        // 两次调用都是未命中（不同版本号），都没有命中缓存。
         assert_eq!(a, b);
         assert_eq!(hits, 0);
         assert_eq!(misses, 2);
@@ -246,10 +244,10 @@ mod tests {
         let messages = vec![user_text("x")];
         let _ = cache.lookup_or_compute(5, None, &messages);
         cache.bump_messages_revision(2);
-        // revision went down, cache should still be valid for revision 5
+        // 版本号降低了，缓存对于版本 5 应该仍然有效
         let _ = cache.lookup_or_compute(5, None, &messages);
         let (hits, _) = cache.stats();
-        assert_eq!(hits, 1, "downward revision bumps must not invalidate");
+        assert_eq!(hits, 1, "向下的版本递增不能使缓存失效");
     }
 
     #[test]
@@ -306,7 +304,7 @@ mod tests {
         }
         let ring = cache.recent_audit();
         assert_eq!(ring.len(), AUDIT_RING_CAPACITY);
-        // newest entry should be the most recent revision we asked for
+        // 最新条目应该是最新请求的版本号
         assert_eq!(ring.last().unwrap().0, (AUDIT_RING_CAPACITY + 10) as u64);
     }
 }

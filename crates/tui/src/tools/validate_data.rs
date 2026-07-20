@@ -1,7 +1,7 @@
-//! Structured data validation tool: `validate_data`.
+//! 结构化数据验证工具：`validate_data`。
 //!
-//! Validates JSON or TOML from inline content or a workspace file path and
-//! returns parser errors with lightweight metadata.
+//! 验证来自内联内容或工作区文件路径的 JSON 或 TOML，
+//! 并返回带有轻量元数据的解析器错误。
 
 use std::fs;
 
@@ -12,7 +12,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str,
 };
 
-/// Tool for validating JSON/TOML configuration data.
+/// 用于验证 JSON/TOML 配置数据的工具。
 pub struct ValidateDataTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

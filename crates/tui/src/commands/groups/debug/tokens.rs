@@ -1,4 +1,4 @@
-//! Token/cost introspection and context commands.
+//! 令牌/成本内省和上下文命令。
 
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::localization::{Locale, MessageId, tr};
@@ -49,7 +49,7 @@ fn cache_summary(app: &App, locale: Locale) -> String {
     }
 }
 
-/// Show token usage for session
+/// 显示会话的令牌使用情况
 pub fn tokens(app: &mut App) -> CommandResult {
     let locale = app.ui_locale;
     let message_count = app.api_messages.len();
@@ -79,7 +79,7 @@ pub fn tokens(app: &mut App) -> CommandResult {
     CommandResult::message(report)
 }
 
-/// Show session cost breakdown
+/// 显示会话成本明细
 pub fn cost(app: &mut App) -> CommandResult {
     let total = app.displayed_session_cost_for_currency(app.cost_currency);
     let report = tr(app.ui_locale, MessageId::CmdCostReport)
@@ -87,7 +87,7 @@ pub fn cost(app: &mut App) -> CommandResult {
     CommandResult::message(report)
 }
 
-/// Show current system prompt
+/// 显示当前系统提示
 pub fn system_prompt(app: &mut App) -> CommandResult {
     let prompt_text = match &app.system_prompt {
         Some(SystemPrompt::Text(text)) => text.clone(),
@@ -99,9 +99,9 @@ pub fn system_prompt(app: &mut App) -> CommandResult {
         None => "(no system prompt)".to_string(),
     };
 
-    // Truncate if too long
+    // 如果太长则截断
     let display = if prompt_text.len() > 500 {
-        // Find a valid UTF-8 char boundary at or before byte 500
+        // 在字节 500 处或之前找到一个有效的 UTF-8 字符边界
         let truncate_at = prompt_text
             .char_indices()
             .take_while(|(i, _)| *i <= 500)
@@ -123,11 +123,11 @@ pub fn system_prompt(app: &mut App) -> CommandResult {
     ))
 }
 
-/// Show context window usage.
+/// 显示上下文窗口使用情况。
 ///
-/// `/context` keeps opening the interactive inspector. `/context report`,
-/// `/context json`, and `/context summary` expose the diagnostic source map
-/// from #3143 without replacing the inspector surface.
+/// `/context` 保持打开交互式检查器。`/context report`、
+/// `/context json` 和 `/context summary` 暴露来自 #3143 的诊断源映射，
+/// 而不替换检查器界面。
 pub fn context(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(subcommand) = arg.map(str::trim).filter(|arg| !arg.is_empty()) else {
         return CommandResult::action(AppAction::OpenContextInspector);

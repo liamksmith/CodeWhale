@@ -1,4 +1,4 @@
-//! /goal command, with /hunt kept as a compatibility alias (#2092).
+//! /goal 命令，保留 /hunt 作为兼容性别名（#2092）。
 
 use std::io::Write;
 
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::commands::CommandResult;
 
-/// Declare, show, pause, resume, or close a goal.
+/// 声明、显示、暂停、恢复或关闭目标。
 fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
     match arg {
         Some("clear") | Some("reset") => {
@@ -105,11 +105,10 @@ fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
                     app.hunt.continuation_count
                 ))
             } else {
-                // Context-dependent bare /goal: with no active goal, the
-                // invocation itself is the ask — derive the objective from
-                // the conversation instead of demanding a restatement
-                // (mirrors bare /workflow). The end-of-turn GoalUpdated
-                // snapshot syncs the created goal into the sidebar.
+                // 上下文依赖的裸 /goal：无活跃目标时，
+                // 调用自身就是请求——从对话中推导目标
+                // 而非要求重新陈述（镜像裸 /workflow）。
+                // 轮次结束时的 GoalUpdated 快照将创建的目标同步到侧边栏。
                 let message = "The user invoked /goal with no objective — declare a goal for the \
                      CURRENT work. Synthesize the objective from the conversation context (the \
                      task in flight, recent findings, open items) and set it by calling \
@@ -157,17 +156,16 @@ fn close_hunt(app: &mut App, verdict: HuntVerdict, status: GoalStatus) -> Comman
         return CommandResult::error(err);
     }
     app.hunt.verdict = verdict;
-    // Freeze the sidebar timer at the moment of close-out so it stops ticking
-    // for hunted/escaped goals. Wounded (paused) goals are not terminal — the
-    // timer re-arms on resume — but we still record the pause instant so a
-    // paused goal doesn't read as still-running in the sidebar.
+    // 在关闭时刻冻结侧边栏计时器，使其停止为已猎获/逃脱的目标计时。
+    // 受伤（暂停）的目标不是最终状态——计时器在恢复时重新激活——但我们
+    // 仍然记录暂停时刻，以便暂停的目标不会在侧边栏中显示为仍在运行。
     if app.hunt.finished_at.is_none() {
         app.hunt.finished_at = Some(std::time::Instant::now());
     }
 
-    // Push the new status to the engine's SharedGoalState so the cross-turn
-    // continuation loop respects it: pause/blocked stops the loop, complete
-    // ends it, resume restarts it.
+    // 将新状态推送到引擎的 SharedGoalState，以便跨轮次
+    // 延续循环遵循它：暂停/阻止停止循环，完成结束循环，
+    // 恢复重启循环。
     let action = AppAction::SetGoalStatus {
         status,
         clear: false,
@@ -206,8 +204,8 @@ fn resume_hunt(app: &mut App) -> CommandResult {
     if app.hunt.started_at.is_none() {
         app.hunt.started_at = Some(std::time::Instant::now());
     }
-    // Re-arm the elapsed timer: a resumed goal should keep ticking from where
-    // it left off (started_at is preserved), not stay frozen at the pause.
+    // 重新激活经过时间计时器：恢复的目标应从中断处继续计时
+    //（started_at 保持），而不是停留在暂停时刻。
     app.hunt.finished_at = None;
     CommandResult::with_message_and_action("Goal resumed.", AppAction::SendMessage(objective))
 }
@@ -230,8 +228,8 @@ fn hunt_verdict_label(verdict: HuntVerdict) -> &'static str {
     }
 }
 
-/// Humanized elapsed time for a closed goal, frozen at the finish instant so
-/// the close-out message doesn't drift further each time it's read.
+/// 已关闭目标经过时间的人类化表示，在完成时刻冻结，以便
+/// 结案消息不会在每次读取时进一步漂移。
 fn goal_elapsed_at_close(hunt: &crate::tui::app::HuntState) -> String {
     use crate::tui::notifications::humanize_duration;
     match (hunt.started_at, hunt.finished_at) {
@@ -252,7 +250,7 @@ fn hunt_verdict_name(verdict: HuntVerdict) -> &'static str {
     }
 }
 
-/// Parse text like "Implement login | budget: 50000" into (objective, budget).
+/// 解析类似"Implement login | budget: 50000"的文本为 (objective, budget)。
 fn parse_hunt_budget(text: &str) -> (String, Option<u32>) {
     if let Some((obj, rest)) = text.split_once(" | budget:") {
         let budget = rest
@@ -271,15 +269,15 @@ fn parse_hunt_budget(text: &str) -> (String, Option<u32>) {
     }
 }
 
-/// Write a legacy trophy card to `~/.codewhale/trophies/<date>-<time>-<slug>.md`
-/// for the current goal result (#2092).
+/// 为当前目标结果将旧版奖杯卡写入
+/// `~/.codewhale/trophies/<date>-<time>-<slug>.md`（#2092）。
 fn write_trophy_card(app: &App, verdict: HuntVerdict) -> Result<std::path::PathBuf, String> {
     let quarry = app
         .hunt
         .quarry
         .as_deref()
         .ok_or_else(|| "No goal set. Use /goal <objective> [budget: N] first.".to_string())?;
-    // Collapse consecutive non-alphanumeric chars into a single '-'
+    // 将连续非字母数字字符合并为单个 '-'
     let mut slug = String::new();
     let mut last_dash = false;
     for c in quarry.chars() {
@@ -304,7 +302,7 @@ fn write_trophy_card(app: &App, verdict: HuntVerdict) -> Result<std::path::PathB
     let now_str = now.to_string();
     let dir = codewhale_config::ensure_state_dir("trophies")
         .map_err(|err| format!("Could not resolve trophy directory: {err}"))?;
-    // Include time in filename to avoid collisions on same-date hunts.
+    // 在文件名中包含时间以避免同一天目标冲突。
     let filename = format!("{date}-{time}-{slug}.md");
     let path = dir.join(&filename);
 
@@ -435,9 +433,9 @@ mod tests {
 
     #[test]
     fn test_hunt_without_argument_synthesizes_goal_from_context() {
-        // Bare /goal with no active goal is context-dependent: the model
-        // derives the objective from the conversation and sets it via
-        // create_goal — it must not error with a usage demand.
+        // 裸 /goal 无活跃目标时是上下文依赖的：模型
+        // 从对话中推导目标并通过 create_goal 设置——
+        // 它不能返回带用法要求错误。
         let mut app = create_test_app();
         let result = hunt(&mut app, None);
         assert!(!result.is_error);
@@ -450,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_hunt_without_argument_shows_state_when_goal_active() {
-        // With an active goal, bare /goal stays a status readout.
+        // 有活跃目标时，裸 /goal 仍然显示状态。
         let mut app = create_test_app();
         let _ = hunt(&mut app, Some("Fix the login bug"));
         let result = hunt(&mut app, None);
@@ -538,7 +536,7 @@ mod tests {
         let _ = hunt(&mut app, Some("Finish release prep"));
 
         let paused = hunt(&mut app, Some("pause"));
-        // Pause now dispatches SetGoalStatus to push Paused into SharedGoalState.
+        // 暂停现在分派 SetGoalStatus 以将 Paused 推送到 SharedGoalState。
         assert!(matches!(
             paused.action,
             Some(AppAction::SetGoalStatus {
@@ -573,8 +571,8 @@ mod tests {
             "an active goal must not have a frozen finish time"
         );
 
-        // Closing the goal as hunted must set finished_at so the sidebar timer
-        // stops ticking instead of reading "completed in {growing elapsed}".
+        // 将目标关闭为已猎获必须设置 finished_at，以便侧边栏计时器
+        // 停止计时，而不是显示"completed in {增长的经过时间}"。
         let result = hunt(&mut app, Some("done"));
         assert!(
             result
@@ -590,7 +588,7 @@ mod tests {
             "hunted goal should freeze the elapsed timer"
         );
 
-        // Resume must re-arm the timer so a resumed goal keeps ticking.
+        // 恢复必须重新激活计时器，以便恢复的目标继续计时。
         let _ = hunt(&mut app, Some("resume"));
         assert_eq!(app.hunt.verdict, HuntVerdict::Hunting);
         assert!(
@@ -680,8 +678,7 @@ mod tests {
 
     #[test]
     fn test_show_hunt_when_none() {
-        // Bare /goal with no active goal now declares one from context
-        // instead of printing usage.
+        // 裸 /goal 无活跃目标时现在从上下文推导一个，而不是打印用法。
         let mut app = create_test_app();
         let result = hunt(&mut app, None);
         assert!(

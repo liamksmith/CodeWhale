@@ -18,11 +18,10 @@ pub struct Session {
     /// 当前使用的模型名称（如 "deepseek-v4-pro"）。
     pub model: String,
 
-    /// Reasoning-effort tier for DeepSeek thinking mode:
-    /// `"off" | "low" | "medium" | "high" | "max"`. `None` lets the provider
-    /// apply its own defaults.
+    /// `"off" | "low" | "medium" | "high" | "max"`. `None` 
     /// 控制 DeepSeek 思考模式的深度。None（空值）让供应商使用默认值。
     pub reasoning_effort: Option<String>,
+    
     /// 标记用户是否选择了"自动推理强度"。
     pub reasoning_effort_auto: bool,
 

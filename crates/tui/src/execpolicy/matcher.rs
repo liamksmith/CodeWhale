@@ -1,14 +1,14 @@
-//! Command matching helpers for execpolicy rules.
+//! 执行策略规则的命令匹配辅助函数。
 
 use regex::Regex;
 
-/// Normalize a command string by shlex parsing and re-joining tokens.
+/// 通过 shlex 解析并重新拼接 Token 来归一化命令字符串。
 ///
-/// Strips heredoc bodies first (#419) so a command like
-/// `cat <<EOF > file.txt\nbody\nEOF` collapses to `cat > file.txt`
-/// before pattern matching. Without this, an `auto_allow` pattern
-/// of `cat > file.txt` would fail to match because shlex would
-/// tokenize the body lines into the command.
+/// 首先剥离 heredoc 正文（#419），这样像
+/// `cat <<EOF > file.txt\nbody\nEOF` 这样的命令会在模式匹配
+/// 之前折叠为 `cat > file.txt`。如果不这样做，`cat > file.txt`
+/// 的 `auto_allow` 模式将无法匹配，因为 shlex 会将
+/// 正文行也作为命令的一部分进行分词。
 pub fn normalize_command(command: &str) -> String {
     let stripped = strip_heredoc_bodies(command);
     if let Some(tokens) = shlex::split(&stripped) {
@@ -22,63 +22,59 @@ pub fn normalize_command(command: &str) -> String {
     }
 }
 
-/// Strip heredoc bodies from a multi-line command string.
+/// 从多行命令字符串中剥离 heredoc 正文。
 ///
-/// Recognises the common forms:
+/// 识别常见的格式：
 ///
-/// * `<<DELIM` — body until line equal to `DELIM`.
-/// * `<<-DELIM` — body until line equal to `DELIM` (tabs stripped
-///   in real shell; we keep the delimiter match the same).
-/// * `<<'DELIM'` / `<<"DELIM"` — quoted delimiter; quotes peeled
-///   for the closing match.
+/// * `<<DELIM` — 正文直到等于 `DELIM` 的行。
+/// * `<<-DELIM` — 正文直到等于 `DELIM` 的行（实际 shell 中会去除制表符；
+///   我们保持分隔符匹配相同）。
+/// * `<<'DELIM'` / `<<"DELIM"` — 引号包裹的分隔符；关闭匹配时
+///   会剥离引号。
 ///
-/// The here-string operator `<<<` is intentionally not stripped —
-/// its body is the next token on the same line, not separate lines,
-/// and shlex tokenizes it correctly.
+/// Here-string 操作符 `<<<` 故意不被剥离——
+/// 它的正文在同一个行的下一个 Token 上，而非单独的行，
+/// shlex 可以正确分词。
 fn strip_heredoc_bodies(command: &str) -> String {
     if !command.contains("<<") {
         return command.to_string();
     }
-    // Sidestep the here-string operator (`<<<`) by replacing it
-    // with a placeholder before running the heredoc regex, then
-    // restoring it after. Rust's `regex` crate doesn't support
-    // lookbehind, so we can't write "match `<<` only when not
-    // preceded by `<`" directly; this preprocessing achieves the
-    // same outcome.
+    // 通过将 here-string 操作符（`<<<`）替换为占位符来避开它，
+    // 然后在运行 heredoc 正则表达式后恢复。Rust 的 `regex` crate
+    // 不支持后顾断言，因此我们无法直接编写"仅当 `<<` 前面没有
+    // `<` 时才匹配"；这种预处理实现了相同的效果。
     const HERESTRING_PLACEHOLDER: &str = "\u{0001}HERESTRING\u{0001}";
     let command_owned: String = command.replace("<<<", HERESTRING_PLACEHOLDER);
     let command: &str = &command_owned;
 
-    // Lazy-init the heredoc-start regex. Allows whitespace / `-`
-    // between `<<` and the delimiter, accepts optional `'` / `"`
-    // around the delimiter name. The delimiter is a typical
-    // shell identifier (alphanumeric + underscore).
+    // 惰性初始化 heredoc 起始正则表达式。允许 `<<` 和分隔符之间
+    // 有空格 / `-`，接受分隔符名称周围的可选 `'` / `"`。
+    // 分隔符是典型的 shell 标识符（字母数字 + 下划线）。
     static HEREDOC_RE_INIT: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = HEREDOC_RE_INIT.get_or_init(|| {
         Regex::new(r#"<<-?\s*(?:['"]?)([A-Za-z_][A-Za-z0-9_]*)(?:['"]?)"#)
-            .expect("heredoc regex compiles")
+            .expect("heredoc 正则表达式编译成功")
     });
 
     let mut out = String::with_capacity(command.len());
     let mut lines = command.lines();
     while let Some(line) = lines.next() {
-        // Detect heredoc on this line, capture the delimiter, and
-        // strip the `<<DELIM` operator from the line so downstream
-        // tokenizers don't see it in the pattern. A single line can
-        // have multiple heredocs (rare but legal: `cmd <<A <<B`);
-        // we strip every match on the line and consume until the
-        // *last* delimiter (the matching shell behavior is to stack
-        // them, but for pattern-match purposes they all collapse).
+        // 检测此行上的 heredoc，捕获分隔符，并从行中剥离 `<<DELIM`
+        // 操作符，这样下游分词器就不会在模式中看到它。一行可以
+        // 有多个 heredoc（罕见但合法：`cmd <<A <<B`）；
+        // 我们会剥离该行上的每个匹配，并消耗直到
+        // *最后* 一个分隔符（匹配的 shell 行为是堆叠它们，
+        // 但为了模式匹配的目的，它们都会被折叠）。
         let mut delim: Option<String> = None;
         let mut redacted = line.to_string();
         for cap in re.captures_iter(line) {
-            // Strip the entire `<<DELIM` text from the line.
+            // 从行中剥离整个 `<<DELIM` 文本。
             let whole = cap.get(0).map_or("", |m| m.as_str());
             redacted = redacted.replace(whole, "");
-            // Track the last-seen delimiter for body consumption.
+            // 跟踪最后看到的分隔符，用于消耗正文。
             delim = cap.get(1).map(|m| m.as_str().to_string());
         }
-        // Trim any double-spaces left after stripping.
+        // 去除剥离后留下的多余空格。
         let cleaned = redacted
             .split_whitespace()
             .filter(|t| !t.is_empty())
@@ -87,7 +83,7 @@ fn strip_heredoc_bodies(command: &str) -> String {
         out.push_str(&cleaned);
         out.push('\n');
         if let Some(d) = delim {
-            // Skip body lines until we hit the matching delimiter.
+            // 跳过正文行，直到遇到匹配的分隔符。
             for body_line in lines.by_ref() {
                 if body_line.trim() == d {
                     break;
@@ -95,13 +91,13 @@ fn strip_heredoc_bodies(command: &str) -> String {
             }
         }
     }
-    // Restore the here-string operator we hid before regex matching.
+    // 恢复我们在正则表达式匹配之前隐藏的 here-string 操作符。
     out.replace(HERESTRING_PLACEHOLDER, "<<<")
 }
 
-/// Return true if the pattern matches the command.
+/// 如果模式匹配命令则返回 true。
 ///
-/// Patterns support `*` wildcards that match any substring.
+/// 模式支持匹配任意子串的 `*` 通配符。
 pub fn pattern_matches(pattern: &str, command: &str) -> bool {
     let pattern = normalize_command(pattern);
     let command = normalize_command(command);
@@ -142,18 +138,18 @@ mod tests {
     fn strip_heredoc_strips_simple_body() {
         let cmd = "cat <<EOF > file.txt\nhello\nworld\nEOF";
         let stripped = super::strip_heredoc_bodies(cmd);
-        // Body lines `hello` and `world` are gone; the delimiter
-        // `EOF` line is also consumed.
+        // 正文行 `hello` 和 `world` 消失了；分隔符
+        // `EOF` 行也被消耗。
         assert!(!stripped.contains("hello"));
         assert!(!stripped.contains("world"));
-        // The redirect target survives.
+        // 重定向目标保留。
         assert!(stripped.contains("> file.txt"));
     }
 
     #[test]
     fn strip_heredoc_handles_dash_form() {
-        // `<<-EOF` strips leading tabs in a real shell; for our
-        // matching purposes we still want the delimiter consumed.
+        // 在实际 shell 中，`<<-EOF` 会去除前导制表符；
+        // 出于匹配目的，我们仍然希望分隔符被消耗。
         let cmd = "cat <<-EOF > file.txt\n\tbody\nEOF";
         let stripped = super::strip_heredoc_bodies(cmd);
         assert!(!stripped.contains("body"));
@@ -171,27 +167,27 @@ mod tests {
     #[test]
     fn strip_heredoc_leaves_non_heredoc_commands_intact() {
         let cmd = "echo hello && ls";
-        // Early-return path: no `<<` in the input, so the original
-        // string flows through unchanged (no trailing newline added).
+        // 提前返回路径：输入中没有 `<<`，因此原始
+        // 字符串原样通过（不添加尾随换行符）。
         assert_eq!(super::strip_heredoc_bodies(cmd), "echo hello && ls");
     }
 
     #[test]
     fn strip_heredoc_does_not_touch_here_string_operator() {
-        // `<<<` is here-string; the body is on the same line.
-        // shlex handles it fine — we shouldn't try to strip
-        // anything because there's no body following on later lines.
+        // `<<<` 是 here-string；正文在同一个行上。
+        // shlex 能够正确处理它——我们不应该尝试剥离
+        // 任何内容，因为后续行中没有正文。
         let cmd = "grep foo <<< \"some text\"";
         let stripped = super::strip_heredoc_bodies(cmd);
-        // Output keeps the `<<<` — content not stripped.
+        // 输出保留 `<<<` —— 内容未被剥离。
         assert!(stripped.contains("<<<"));
         assert!(stripped.contains("some text"));
     }
 
     #[test]
     fn normalize_command_strips_heredoc_for_pattern_matching() {
-        // The end-to-end goal: a user's `auto_allow = ["cat > file.txt"]`
-        // pattern matches the heredoc form too.
+        // 端到端目标：用户的 `auto_allow = ["cat > file.txt"]`
+        // 模式也能匹配 heredoc 形式。
         let normalized = normalize_command("cat <<EOF > file.txt\nbody\nEOF");
         assert!(pattern_matches("cat > file.txt", &normalized));
     }

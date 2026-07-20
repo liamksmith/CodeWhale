@@ -1,4 +1,4 @@
-//! `/rename` command — set a custom title for the current session.
+//! `/rename` 命令——为当前会话设置自定义标题。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -28,34 +28,34 @@ impl RegisterCommand for RenameCmd {
     }
 }
 
-/// Rename the current session to the given title.
+/// 将当前会话重命名为给定的标题。
 ///
-/// Usage: `/rename <new title>`
+/// 用法：`/rename <new title>`
 ///
-/// The new title is persisted immediately to `~/.deepseek/sessions/<id>.json`
-/// so the updated name is visible the next time the session picker is opened.
+/// 新标题会立即持久化到 `~/.deepseek/sessions/<id>.json`，
+/// 以便下次打开会话选择器时能看到更新后的名称。
 pub fn rename(app: &mut App, arg: Option<&str>) -> CommandResult {
     let new_title = match arg.map(str::trim).filter(|s| !s.is_empty()) {
         Some(t) => t,
-        None => return CommandResult::error("Usage: /rename <new title>"),
+        None => return CommandResult::error("用法：/rename <new title>"),
     };
 
     if new_title.chars().count() > MAX_TITLE_LEN {
-        return CommandResult::error(format!("Title too long (max {MAX_TITLE_LEN} characters)"));
+        return CommandResult::error(format!("标题过长（最多 {MAX_TITLE_LEN} 个字符）"));
     }
 
     let session_id = match &app.current_session_id {
         Some(id) => id.clone(),
         None => {
             return CommandResult::error(
-                "No active session. Send a message first to start a session.",
+                "没有活跃的会话。请先发送一条消息来开始一个会话。",
             );
         }
     };
 
     let manager = match SessionManager::default_location() {
         Ok(m) => m,
-        Err(e) => return CommandResult::error(format!("Could not open sessions directory: {e}")),
+        Err(e) => return CommandResult::error(format!("无法打开会话目录：{e}")),
     };
 
     rename_with_manager(new_title, &session_id, &manager, app)
@@ -69,10 +69,10 @@ fn rename_with_manager(
 ) -> CommandResult {
     let mut session = match manager.load_session(session_id) {
         Ok(s) => s,
-        Err(e) => return CommandResult::error(format!("Could not load session: {e}")),
+        Err(e) => return CommandResult::error(format!("无法加载会话：{e}")),
     };
 
-    // Sync with current App state to avoid overwriting unsaved messages.
+    // 同步当前 App 状态，避免覆盖未保存的消息。
     session = update_session(
         session,
         &app.api_messages,
@@ -83,8 +83,8 @@ fn rename_with_manager(
     session.metadata.title = new_title.to_string();
 
     match manager.save_session(&session) {
-        Ok(_) => CommandResult::message(format!("Session renamed to \"{new_title}\"")),
-        Err(e) => CommandResult::error(format!("Could not save session: {e}")),
+        Ok(_) => CommandResult::message(format!("会话已重命名为 \"{new_title}\"")),
+        Err(e) => CommandResult::error(format!("无法保存会话：{e}")),
     }
 }
 

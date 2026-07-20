@@ -1,19 +1,16 @@
-//! Small string builders that compose status-bar / footer chips and
-//! one-off informational messages.
+//! 构建状态栏/底部 chips 和一次性信息消息的小型字符串辅助函数。
 //!
-//! Each helper is a pure function over a small slice of `App` or
-//! response data. Grouped here so the composer/footer renderer doesn't
-//! need to scroll past their bodies, and so the labels can be unit
-//! tested in isolation.
+//! 每个辅助函数都是对 `App` 或响应数据的小切片的纯函数。
+//! 集中在这里，这样 composer/footer 渲染器就不需要滚动过它们的主体，
+//! 并且标签可以独立地进行单元测试。
 
 use crate::models::Usage;
 use crate::tui::app::App;
 
-/// Build the multi-line "Cache warmup complete: …" status message
-/// shown after a prefix-cache warmup turn finishes. Handles all four
-/// combinations of `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
-/// being present or absent so we never report "0% cache hit" for an
-/// API call that didn't surface telemetry at all.
+/// 构建前缀缓存预热回合完成后显示的多行"Cache warmup complete: …"状态消息。
+/// 处理 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+/// 存在或缺失的所有四种组合，这样我们就不会在未上报遥测的 API 调用上
+/// 报告"0% cache hit"。
 pub(super) fn cache_warmup_result(usage: &Usage) -> String {
     let cache = match (
         usage.prompt_cache_hit_tokens,
@@ -29,22 +26,22 @@ pub(super) fn cache_warmup_result(usage: &Usage) -> String {
     )
 }
 
-/// Format prefix stability info for the opt-in TUI footer chip.
+/// 为可选的 TUI 底部 footer chip 格式化前缀稳定性信息。
 pub(super) fn prefix_stability_chip(app: &App) -> Option<(String, ratatui::style::Color)> {
     let pct = app.prefix_stability_pct?;
     let changes = app.prefix_change_count;
 
     let color = if changes == 0 {
-        // Perfect stability: green
+        // 完全稳定：绿色
         ratatui::style::Color::Green
     } else if pct >= 95 {
-        // Excellent: green
+        // 优秀：绿色
         ratatui::style::Color::Green
     } else if pct >= 80 {
-        // Good: yellow
+        // 良好：黄色
         ratatui::style::Color::Yellow
     } else {
-        // Poor: red — cache is churning
+        // 较差：红色 — 缓存正在频繁变更
         ratatui::style::Color::Red
     };
 
@@ -60,8 +57,8 @@ pub(super) fn prefix_stability_chip(app: &App) -> Option<(String, ratatui::style
     Some((label, color))
 }
 
-/// Render the response body for `/models` / `models list` — the current
-/// model is starred and other available models follow underneath.
+/// 为 `/models` / `models list` 渲染响应正文 — 当前模型会被标星，
+/// 其他可用模型列在其下方。
 pub(super) fn available_models_message(current_model: &str, models: &[String]) -> String {
     let mut lines = vec![format!("Available models ({})", models.len())];
     for model in models {

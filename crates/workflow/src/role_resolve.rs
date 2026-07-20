@@ -1,30 +1,28 @@
-//! Fleet role resolution for Workflow steps (#4177).
+//! Workflow 步骤的舰队角色解析 (#4177)。
 //!
-//! Workflow owns **what order**; Fleet owns **who**. Steps declare a fleet
-//! `role` (and optional task prompt). At run time the fleet roster maps
-//! `role → AgentProfile id`. This module is the pure resolution path used by
-//! unit tests and by the dispatcher before spawn — it never imports tmux or
-//! session management.
+//! Workflow 拥有 **执行顺序**；Fleet 拥有 **执行者**。步骤声明一个舰队
+//! `role`（以及可选的 task prompt）。运行时舰队名册将
+//! `role → AgentProfile id` 进行映射。本模块是单元测试和调度器在生成前使用的
+//! 纯解析路径——它从不导入 tmux 或会话管理。
 //!
-//! Precedence (aligned with #4111 / #4136):
-//! 1. Explicit `profile` on the step
-//! 2. Fleet role map entry for `role`
-//! 3. Role name used as profile id when the map has no alias
+//! 优先级（与 #4111 / #4136 对齐）：
+//! 1. 步骤上显式的 `profile`
+//! 2. `role` 对应的舰队角色映射条目
+//! 3. 当映射没有别名时，使用角色名称作为 profile id
 //!
-//! Inline provider/model are **not** identity fields. They remain optional
-//! overrides on [`crate::ModelPolicy`]; step identity is role/profile only.
+//! 内联的 provider/model **不是**身份字段。它们仍然是
+//! [`crate::ModelPolicy`] 上的可选覆写；步骤的身份仅由 role/profile 决定。
 
 use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-/// Named fleet roster: role name → AgentProfile id.
+/// 命名舰队名册：角色名 → AgentProfile id。
 ///
-/// Role and profile tokens are compared case-insensitively after trim +
-/// lowercase normalization.
+/// 角色和配置文件令牌在去除首尾空白并转为小写后进行不区分大小写的比较。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FleetRoleMap {
-    /// Lowercased role → profile id (as configured; not re-cased).
+    /// 小写化后的角色 → 配置文件 id（按配置原样；不改变大小写）。
     roles: BTreeMap<String, String>,
 }
 
@@ -33,7 +31,7 @@ impl FleetRoleMap {
         Self::default()
     }
 
-    /// Insert a role → profile binding. Empty tokens are rejected.
+    /// 插入一个角色 → 配置文件的绑定。空令牌将被拒绝。
     pub fn insert(
         &mut self,
         role: impl Into<String>,
@@ -59,7 +57,7 @@ impl FleetRoleMap {
         Ok(map)
     }
 
-    /// Look up the profile id bound to `role`, if any.
+    /// 查找绑定到 `role` 的配置文件 id，如果有的话。
     pub fn get(&self, role: &str) -> Option<&str> {
         let key = normalize_token(role)?;
         self.roles.get(&key).map(String::as_str)
@@ -78,15 +76,15 @@ impl FleetRoleMap {
     }
 }
 
-/// Result of resolving a workflow step against a fleet roster.
+/// 针对舰队名册解析工作流步骤的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWorkflowAgent {
-    /// Fleet role declared on the step, if any.
+    /// 步骤上声明的舰队角色，如果有的话。
     pub resolved_role: Option<String>,
-    /// AgentProfile id to spawn.
+    /// 要生成的 AgentProfile id。
     pub resolved_profile: String,
-    /// How the profile was chosen: `explicit_profile`, `fleet_role`, or
-    /// `role_as_profile`.
+    /// 配置文件的选取方式：`explicit_profile`、`fleet_role` 或
+    /// `role_as_profile`。
     pub route_source: &'static str,
 }
 
@@ -106,8 +104,8 @@ pub enum FleetRoleResolveError {
     InvalidRoleToken { role: String },
 }
 
-/// Normalize a role/profile token: trim, lowercase. Returns `None` if empty
-/// or if the token contains whitespace / quotes / backticks / `=`.
+/// 规范化的角色/配置文件令牌：去除首尾空白、转小写。如果为空
+/// 或令牌包含空白/引号/反引号/`=`，返回 `None`。
 pub fn normalize_token(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -122,20 +120,18 @@ pub fn normalize_token(raw: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
-/// Validate a role token the same way leaf profiles are validated.
+/// 以与叶子配置文件相同的方式验证角色令牌。
 pub fn validate_role_token(role: &str) -> Result<String, FleetRoleResolveError> {
     normalize_token(role).ok_or_else(|| FleetRoleResolveError::InvalidRoleToken {
         role: role.to_string(),
     })
 }
 
-/// Resolve step identity from optional `role` + optional explicit `profile`
-/// against a fleet role map.
+/// 根据可选的 `role` + 可选的显式 `profile` 针对舰队角色映射解析步骤身份。
 ///
-/// When `require_known_role` is true and `role` is set without an explicit
-/// profile, the role must exist in `fleet` (unknown roles fail clearly).
-/// When false, an unknown role falls through to `role_as_profile` (useful
-/// when the dispatcher will validate membership later against a full roster).
+/// 当 `require_known_role` 为 true 且设置了 `role` 但没有显式 profile 时，
+/// 该角色必须存在于 `fleet` 中（未知角色会清晰报错）。
+/// 当为 false 时，未知角色会回退到 `role_as_profile`（当调度器稍后将针对完整名册验证成员时有用）。
 pub fn resolve_workflow_agent(
     role: Option<&str>,
     profile: Option<&str>,
@@ -156,7 +152,7 @@ pub fn resolve_workflow_agent(
             None => None,
         };
 
-    // Explicit profile always wins (task-field precedence).
+    // 显式 profile 始终优先（任务字段优先级）。
     if let Some(resolved_profile) = profile_norm {
         return Ok(ResolvedWorkflowAgent {
             resolved_role: role_norm,

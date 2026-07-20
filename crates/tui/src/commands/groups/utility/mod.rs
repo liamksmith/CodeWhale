@@ -1,5 +1,4 @@
-//! Utility command area: attachments, background tasks, jobs, MCP, and
-//! network inspection.
+//! 实用命令区域：附件、后台任务、作业、MCP 和网络检查。
 
 mod attachment;
 mod jobs;

@@ -1,12 +1,10 @@
-//! Pseudo-terminal session wrapping `portable-pty`.
+//! 伪终端会话，包装 `portable-pty`。
 //!
-//! Spawns a binary in a real PTY, pumps the child's stdout into an in-memory
-//! buffer on a background thread, and exposes write/wait/kill primitives
-//! the test harness composes.
+//! 在真实 PTY 中生成二进制文件，在后台线程中将子进程的 stdout
+//! 泵入内存缓冲区，并公开测试框架组合使用的 write/wait/kill 原语。
 //!
-//! The reader thread is necessary because `portable-pty`'s reader is blocking
-//! and the test thread must remain free to send input + poll for screen
-//! changes.
+//! 读取线程是必要的，因为 `portable-pty` 的读取器是阻塞的，
+//! 而测试线程必须保持自由以发送输入和轮询屏幕变化。
 
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -17,7 +15,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub struct PtySession {
-    /// Held (not read) so the PTY master stays open for the child's lifetime.
+    /// 持有（不读取）PTY master，使其在子进程生命周期内保持打开。
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
@@ -67,9 +65,8 @@ impl<'a> PtySessionBuilder<'a> {
         self
     }
 
-    /// Wipe the inherited environment before applying explicit `env(..)`
-    /// overrides. Use for sealed scenarios that must not see the developer's
-    /// real `~/.deepseek/`, `$HOME`, or API keys.
+    /// 在应用显式的 `env(..)` 覆写之前清除继承的环境。
+    /// 用于不得看到开发者真实 `~/.deepseek/`、`$HOME` 或 API 密钥的密封场景。
     pub fn clear_env(mut self, yes: bool) -> Self {
         self.clear_env = yes;
         self
@@ -105,20 +102,20 @@ impl<'a> PtySessionBuilder<'a> {
                 cmd.env("PATH", path);
             }
         }
-        // TERM must be set to something xterm-ish so crossterm enables the
-        // capabilities the TUI assumes (256 color, bracketed paste, …).
+        // TERM 必须设置为类似 xterm 的值，以便 crossterm 启用
+        // TUI 所需的功能（256 色、bracketed paste 等）。
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
 
-        let child = pair.slave.spawn_command(cmd).context("spawn child")?;
-        // Drop the slave end so EOF propagates correctly when the child exits.
+        let child = pair.slave.spawn_command(cmd).context("生成子进程")?;
+        // 丢弃 slave 端，以便子进程退出时 EOF 正确传播。
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().context("clone reader")?;
-        let writer = pair.master.take_writer().context("take writer")?;
+        let mut reader = pair.master.try_clone_reader().context("克隆读取器")?;
+        let writer = pair.master.take_writer().context("获取写入器")?;
 
         let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let buf_thread = Arc::clone(&buffer);
@@ -138,7 +135,7 @@ impl<'a> PtySessionBuilder<'a> {
                     }
                 }
             })
-            .context("reader thread")?;
+            .context("读取器线程")?;
 
         Ok(PtySession {
             master: pair.master,
@@ -160,21 +157,20 @@ impl PtySession {
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes).context("pty write")?;
-        self.writer.flush().context("pty flush")?;
+        self.writer.write_all(bytes).context("pty 写入")?;
+        self.writer.flush().context("pty 刷新")?;
         Ok(())
     }
 
-    /// Drain any bytes the reader thread has pushed into the buffer. Returns
-    /// the bytes read this call. Non-blocking — returns immediately even if
-    /// the buffer is empty.
+    /// 清空读取器线程已推入缓冲区的所有字节。返回
+    /// 此调用读取的字节。非阻塞——即使缓冲区为空也立即返回。
     pub fn drain(&mut self) -> Vec<u8> {
         let mut b = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *b)
     }
 
-    /// Block until the child exits or the deadline passes. Returns the exit
-    /// status if reaped, or `None` on timeout.
+    /// 阻塞直到子进程退出或超过截止时间。如果已回收则返回退出
+    /// 状态，超时返回 `None`。
     pub fn wait_until(&mut self, deadline: Instant) -> Option<i32> {
         loop {
             match self.child.try_wait() {
@@ -189,8 +185,8 @@ impl PtySession {
         }
     }
 
-    /// Send SIGTERM-equivalent and wait briefly. Returns the exit status if
-    /// the child reaped within `grace`, or `None` otherwise.
+    /// 发送 SIGTERM 等效信号并短暂等待。如果在 `grace` 内回收了
+    /// 子进程则返回退出状态，否则返回 `None`。
     pub fn shutdown(mut self, grace: Duration) -> Option<i32> {
         self.kill_and_join_reader(grace)
     }
@@ -201,7 +197,7 @@ impl PtySession {
         if exit.is_some()
             && let Some(handle) = self.reader_handle.take()
         {
-            // Don't block on the reader thread forever — it exits on EOF.
+            // 不要永远阻塞读取器线程——它在 EOF 时退出。
             let _ = handle.join();
         }
         exit

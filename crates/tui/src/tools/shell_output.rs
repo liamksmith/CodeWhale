@@ -1,17 +1,15 @@
-//! Output truncation and summarization helpers for shell tools.
+//! Shell 工具的输出截断和摘要辅助函数。
 
-/// Maximum output size before truncation (30KB like Claude Code).
+/// 截断前的最大输出大小（30KB，与 Claude Code 相同）。
 const MAX_OUTPUT_SIZE: usize = 30_000;
-/// Head bytes preserved for large shell/test output. The matching tail budget
-/// keeps final errors and test summaries visible without a second command.
+/// 为大 shell/测试输出保留的头部字节。匹配的尾部预算使得最终错误和测试摘要可见，无需额外命令。
 const TRUNCATED_HEAD_BYTES: usize = 22_000;
 const TRUNCATED_TAIL_BYTES: usize = MAX_OUTPUT_SIZE - TRUNCATED_HEAD_BYTES;
-/// Limits for summary strings in tool metadata.
+/// 工具元数据中摘要字符串的限制。
 const SUMMARY_MAX_LINES: usize = 3;
 const SUMMARY_MAX_CHARS: usize = 240;
-/// Maximum number of preserved high-signal lines extracted from the tail
-/// when output is truncated (#242). Bounded so the preserved summary
-/// itself can never blow up the context window.
+/// 当输出被截断时，从尾部提取的保留高信号行数的最大值 (#242)。
+/// 有界以确保保留的摘要本身不会撑爆上下文窗口。
 const MAX_PRESERVED_SUMMARY_LINES: usize = 80;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -47,10 +45,8 @@ pub(crate) fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
         tail_bytes = tail.len(),
     );
 
-    // Preserve high-signal summary lines from the omitted middle (cargo test
-    // results, rustc errors, panics, completion markers). The raw tail is
-    // already included below; these snippets keep earlier failures visible
-    // without re-running `cargo test | tail` repeatedly (#242/#1450).
+    // 从被省略的中间部分保留高信号摘要行（cargo test 结果、rustc 错误、panic、完成标记）。
+    // 原始尾部已包含在下方；这些片段使较早的失败保持可见，无需反复重新运行 `cargo test | tail` (#242/#1450)。
     let mut combined = format!("{head}{note}");
     let preserved = collect_summary_lines(omitted_middle);
     if !preserved.is_empty() {
@@ -70,12 +66,11 @@ pub(crate) fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
     )
 }
 
-/// Extract high-signal summary lines from a chunk of output that would
-/// otherwise be discarded by truncation. Recognises Cargo/rustc output,
-/// generic test framework summaries, panic markers, exit-status lines,
-/// and `Finished`/`running ...` markers. Returns at most
-/// `MAX_PRESERVED_SUMMARY_LINES` lines, oldest-first within each match
-/// class so the most actionable signal is at the end.
+/// 从本会被截断丢弃的输出块中提取高信号摘要行。
+/// 识别 Cargo/rustc 输出、通用测试框架摘要、panic 标记、退出状态行、
+/// 以及 `Finished`/`running ...` 标记。最多返回
+/// `MAX_PRESERVED_SUMMARY_LINES` 行，在每个匹配类中按从旧到新顺序排列，
+/// 使得最具可操作性的信号在末尾。
 pub(crate) fn collect_summary_lines(text: &str) -> Vec<String> {
     let mut preserved: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -89,18 +84,16 @@ pub(crate) fn collect_summary_lines(text: &str) -> Vec<String> {
     preserved
 }
 
-/// Heuristics for "this line is worth preserving even when most of the
-/// output is dropped." Tuned for Cargo/rustc and generic test runner
-/// vocabulary. Intentionally conservative: false positives only cost a
-/// handful of bytes; false negatives force the agent to re-run gates.
+/// 判断"即使大部分输出被丢弃，此行也值得保留"的启发式规则。
+/// 针对 Cargo/rustc 和通用测试运行器词汇进行了调优。刻意保守：
+/// 误报仅消耗少量字节；漏报会强制代理重新运行门控。
 fn is_summary_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.is_empty() {
         return false;
     }
-    // Cargo / rustc canonical markers. Note `trim_start` already stripped
-    // any leading whitespace, so match the bare word — the indentation
-    // Cargo prints (e.g. "    Finished") would never reach this point.
+    // Cargo / rustc 规范标记。注意 `trim_start` 已经去除了任何前导空白，
+    // 因此匹配裸词——Cargo 打印的缩进（例如 "    Finished"）永远不会到达此处。
     if trimmed.starts_with("test result:")
         || trimmed.starts_with("failures:")
         || trimmed.starts_with("FAILED")
@@ -120,11 +113,11 @@ fn is_summary_line(line: &str) -> bool {
     {
         return true;
     }
-    // Generic test runner vocabulary.
+    // 通用测试运行器词汇。
     if trimmed.contains("PASS") || trimmed.contains("FAIL") || trimmed.contains("ASSERT") {
         return true;
     }
-    // Process-level signal lines.
+    // 进程级信号行。
     if trimmed.starts_with("Killed")
         || trimmed.starts_with("Aborted")
         || trimmed.starts_with("Segmentation fault")
@@ -134,8 +127,8 @@ fn is_summary_line(line: &str) -> bool {
     {
         return true;
     }
-    // `test some::name ... ok|FAILED|ignored` is the per-test result line in
-    // libtest. Cheap to match and useful for pinpointing the failing case.
+    // `test some::name ... ok|FAILED|ignored` 是 libtest 中每个测试的结果行。
+    // 匹配成本低，有助于精确定位失败用例。
     if trimmed.starts_with("test ") && (trimmed.ends_with("FAILED") || trimmed.ends_with("ignored"))
     {
         return true;

@@ -1,21 +1,18 @@
-//! `/memory` slash command — inspect and edit the user memory file.
+//! `/memory` 斜杠命令 — 检查并编辑用户记忆文件。
 //!
-//! When the user-memory feature is opted-in (`[memory] enabled = true` in
-//! config or `DEEPSEEK_MEMORY=on` in the environment), `/memory` shows
-//! the current memory file path and contents inline. Subcommands let the
-//! user clear or open the file:
+//! 当用户记忆功能启用时（配置中的 `[memory] enabled = true` 或环境变量
+//! `DEEPSEEK_MEMORY=on`），`/memory` 显示当前记忆文件路径和内容。
+//! 子命令让用户清空或打开文件：
 //!
-//! - `/memory` — show path + content
-//! - `/memory show` — alias for the no-arg form
-//! - `/memory clear` — replace the file contents with an empty marker
-//! - `/memory path` — show only the resolved path
-//! - `/memory help` — show command-specific help and the resolved path
+//! - `/memory` — 显示路径 + 内容
+//! - `/memory show` — 无参数形式的别名
+//! - `/memory clear` — 将文件内容替换为空标记
+//! - `/memory path` — 仅显示已解析的路径
+//! - `/memory help` — 显示命令特定帮助和已解析的路径
 //!
-//! Editor integration (`/memory edit`) is intentionally minimal: the
-//! command prints a copy-pasteable shell line to open the file in the
-//! user's `$VISUAL` / `$EDITOR`, since the in-process external editor
-//! plumbing requires terminal teardown that the slash-command handler
-//! doesn't have access to.
+//! 编辑器集成（`/memory edit`）有意保持最小化：该命令打印一行可复制粘贴的
+//! shell 命令来在用户的 `$VISUAL` / `$EDITOR` 中打开文件，
+//! 因为进程内外部编辑器管道需要终端拆卸，而斜杠命令处理程序没有访问权限。
 
 use std::fs;
 use std::path::Path;

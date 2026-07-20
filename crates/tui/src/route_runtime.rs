@@ -70,11 +70,10 @@ fn prepared_route_config(
     model_selector: Option<&str>,
 ) -> Config {
     let mut route_config = config.clone();
-    // For built-in providers, stamp the canonical provider id. For the dynamic
-    // custom identity (#1519) the original `provider = "<name>"` IS the lookup
-    // key into the `[providers.<name>]` flatten map, so it must be preserved —
-    // overwriting it with the literal "custom" id would break base_url/model
-    // resolution and silently misroute.
+    // 对于内置提供商，印上规范的提供商 ID。对于动态的
+    // 自定义身份 (#1519)，原始 `provider = "<name>"` 就是 `[providers.<name>]`
+    // 扁平映射中的查找键，因此必须保留——用字面的 "custom" ID 覆盖它会破坏
+    // base_url/model 解析并静默地错误路由。
     if provider != ApiProvider::Custom {
         route_config.provider = Some(provider.as_str().to_string());
     }
@@ -223,8 +222,7 @@ mod tests {
         let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
             .expect("custom provider should resolve");
 
-        // Endpoint + model come from the named table; the prefixed model id is
-        // preserved verbatim as the wire id (no provider-prefix sniffing).
+        // Endpoint + model 来自命名的表；带前缀的模型 id 原样保留为线路 id（不进行提供商前缀嗅探）。
         assert_eq!(
             route.candidate.endpoint.base_url,
             "https://api.example.com/v1"
@@ -235,10 +233,10 @@ mod tests {
         );
         assert_eq!(route.model, "vendor/custom-model-v1");
         assert_eq!(route.candidate.protocol, RequestProtocol::ChatCompletions);
-        // HTTPS endpoint: route is valid with no insecure-http advisory.
+        // HTTPS endpoint：路由有效，无不安全 HTTP 警告。
         assert!(route.candidate.validation.ok);
         assert!(route.candidate.validation.messages.is_empty());
-        // The selected provider name is preserved (not overwritten with "custom").
+        // 选定的提供商名称被保留（不会被覆盖为 "custom"）。
         assert_eq!(route.config.provider.as_deref(), Some("my_thing"));
     }
 
@@ -278,8 +276,8 @@ mod tests {
         let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
             .expect("custom http provider should resolve");
 
-        // Advisory only: the route still validates (ok == true) but warns that
-        // credentials would be sent in plaintext over a non-loopback http URL.
+        // 仅建议性质：路由仍然验证通过（ok == true）但警告凭证将
+        // 通过非回环 http URL 以明文形式发送。
         assert!(route.candidate.validation.ok);
         assert!(
             route

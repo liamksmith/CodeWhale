@@ -1,34 +1,33 @@
-//! Web-search provider configuration types.
+//! 网络搜索供应商配置类型。
 //!
-//! Self-contained `[search]` table types extracted verbatim from `config.rs`.
-//! Re-exported from `crate::config` via `pub use search::*;` so existing
-//! `crate::config::SearchProvider` (and sibling) paths resolve unchanged
-//! (#3311).
+//! 从 `config.rs` 中逐字提取的自包含 `[search]` 表类型。
+//! 通过 `pub use search::*;` 从 `crate::config` 重新导出，以便现有的
+//! `crate::config::SearchProvider`（及同类）路径无需更改即可解析 (#3311)。
 
 use serde::{Deserialize, Serialize};
 
-/// Search provider enumeration — selects which backend `web_search` uses.
+/// 搜索供应商枚举——选择 `web_search` 使用的后端。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
-    /// Bing HTML scraping. No API key needed.
+    /// Bing HTML 抓取。无需 API 密钥。
     Bing,
-    /// DuckDuckGo HTML scraping with Bing fallback. No API key needed.
+    /// DuckDuckGo HTML 抓取，带 Bing 回退。无需 API 密钥。
     #[default]
     #[serde(alias = "duckduckgo")]
     DuckDuckGo,
-    /// Tavily AI Search API (<https://tavily.com>). Requires api_key.
+    /// Tavily AI 搜索 API（<https://tavily.com>）。需要 api_key。
     Tavily,
-    /// Bocha AI Search API (<https://bochaai.com>). Requires api_key.
+    /// Bocha AI 搜索 API（<https://bochaai.com>）。需要 api_key。
     Bocha,
-    /// Metaso AI Search API (<https://metaso.cn>). Uses built-in default key
-    /// or `METASO_API_KEY` env var; configurable via `[search] api_key`.
+    /// Metaso AI 搜索 API（<https://metaso.cn>）。使用内置默认密钥
+    /// 或 `METASO_API_KEY` 环境变量；可通过 `[search] api_key` 配置。
     #[serde(alias = "metaso")]
     Metaso,
-    /// SearXNG JSON search API. Requires a trusted/self-hosted `base_url`.
+    /// SearXNG JSON 搜索 API。需要可信/自托管的 `base_url`。
     #[serde(alias = "searx", alias = "searx-ng", alias = "searx_ng")]
     Searxng,
-    /// Baidu AI Search API (<https://qianfan.baidubce.com>). Requires api_key.
+    /// 百度 AI 搜索 API（<https://qianfan.baidubce.com>）。需要 api_key。
     #[serde(
         alias = "baidu-search",
         alias = "baidu_ai_search",
@@ -36,10 +35,10 @@ pub enum SearchProvider {
         alias = "baidu-ai-search"
     )]
     Baidu,
-    /// Volcengine Ark web_search via Responses API. Requires api_key.
-    /// Free tier: 20K queries/month per API key. Falls back to
-    /// `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
-    /// env vars when `[search] api_key` is not set.
+    /// 火山引擎 Ark 通过 Responses API 提供的 web_search。需要 api_key。
+    /// 免费层：每个 API 密钥每月 20K 次查询。当 `[search] api_key` 未设置时，
+    /// 回退到 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
+    /// 环境变量。
     #[serde(
         alias = "volcengine",
         alias = "ark",
@@ -49,10 +48,9 @@ pub enum SearchProvider {
         alias = "volc-ark"
     )]
     Volcengine,
-    /// Sofya web search API (<https://sofya.co>). Requires api_key
-    /// (`ay_live_...`). Returns full extracted page content rather than
-    /// snippets; falls back to the `SOFYA_API_KEY` env var when
-    /// `[search] api_key` is not set.
+    /// Sofya 网络搜索 API（<https://sofya.co>）。需要 api_key
+    ///（`ay_live_...`）。返回完整的提取页面内容而不是
+    /// 摘要；当 `[search] api_key` 未设置时，回退到 `SOFYA_API_KEY` 环境变量。
     Sofya,
 }
 
@@ -115,21 +113,20 @@ pub struct SearchProviderResolution {
     pub source: SearchProviderSource,
 }
 
-/// Web search provider configuration (`[search]` table in config.toml).
+/// 网络搜索供应商配置（config.toml 中的 `[search]` 表）。
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SearchConfig {
-    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `searxng` | `baidu` | `volcengine`. Default: `duckduckgo`.
+    /// 搜索供应商：`bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `searxng` | `baidu` | `volcengine`。默认值：`duckduckgo`。
     #[serde(default)]
     pub provider: Option<SearchProvider>,
-    /// Optional search endpoint. With `duckduckgo`, this is a
-    /// DuckDuckGo-compatible HTML endpoint. With `searxng`, this is the trusted
-    /// SearXNG instance root or `/search` endpoint.
+    /// 可选的搜索端点。使用 `duckduckgo` 时，这是一个兼容 DuckDuckGo 的 HTML 端点。
+    /// 使用 `searxng` 时，这是可信的 SearXNG 实例根地址或 `/search` 端点。
     #[serde(default)]
     pub base_url: Option<String>,
-    /// API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing, DuckDuckGo, or SearXNG.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in default.
-    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY` env var.
-    /// Volcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.
+    /// Tavily、Bocha、Metaso、Baidu 或 Volcengine 的 API 密钥。Bing、DuckDuckGo 或 SearXNG 不需要。
+    /// Metaso 还会回退到 `METASO_API_KEY` 环境变量，然后是内置默认值。
+    /// Baidu 还会回退到 `BAIDU_SEARCH_API_KEY` 环境变量。
+    /// Volcengine 还会回退到 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` 环境变量。
     #[serde(default)]
     pub api_key: Option<String>,
 }

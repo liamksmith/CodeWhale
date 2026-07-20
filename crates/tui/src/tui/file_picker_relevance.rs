@@ -1,18 +1,14 @@
-//! Helpers that decide which workspace files to surface in the
-//! `/files` picker.
+//! 决定哪些工作区文件应在 `/files` 选择器中展示的辅助函数。
 //!
-//! The picker ranks files by three signals harvested from the running
-//! session:
+//! 选择器通过从正在运行的会话中收集的三个信号对文件进行排序：
 //!
-//! * `modified` — files git reports as staged/unstaged or untracked
-//! * `mentioned` — files the user @-referenced in the composer
-//! * `tool` — files that recent tool calls touched (input or output)
+//! * `modified`——git 报告为已暂存/未暂存或未跟踪的文件
+//! * `mentioned`——用户在组合器中 @-引用的文件
+//! * `tool`——最近工具调用触及的文件（输入或输出）
 //!
-//! [`build_relevance`] composes those signals into a
-//! `FilePickerRelevance` that the picker view uses to order results.
-//! The remaining helpers are deterministic string/path utilities that
-//! make path discovery resilient to quoting, leading `./`, and
-//! trailing `:line` markers.
+//! [`build_relevance`] 将这些信号组合成 `FilePickerRelevance`，
+//! 选择器视图使用它来排序结果。其余辅助函数是确定性的字符串/路径工具，
+//! 使路径发现能够容忍引号、前导 `./`和尾随 `:line` 标记。
 
 use crate::dependencies::{ExternalTool, Git};
 use std::collections::HashSet;
@@ -24,13 +20,12 @@ use crate::tui::file_mention::{ContextReferenceKind, ContextReferenceSource};
 use crate::tui::file_picker::FilePickerRelevance;
 use crate::tui::file_picker::FilePickerView;
 
-/// Push the `/files` picker onto the view stack, pre-populated with
-/// per-session relevance ranks (modified, @-mentioned, tool-touched).
+/// 将 `/files` 选择器推入视图栈，预先填充了会话级相关性排名
+/// （已修改、@-提及、工具触及）。
 pub(super) fn open_file_picker(app: &mut App) {
     let relevance = build_relevance(app);
-    // Honor the configured `mention_walk_depth` (0 = unlimited) so the picker
-    // and `@`-mention completion agree, and files in deeply nested trees stay
-    // discoverable (#2488).
+    // 遵循配置的 `mention_walk_depth`（0 = 无限制），使选择器和 `@`-提及
+    // 补全一致，深层嵌套树中的文件保持可发现性 (#2488)。
     app.view_stack
         .push(FilePickerView::new_with_relevance_and_depth(
             &app.workspace,

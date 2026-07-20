@@ -1,12 +1,10 @@
-//! `revert_turn` — agent-callable tool that rewinds the workspace to a
-//! prior pre-turn snapshot.
+//! `revert_turn`——可被代理调用的工具，用于将工作区回滚到之前的轮次前快照。
 //!
-//! The model invokes this when the user says something like "undo the
-//! last edit" or "roll back". It mirrors `/restore` but speaks JSON and
-//! takes a turn-offset (default 1 = previous turn) instead of a list
-//! index, so the model doesn't have to count entries.
+//! 当用户说"撤销上次编辑"或"回滚"时，模型调用此工具。它类似于 `/restore`，
+//! 但使用 JSON 通信并接受轮次偏移量（默认 1 = 上一个轮次）而不是列表索引，
+//! 这样模型不必计数条目。
 //!
-//! Approval is `Required` because this mutates the workspace.
+//! 审批要求为 `Required`，因为这会修改工作区。
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -16,10 +14,9 @@ use super::spec::{
 };
 use crate::snapshot::SnapshotRepo;
 
-/// Default offset: revert the most-recent turn (i.e. the last `pre-turn:*`
-/// snapshot in history).
+/// 默认偏移量：回滚最近的轮次（即历史中最后一个 `pre-turn:*` 快照）。
 const DEFAULT_OFFSET: u64 = 1;
-/// Hard cap so the model can't ask to roll back to the dawn of time.
+/// 硬上限，防止模型要求回滚到最初状态。
 const MAX_OFFSET: u64 = 50;
 
 pub struct RevertTurnTool;
@@ -77,10 +74,9 @@ impl ToolSpec for RevertTurnTool {
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
             let repo = SnapshotRepo::open_or_init(&workspace)
                 .map_err(|e| format!("Snapshot repo init failed: {e}"))?;
-            // Find pre-turn:* snapshots only — those mark the start of
-            // each turn, which is the right rollback target. We pull a
-            // generous list and filter so the model's `turn_offset` is
-            // counted in turns, not raw snapshots.
+            // 只查找 pre-turn:* 快照——它们标记每个轮次的开始，
+            // 是合适的回滚目标。我们拉取一个宽松的列表并过滤，
+            // 这样模型的 `turn_offset` 按轮次计数，而非原始快照。
             let snapshots = repo
                 .list((MAX_OFFSET as usize).saturating_mul(2) + 16)
                 .map_err(|e| format!("Snapshot list failed: {e}"))?;
@@ -137,15 +133,15 @@ mod tests {
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
-    /// Pins HOME to a tempdir for the duration of the test under the
-    /// process-wide env mutex (`crate::test_support::lock_test_env`).
+    /// 在测试期间将 HOME 固定到临时目录，处于进程级环境互斥锁
+    /// （`crate::test_support::lock_test_env`）的保护下。
     struct HomeGuard {
         prev: Option<std::ffi::OsString>,
         _lock: MutexGuard<'static, ()>,
     }
     impl Drop for HomeGuard {
         fn drop(&mut self) {
-            // SAFETY: process-wide lock still held.
+            // SAFETY：进程级锁仍在持有中。
             unsafe {
                 match self.prev.take() {
                     Some(v) => std::env::set_var("HOME", v),
@@ -157,7 +153,7 @@ mod tests {
     fn scoped_home(home: &std::path::Path) -> HomeGuard {
         let lock = lock_test_env();
         let prev = std::env::var_os("HOME");
-        // SAFETY: serialised by the global env lock.
+        // SAFETY：由全局环境锁序列化。
         unsafe {
             std::env::set_var("HOME", home);
         }
@@ -171,7 +167,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let _guard = scoped_home(tmp.path());
 
-        // Setup: create pre-turn:1, post-turn:1 with file modifications.
+        // 设置：创建 pre-turn:1、post-turn:1 并附带文件修改。
         let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
         std::fs::write(workspace.join("a.txt"), b"original").unwrap();
         repo.snapshot("pre-turn:1").unwrap();

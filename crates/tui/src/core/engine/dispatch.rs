@@ -1,19 +1,18 @@
-//! Tool dispatch — plan/execute helpers for the per-turn tool batch.
+//! 工具分发——每回合工具批次的规划/执行辅助函数。
 //!
-//! Extracted from `core/engine.rs` (P1.3). The high-level ordering still
-//! lives in `Engine::handle_deepseek_turn`; this module owns:
+//! 从 `core/engine.rs`（P1.3）提取。高级排序逻辑仍然
+//! 位于 `Engine::handle_deepseek_turn` 中；此模块拥有：
 //!
-//! * Streaming-buffer parsing into a finalized `serde_json::Value` tool input
-//!   (`final_tool_input`, `parse_tool_input`, fenced/JSON segment helpers).
-//! * The `multi_tool_use.parallel` payload parser.
-//! * Policy predicates the turn loop consults — when a batch can run in
-//!   parallel, when an `update_plan` step should stop the turn, when a Plan
-//!   prompt should force a plan-first hop, and the small set of read-only
-//!   MCP tools that are safe to run in parallel.
-//! * The tool execution plan/outcome types the batch driver passes around.
+//! * 将流式缓冲区解析为最终的 `serde_json::Value` 工具输入
+//!   （`final_tool_input`、`parse_tool_input`、围栏/JSON 片段辅助函数）。
+//! * `multi_tool_use.parallel` 负载解析器。
+//! * 回合循环咨询的策略谓词——何时批处理可以并行运行、
+//!   何时 `update_plan` 步骤应停止回合、何时 Plan 提示应强制
+//!   先做计划、以及少量安全的只读 MCP 工具可以并行运行。
+//! * 批处理驱动程序传递的工具执行计划/结果类型。
 //!
-//! All items are `pub(super)`-only: the public engine surface (Op/Event,
-//! `EngineHandle`, `spawn_engine`) stays in `core/engine.rs`.
+//! 所有项仅限于 `pub(super)`：公开的引擎表面（Op/Event、
+//! `EngineHandle`、`spawn_engine`）保持在 `core/engine.rs` 中。
 
 use serde_json::json;
 
@@ -23,9 +22,9 @@ use crate::tui::app::AppMode;
 
 use super::ToolUseState;
 
-// === Types ============================================================
+// === 类型 ============================================================
 
-#[allow(dead_code)] // `index` mirrors batch order for diagnostic ergonomics.
+#[allow(dead_code)] // `index` 镜像批处理顺序，用于诊断的人体工程学。
 pub(super) struct ToolExecOutcome {
     pub(super) index: usize,
     pub(super) id: String,
@@ -89,10 +88,10 @@ impl ToolApprovalStamp {
     fn model_visible_note(self) -> &'static str {
         match self {
             Self::ApprovedByUser => {
-                "[approval] This tool call required approval and was approved by the user before execution."
+                "[approval] 此工具调用需要审批并已在执行前由用户批准。"
             }
             Self::ApprovedWithPolicy => {
-                "[approval] This tool call required approval and was approved by the user with an adjusted execution policy before execution."
+                "[approval] 此工具调用需要审批并已在执行前由用户使用调整后的执行策略批准。"
             }
         }
     }
@@ -126,14 +125,13 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
     }
 }
 
-// Hold the lock guard for the duration of a tool execution.
-// The inner guards are held for RAII purposes (dropped when the guard is dropped).
+// 在工具执行期间持有锁保护。内部守卫为 RAII 目的而持有（守卫被丢弃时释放）。
 pub(super) enum ToolExecGuard<'a> {
     Read(#[allow(dead_code)] tokio::sync::RwLockReadGuard<'a, ()>),
     Write(#[allow(dead_code)] tokio::sync::RwLockWriteGuard<'a, ()>),
 }
 
-// === Caller policy and errors ========================================
+// === 调用者策略和错误 ==========================================
 
 pub(super) fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
     caller.map_or("direct", |c| c.caller_type.as_str())
@@ -155,9 +153,8 @@ pub(super) fn caller_allowed_for_tool(
     requested == "direct"
 }
 
-/// Whole-word check for "mode"/"modes" — a plain `contains("mode")` also
-/// matched "model", letting provider model errors skip the actionable-hint
-/// suffix (#3020).
+/// "mode"/"modes" 的完整词检查——一个简单的 `contains("mode")` 也会
+/// 匹配 "model"，使提供商模型错误跳过可操作提示后缀（#3020）。
 fn mentions_mode_word(lower: &str) -> bool {
     lower
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -167,25 +164,24 @@ fn mentions_mode_word(lower: &str) -> bool {
 pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     let message = match err {
         ToolError::InvalidInput { message } => {
-            format!("Invalid input for tool '{tool_name}': {message}")
+            format!("工具 '{tool_name}' 的输入无效: {message}")
         }
         ToolError::MissingField { field } => {
-            format!("Tool '{tool_name}' is missing required field '{field}'")
+            format!("工具 '{tool_name}' 缺少必需字段 '{field}'")
         }
         ToolError::PathEscape { path } => format!(
-            "Path escapes workspace: {}. Use a workspace-relative path or enable trust mode.",
+            "路径逃逸工作空间: {}。请使用工作空间相对路径或启用信任模式。",
             path.display()
         ),
         ToolError::ExecutionFailed { message } => message.clone(),
         ToolError::Timeout { seconds } => format!(
-            "Tool '{tool_name}' timed out after {seconds}s. Try a narrower scope or a longer timeout."
+            "工具 '{tool_name}' 在 {seconds} 秒后超时。尝试更窄的范围或更长的超时时间。"
         ),
         ToolError::NotAvailable { message } => {
             let lower = message.to_ascii_lowercase();
-            // #3020: Pass through self-explanatory messages that already name the
-            // cause (mode switch, allow_shell, feature flag).  Avoids appending a
-            // conflicting "Check mode, feature flags" suffix on top of
-            // "switch to Act mode" which already gives the recovery path.
+            // #3020：透传已包含原因（模式切换、allow_shell、特性标志）的自解释消息。
+            // 避免在已给出恢复路径的 "switch to Act mode" 之上
+            // 追加冲突的 "Check mode, feature flags" 后缀。
             if lower.contains("current tool catalog")
                 || lower.contains("did you mean:")
                 || mentions_mode_word(&lower)
@@ -195,13 +191,13 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
                 message.clone()
             } else {
                 format!(
-                    "Tool '{tool_name}' is not available: {message}. Check mode, feature flags, or tool name."
+                    "工具 '{tool_name}' 不可用: {message}。检查模式、特性标志或工具名称。"
                 )
             }
         }
         ToolError::PermissionDenied { message } => {
             let lower = message.to_ascii_lowercase();
-            // #3020: Pass through messages that already name the denial cause.
+            // #3020：透传已命名拒绝原因的消息。
             if mentions_mode_word(&lower)
                 || lower.contains("allow_shell")
                 || lower.contains("denied by user")
@@ -209,7 +205,7 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
                 message.clone()
             } else {
                 format!(
-                    "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
+                    "工具 '{tool_name}' 被拒绝: {message}。调整审批模式或请求权限。"
                 )
             }
         }
@@ -227,7 +223,7 @@ fn with_transient_tool_fallback_hint(message: String, err: &ToolError, tool_name
         return message;
     };
 
-    format!("{message} Fallback: {hint}")
+    format!("{message} 回退方案: {hint}")
 }
 
 fn message_already_has_recovery_hint(message: &str) -> bool {
@@ -250,19 +246,19 @@ fn transient_tool_fallback_hint(
         || lower_tool == "web.run"
     {
         return Some(
-            "after one retry, switch to a direct URL/open/fetch path or cached context instead of repeating the same search.",
+            "重试一次后，切换到直接的 URL/open/fetch 路径或缓存上下文，而不是重复相同的搜索。",
         );
     }
 
     if lower_tool.contains("fetch_url") {
         return Some(
-            "after one retry, try a narrower URL/source, use search results or cached context, or state the access limit instead of repeating the same request.",
+            "重试一次后，尝试更窄的 URL/来源、使用搜索结果或缓存上下文，或说明访问限制，而不是重复相同的请求。",
         );
     }
 
     if lower_tool.contains("file_search") || lower_tool.contains("grep") {
         return Some(
-            "after one retry, narrow the query/path or inspect likely files directly instead of repeating the same search unchanged.",
+            "重试一次后，缩小查询/路径或直接检查可能文件，而不是不变地重复相同的搜索。",
         );
     }
 
@@ -271,18 +267,18 @@ fn transient_tool_fallback_hint(
         || lower_tool.contains("run_verifiers")
     {
         return Some(
-            "after one retry, narrow the command/scope, increase timeout only for expected long runs, or switch to file-level evidence.",
+            "重试一次后，缩小命令/范围、仅为预期长时间运行增加超时，或切换到文件级别证据。",
         );
     }
 
     if lower_tool.contains("agent") {
         return Some(
-            "after one retry, reduce delegated scope or continue in the parent context instead of repeatedly spawning the same agent.",
+            "重试一次后，减少委派范围或在父上下文继续，而不是重复生成相同代理。",
         );
     }
 
     Some(
-        "after one retry, choose a different tool or narrower strategy instead of repeating the same call unchanged.",
+        "重试一次后，选择不同工具或更窄策略，而不是不变地重复相同调用。",
     )
 }
 
@@ -312,20 +308,18 @@ fn is_transient_tool_failure(err: &ToolError, formatted_message: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-// === Streaming-buffer parsing =========================================
+// === 流式缓冲区解析 =========================================
 
-/// Promote a streaming `ToolUseState` to a finalized JSON input.
+/// 将流式 `ToolUseState` 提升为最终 JSON 输入。
 ///
-/// Order of preference:
+/// 优先级顺序：
 ///
-///   1. `input_buffer` (the raw streamed delta concatenation) — parsed as
-///      JSON. This is the most authoritative because it's what the model
-///      actually emitted.
-///   2. `input` (the per-delta best-effort parse mirror) — used when the
-///      buffer is empty (pre-streaming tool calls take this path).
-///   3. `input_buffer` non-empty but unparseable → fall back to `input`
-///      (the per-delta parser has already mirrored the most recent valid
-///      partial parse into `tool_state.input`).
+///   1. `input_buffer`（原始流式增量拼接）——解析为 JSON。
+///      这是最权威的，因为它是模型实际发出的内容。
+///   2. `input`（每个增量的尽力而为解析镜像）——当缓冲区为空时使用
+///      （预流式工具调用走此路径）。
+///   3. `input_buffer` 非空但无法解析→回退到 `input`
+///      （每增量解析器已将最新的有效部分解析镜像到 `tool_state.input` 中）。
 pub(super) fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
     if state.input_parse_error.is_some() {
         return malformed_tool_arguments_input(&state.input_buffer);
@@ -343,13 +337,11 @@ pub(super) fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
     if trimmed.is_empty() {
         return None;
     }
-    // Try the deterministic arg-repair ladder first (handles trailing commas,
-    // unclosed braces, embedded control chars, etc.)
+    // 首先尝试确定性参数修复阶梯（处理尾随逗号、未闭合花括号、嵌入控制字符等）。
     if let Ok(value) = crate::tools::arg_repair::repair(trimmed) {
         return Some(value);
     }
-    // Fall back to existing strategies for code-fenced, double-encoded, and
-    // segment-extraction patterns that the repair ladder doesn't cover.
+    // 回退到针对代码围栏、双重编码和修复阶梯未覆盖的片段提取模式的现有策略。
     if let Some(stripped) = strip_code_fences(trimmed)
         && let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped)
     {
@@ -369,7 +361,7 @@ pub(super) fn malformed_tool_arguments_input(buffer: &str) -> serde_json::Value 
 }
 
 pub(super) fn malformed_tool_arguments_error(buffer: &str) -> String {
-    format!("malformed tool arguments from model: expected valid JSON, got {buffer:?}")
+    format!("模型的工具参数格式错误：预期有效 JSON，收到 {buffer:?}")
 }
 
 fn strip_code_fences(text: &str) -> Option<String> {
@@ -435,7 +427,7 @@ pub(super) fn parse_parallel_tool_calls(
         .ok_or_else(|| ToolError::missing_field("tool_uses"))?;
     if tool_uses.is_empty() {
         return Err(ToolError::invalid_input(
-            "multi_tool_use.parallel requires at least one tool call",
+            "multi_tool_use.parallel 需要至少一个工具调用",
         ));
     }
 
@@ -461,7 +453,7 @@ pub(super) fn parse_parallel_tool_calls(
     Ok(calls)
 }
 
-// === Dispatch policy ==================================================
+// === 分发策略 ==================================================
 
 #[cfg(test)]
 pub(super) fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
@@ -519,9 +511,9 @@ pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bo
     }
 
     let lower = content.to_ascii_lowercase();
-    // Only shortcut genuinely lightweight plan asks. Bare "make a plan" wording
-    // is often used for repo/version/build work where Plan mode still needs to
-    // inspect available context before publishing the handoff artifact.
+    // 仅快捷处理真正轻量级的计划请求。裸的"make a plan"措辞
+    // 通常用于仓库/版本/构建工作，其中 Plan 模式在发布交接工件前
+    // 仍需要检查可用上下文。
     let asks_for_direct_plan = [
         "quick plan",
         "short plan",
@@ -598,8 +590,8 @@ pub(super) fn mcp_tool_is_read_only(name: &str) -> bool {
 
 pub(super) fn mcp_tool_approval_description(name: &str) -> String {
     if mcp_tool_is_read_only(name) {
-        format!("Read-only MCP tool '{name}'")
+        format!("只读 MCP 工具 '{name}'")
     } else {
-        format!("MCP tool '{name}' may have side effects")
+        format!("MCP 工具 '{name}' 可能有副作用")
     }
 }

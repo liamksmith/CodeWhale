@@ -1,35 +1,29 @@
-//! Terminal-aware keybinding rendering.
+//! 终端感知的快捷键渲染。
 //!
-//! `KeyBinding` is a typed representation of a chord (a [`KeyCode`] plus a
-//! [`KeyModifiers`] set) that knows how to render itself in a way that matches
-//! the host platform's conventions. On macOS the Option key renders as `⌥`
-//! (matching how every other Mac app — including Terminal, iTerm2, and the
-//! system menu bar — labels Option chords). On Linux and Windows we keep the
-//! plain-text `alt + X` notation that users coming from other CLIs already
-//! recognise.
+//! `KeyBinding` 是一个和弦（一个 [`KeyCode`] 加上一组 [`KeyModifiers`]）的类型化表示，
+//! 它知道如何以匹配宿主平台约定的方式渲染自身。在 macOS 上，Option 键渲染为 `⌥`
+//!（与所有其他 Mac 应用——包括 Terminal、iTerm2 和系统菜单栏——标记 Option 和弦的方式一致）。
+//! 在 Linux 和 Windows 上，我们保留来自其他 CLI 的用户已经熟悉的纯文本 `alt + X` 表示法。
 //!
-//! See `codex-rs/tui/src/key_hint.rs` for the original design; this is a
-//! ratatui-compatible port that exposes a [`std::fmt::Display`] impl plus a
-//! `KeyBinding -> Span` conversion so call sites can use it equally well in
-//! plain `format!` calls and inside ratatui [`ratatui::text::Line`] /
-//! [`ratatui::text::Span`] builders.
+//! 原始设计见 `codex-rs/tui/src/key_hint.rs`；这是一个 ratatui 兼容的移植版本，
+//! 暴露了 [`std::fmt::Display`] 实现以及 `KeyBinding -> Span` 转换，
+//! 使调用点可以在纯 `format!` 调用和 ratatui [`ratatui::text::Line`] /
+//! [`ratatui::text::Span`] 构建器中使用。
 //!
-//! Windows AltGr disambiguation: many European keyboard layouts produce
-//! `Ctrl+Alt` events when AltGr is pressed alone (to type `@`, `\`, etc.).
-//! [`is_altgr`] returns `true` for that combination on Windows so callers can
-//! suppress alt-bound shortcut matching when the user is genuinely just
-//! reaching for a glyph. On non-Windows targets the function always returns
-//! `false`. See [`has_ctrl_or_alt`] for the convenience predicate that
-//! shortcut handlers should prefer over a raw `mods.contains(...)` check.
+//! Windows AltGr 消歧：许多欧洲键盘布局在单独按下 AltGr 时会产生 `Ctrl+Alt` 事件
+//!（用于输入 `@`、`\` 等）。在 Windows 上，[`is_altgr`] 对该组合返回 `true`，
+//! 以便调用者可以在用户实际上只是想输入一个符号时抑制绑定到 alt 的快捷键匹配。
+//! 在非 Windows 目标上，该函数始终返回 `false`。请参见 [`has_ctrl_or_alt`]
+//! 了解便捷谓词，快捷键处理器应优先使用它而不是原始的 `mods.contains(...)` 检查。
 
 use std::fmt;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{style::Style, text::Span};
 
-// Compile-time platform detection. The `#[cfg(test)]` arm forces the macOS
-// rendering during `cargo test` so unit tests are deterministic regardless of
-// the host they run on (CI hits Ubuntu, macOS, and Windows).
+// 编译时平台检测。`#[cfg(test)]` 分支在 `cargo test` 期间强制使用 macOS
+// 渲染，使单元测试无论运行在哪个宿主机上都是确定性的（CI 会在 Ubuntu、
+// macOS 和 Windows 上运行）。
 #[cfg(test)]
 const ALT_PREFIX: &str = "⌥+";
 #[cfg(all(not(test), target_os = "macos"))]
@@ -40,10 +34,10 @@ const ALT_PREFIX: &str = "alt+";
 const CTRL_PREFIX: &str = "ctrl+";
 const SHIFT_PREFIX: &str = "shift+";
 
-/// A typed representation of a single chord (key + modifiers).
+/// 单个和弦（键 + 修饰键）的类型化表示。
 ///
-/// Construct via [`plain`], [`alt`], [`shift`], [`ctrl`], or [`ctrl_alt`] for
-/// the common cases, or [`KeyBinding::new`] for arbitrary modifier sets.
+/// 对于常见情况，通过 [`plain`]、[`alt`]、[`shift`]、[`ctrl`] 或 [`ctrl_alt`] 构造，
+/// 对于任意修饰键集合，使用 [`KeyBinding::new`]。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyBinding {
     key: KeyCode,
@@ -51,15 +45,14 @@ pub struct KeyBinding {
 }
 
 impl KeyBinding {
-    /// Build a binding from a key code and modifier set.
+    /// 从一个键码和修饰键集合构建绑定。
     pub const fn new(key: KeyCode, modifiers: KeyModifiers) -> Self {
         Self { key, modifiers }
     }
 
-    /// `true` if the supplied [`KeyEvent`] matches this binding (key + mods),
-    /// considering only `Press` / `Repeat` events (release events are ignored
-    /// — crossterm only emits them when key-release reporting is on, and we
-    /// never want to fire a shortcut on key-up regardless).
+    /// 如果提供的 [`KeyEvent`] 匹配此绑定（键 + 修饰键），则返回 `true`，
+    /// 仅考虑 `Press` / `Repeat` 事件（释放事件被忽略——只有当按键释放报告
+    /// 开启时 crossterm 才会发出释放事件，我们绝不希望在键弹起时触发快捷键）。
     pub fn is_press(&self, event: KeyEvent) -> bool {
         self.key == event.code
             && self.modifiers == event.modifiers
@@ -67,27 +60,27 @@ impl KeyBinding {
     }
 }
 
-/// A binding with no modifiers.
+/// 没有修饰键的绑定。
 pub const fn plain(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::NONE)
 }
 
-/// `Alt`-modified binding (renders as `⌥` on macOS, `alt+` elsewhere).
+/// `Alt` 修饰的绑定（在 macOS 上渲染为 `⌥`，其他地方为 `alt+`）。
 pub const fn alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::ALT)
 }
 
-/// `Shift`-modified binding.
+/// `Shift` 修饰的绑定。
 pub const fn shift(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::SHIFT)
 }
 
-/// `Ctrl`-modified binding.
+/// `Ctrl` 修饰的绑定。
 pub const fn ctrl(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL)
 }
 
-/// `Ctrl+Alt`-modified binding.
+/// `Ctrl+Alt` 修饰的绑定。
 pub const fn ctrl_alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::ALT))
 }
@@ -156,31 +149,27 @@ fn key_hint_style() -> Style {
     Style::default().dim()
 }
 
-/// Platform-specific prefix for `Alt`-modified chords, matching how the rest
-/// of the TUI labels them: `⌥+` on macOS (the Option-key glyph every Mac app
-/// uses) and `alt+` on Linux/Windows. Callers that build their own key-hint
-/// strings (e.g. the hotbar slot labels) should use this so the modifier label
-/// stays consistent with the help overlay and footer hints.
+/// `Alt` 修饰和弦的平台特定前缀，匹配 TUI 其余部分标记它们的方式：
+/// macOS 上为 `⌥+`（每个 Mac 应用使用的 Option 键符号），Linux/Windows 上为 `alt+`。
+/// 构建自己的快捷键提示字符串的调用者（例如热栏槽位标签）应使用此函数，
+/// 以使修饰键标签与帮助覆盖层和页脚提示保持一致。
 pub fn alt_prefix() -> &'static str {
     ALT_PREFIX
 }
 
-/// `true` if `mods` carries Ctrl or Alt — but not the AltGr Ctrl+Alt
-/// combination on Windows. Shortcut handlers should prefer this predicate
-/// over `mods.contains(CONTROL) || mods.contains(ALT)` so they don't fire on
-/// AltGr keypresses (which on European keyboard layouts are how users type
-/// `@`, `\`, `|`, etc.).
+/// 如果 `mods` 携带 Ctrl 或 Alt——但不包括 Windows 上的 AltGr Ctrl+Alt
+/// 组合，则返回 `true`。快捷键处理应优先使用此谓词
+/// 而非 `mods.contains(CONTROL) || mods.contains(ALT)`，这样它们不会在
+/// AltGr 按键上触发（在欧洲键盘布局上，AltGr 是用户输入 `@`、`\`、`|` 等的方式）。
 pub fn has_ctrl_or_alt(mods: KeyModifiers) -> bool {
     (mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT)) && !is_altgr(mods)
 }
 
-/// On Windows, AltGr is delivered as `Ctrl+Alt`. There's no terminal-portable
-/// way to tell a real `Ctrl+Alt` chord apart from a layout-emitted AltGr glyph
-/// — crossterm doesn't expose left-vs-right modifier distinction across all
-/// backends — so we treat any `Ctrl+Alt` (with no other modifiers) as AltGr.
-/// This trades the (rare) ability to bind `Ctrl+Alt+<char>` for not
-/// swallowing accented characters European users type. On non-Windows
-/// platforms this always returns `false`.
+/// 在 Windows 上，AltGr 被传递为 `Ctrl+Alt`。没有终端可移植的方式
+/// 来区分真实的 `Ctrl+Alt` 和弦与布局发出的 AltGr 字符——crossterm
+/// 不会在所有后端上暴露左/右修饰键的区别——因此我们将任何 `Ctrl+Alt`（没有其他修饰键）
+/// 视为 AltGr。这以（罕见的）绑定 `Ctrl+Alt+<char>` 的能力为代价，
+/// 换取不吞掉欧洲用户输入的重音字符。在非 Windows 平台上始终返回 `false`。
 #[cfg(windows)]
 #[inline]
 pub fn is_altgr(mods: KeyModifiers) -> bool {
@@ -197,9 +186,8 @@ pub fn is_altgr(_mods: KeyModifiers) -> bool {
 mod tests {
     use super::*;
 
-    // Tests force ALT_PREFIX = "⌥+" via `cfg(test)`. We verify both
-    // platform-specific renderings explicitly by invoking the helper code
-    // paths the host-OS cfg arms would select.
+    // 测试通过 `cfg(test)` 强制 ALT_PREFIX = "⌥+"。我们通过显式调用
+    // 宿主 OS cfg 分支会选择的辅助代码路径来验证两种平台特定的渲染。
 
     #[test]
     fn plain_renders_just_the_key() {
@@ -210,17 +198,16 @@ mod tests {
 
     #[test]
     fn alt_renders_with_macos_glyph_in_tests() {
-        // Under cfg(test) we force the macOS prefix so test output is
-        // deterministic. The non-macOS rendering is exercised in
-        // `non_macos_alt_prefix` below.
+        // 在 cfg(test) 下，我们强制使用 macOS 前缀，使测试输出是
+        // 确定性的。非 macOS 的渲染在下面的 `non_macos_alt_prefix` 中测试。
         assert_eq!(alt(KeyCode::Up).to_string(), "⌥+↑");
         assert_eq!(alt(KeyCode::Char('p')).to_string(), "⌥+p");
     }
 
     #[test]
     fn shift_and_ctrl_render_in_canonical_order() {
-        // Order is: ctrl, shift, alt — matching codex-rs and what users
-        // expect from cross-tool muscle memory.
+        // 顺序是：ctrl, shift, alt——匹配 codex-rs 和用户
+        // 从跨工具肌肉记忆中期望的顺序。
         assert_eq!(ctrl(KeyCode::Char('c')).to_string(), "ctrl+c");
         assert_eq!(shift(KeyCode::Tab).to_string(), "shift+tab");
         assert_eq!(
@@ -253,8 +240,8 @@ mod tests {
     fn span_conversion_carries_dim_style() {
         let span: Span<'static> = alt(KeyCode::Up).into();
         assert_eq!(span.content, "⌥+↑");
-        // The exact `Style` representation in ratatui isn't trivially
-        // comparable, so we just verify the style was set (not default).
+        // ratatui 中 `Style` 的确切表示不易比较，
+        // 因此我们只验证样式被设置了（不是默认值）。
         assert_ne!(span.style, Style::default());
     }
 
@@ -295,21 +282,21 @@ mod tests {
             assert!(!is_altgr(altgr_mods));
             assert!(has_ctrl_or_alt(altgr_mods));
         }
-        // Plain Alt is never AltGr.
+        // 单独的 Alt 从不是 AltGr。
         assert!(!is_altgr(KeyModifiers::ALT));
         assert!(has_ctrl_or_alt(KeyModifiers::ALT));
-        // No modifiers: never Ctrl/Alt.
+        // 无修饰键：从不是 Ctrl/Alt。
         assert!(!has_ctrl_or_alt(KeyModifiers::NONE));
     }
 
-    /// Render an alt-prefixed binding the way the Linux/Windows non-test arm
-    /// would. We can't toggle the cfg at runtime, so we rebuild the rendering
-    /// with the alternate prefix to lock in the expected string shape.
+    /// 按照 Linux/Windows 非测试分支的方式渲染一个 alt 前缀绑定。
+    /// 我们无法在运行时切换 cfg，因此使用替代前缀重新构建渲染
+    /// 以锁定预期的字符串形状。
     #[test]
     fn non_macos_alt_prefix_shape() {
         let mods = modifiers_to_string(KeyModifiers::ALT);
-        // Under cfg(test), this is "⌥+". Strip and re-render with "alt+" to
-        // demonstrate the shape that ships on Linux/Windows release builds.
+        // 在 cfg(test) 下，这是 "⌥+"。去掉并替换为 "alt+" 以展示
+        // Linux/Windows 发布版中的实际形状。
         let linux_shape = mods.replace("⌥+", "alt+");
         assert_eq!(linux_shape, "alt+");
 

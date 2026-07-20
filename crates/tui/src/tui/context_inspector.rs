@@ -1,4 +1,4 @@
-//! Compact session context inspector.
+//! 紧凑的会话上下文检查器。
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -12,9 +12,9 @@ use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::file_mention::ContextReferenceSource;
 use crate::utils::estimate_message_chars;
 
-/// Marker used by per-turn working-set metadata. Replicated here so the
-/// context inspector can distinguish stable prompt blocks from volatile
-/// working-set context without importing engine internals.
+/// 每轮工作集元数据使用的标记。在此处复制，以便
+/// 上下文检查器能够区分稳定的提示块和易变的工作集上下文，
+/// 而无需导入引擎内部实现。
 const WORKING_SET_MARKER: &str = "## Repo Working Set";
 
 pub(crate) const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
@@ -183,15 +183,14 @@ fn context_status(percent: f64) -> ContextPressure {
     }
 }
 
-/// Inspect the system prompt structure, split into cache-friendly stable
-/// prefix blocks and the volatile working-set tail block.
+/// 检查系统提示结构，将其分为缓存友好的稳定前缀块
+/// 和易变的工作集尾部块。
 fn push_system_prompt_structure(out: &mut String, app: &App, locale: Locale) {
     let _ = writeln!(out, "{}", tr(locale, MessageId::CtxInspSystemPrompt));
     let _ = writeln!(out, "-----------------------");
 
-    // Conservative token estimate: ~3 chars per token (consistent with
-    // compaction.rs internal helpers — replicated here to avoid depending
-    // on a private function).
+    // 保守的 token 估算：每 token 约 3 个字符（与 compaction.rs 内部
+    // 辅助函数一致——在此复制以避免依赖私有函数）。
     let text_tokens = |text: &str| text.chars().count().div_ceil(3);
 
     let total_est = match &app.system_prompt {
@@ -289,7 +288,7 @@ fn push_system_prompt_structure(out: &mut String, app: &App, locale: Locale) {
         }
     }
 
-    // Cache-economics hint
+    // 缓存经济学提示
     let _ = writeln!(out, "  {}", tr(locale, MessageId::CtxInspCacheTip));
 }
 
@@ -487,9 +486,9 @@ mod tests {
             },
             &Config::default(),
         );
-        // Pin the route identity: App::new consults the developer's real
-        // saved settings, so on a machine with customized provider/model
-        // the context-window assertions computed against a different route.
+        // 固定路由标识：App::new 会读取开发者的真实保存设置，
+        // 因此在自定义了供应商/模型的机器上，
+        // 上下文窗口断言会根据不同的路由计算。
         app.api_provider = crate::config::ApiProvider::Deepseek;
         app.auto_model = false;
         app.last_effective_model = None;
@@ -690,7 +689,7 @@ mod tests {
         ]));
         let text = build_context_inspector_text(&app, Locale::ZhHans);
 
-        // Positive: key ZhHans labels present
+        // 正向检查：关键中文标签存在
         assert!(text.contains("会话上下文"), "session header: {text}");
         assert!(text.contains("模型"), "model label: {text}");
         assert!(text.contains("工作区"), "workspace: {text}");
@@ -706,7 +705,7 @@ mod tests {
         assert!(text.contains("缓存友好"), "cache-friendly: {text}");
         assert!(text.contains("提示"), "cache tip: {text}");
 
-        // Negative: no English labels leak
+        // 反向检查：无英文标签泄漏
         assert!(!text.contains("Session Context"), "EN session leaked");
         assert!(!text.contains("Model:"), "EN model leaked");
         assert!(!text.contains("cells"), "EN cells leaked");

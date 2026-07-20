@@ -1,4 +1,4 @@
-//! In-TUI MCP manager command parser.
+//! TUI 内的 MCP 管理器命令解析器。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -38,33 +38,33 @@ fn mcp(_app: &mut App, args: Option<&str>) -> CommandResult {
             force: parts.any(|part| part == "--force" || part == "-f"),
         })),
         "add" => parse_add(parts.collect()),
-        "enable" => match parse_name(parts.next(), "Usage: /mcp enable <name>") {
+        "enable" => match parse_name(parts.next(), "用法：/mcp enable <name>") {
             Ok(name) => CommandResult::action(AppAction::Mcp(McpUiAction::Enable { name })),
             Err(msg) => CommandResult::error(msg),
         },
-        "disable" => match parse_name(parts.next(), "Usage: /mcp disable <name>") {
+        "disable" => match parse_name(parts.next(), "用法：/mcp disable <name>") {
             Ok(name) => CommandResult::action(AppAction::Mcp(McpUiAction::Disable { name })),
             Err(msg) => CommandResult::error(msg),
         },
-        "remove" | "rm" => match parse_name(parts.next(), "Usage: /mcp remove <name>") {
+        "remove" | "rm" => match parse_name(parts.next(), "用法：/mcp remove <name>") {
             Ok(name) => CommandResult::action(AppAction::Mcp(McpUiAction::Remove { name })),
             Err(msg) => CommandResult::error(msg),
         },
-        "login" => match parse_name(parts.next(), "Usage: /mcp login <name> [--scope scope]") {
+        "login" => match parse_name(parts.next(), "用法：/mcp login <name> [--scope scope]") {
             Ok(name) => CommandResult::action(AppAction::Mcp(McpUiAction::Login {
                 name,
                 scopes: parse_scopes(parts.collect()),
             })),
             Err(msg) => CommandResult::error(msg),
         },
-        "logout" => match parse_name(parts.next(), "Usage: /mcp logout <name>") {
+        "logout" => match parse_name(parts.next(), "用法：/mcp logout <name>") {
             Ok(name) => CommandResult::action(AppAction::Mcp(McpUiAction::Logout { name })),
             Err(msg) => CommandResult::error(msg),
         },
         "validate" => CommandResult::action(AppAction::Mcp(McpUiAction::Validate)),
         "reload" | "reconnect" => CommandResult::action(AppAction::Mcp(McpUiAction::Reload)),
         _ => CommandResult::error(
-            "Usage: /mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|login <name>|logout <name>|validate|reload]",
+            "用法：/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|login <name>|logout <name>|validate|reload]",
         ),
     }
 }
@@ -79,7 +79,7 @@ fn parse_name(name: Option<&str>, usage: &str) -> Result<String, String> {
 fn parse_add(parts: Vec<&str>) -> CommandResult {
     if parts.len() < 3 {
         return CommandResult::error(
-            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add http <name> <url>",
+            "用法：/mcp add stdio <name> <command> [args...] 或 /mcp add http <name> <url>",
         );
     }
     match parts[0].to_ascii_lowercase().as_str() {
@@ -99,7 +99,7 @@ fn parse_add(parts: Vec<&str>) -> CommandResult {
             transport: Some("sse".to_string()),
         })),
         _ => CommandResult::error(
-            "Usage: /mcp add stdio <name> <command> [args...] OR /mcp add http <name> <url>",
+            "用法：/mcp add stdio <name> <command> [args...] 或 /mcp add http <name> <url>",
         ),
     }
 }

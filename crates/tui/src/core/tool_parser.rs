@@ -7,7 +7,7 @@
 //! （比如在聊天内容中夹杂特殊标记）。这个解析器就是用来把那些标记从文本中"抠"出来，转成结构化的
 //! 工具调用。现在引擎已经直接使用模型返回的原生 tool_calls JSON 字段，本文件不再被调用。
 //!
-//! Some DeepSeek outputs tool calls as text in various formats:
+//! 一些 DeepSeek 模型以各种文本格式输出工具调用：
 //! ```text
 //! [TOOL_CALL]
 //! {tool => "tool_name", args => {...}}
@@ -16,7 +16,7 @@
 //!
 //! 第二种格式：XML 风格，以自定义标签 `codewhale:tool_call` 包裹，内部用 
 //! `invoke` 标签表示调用，`parameter` 标签表示参数。
-//! Or XML-style format:
+//! 或者 XML 风格格式：
 //! ```text
 //! <codewhale:tool_call>
 //! <invoke name="tool_name">
@@ -25,13 +25,13 @@
 //! </codewhale:tool_call>
 //! ```
 //!
-//! This module 把上述文本模式解析成 `ParsedToolCall` 结构体。
+//! 此模块把上述文本模式解析成 `ParsedToolCall` 结构体。
 
 use regex::Regex;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-/// A parsed tool call from text content.
+/// 从文本内容中解析出的工具调用。
 #[derive(Debug, Clone)]
 pub struct ParsedToolCall {
     /// 工具的名称，比如 `"read_file"`、`"exec_shell"`。
@@ -44,12 +44,12 @@ pub struct ParsedToolCall {
     pub id: String,
 }
 
-/// Result of parsing text for tool calls.整个解析操作的打包返回值。
+/// 从文本中解析工具调用的结果。整个解析操作的打包返回值。
 #[derive(Debug)]
 pub struct ParseResult {
     /// 清洗后的文本——移除原始text中所有工具调用标记（包括 `` 本身）。
     pub clean_text: String,
-    /// Parsed tool calls found in the text
+    /// 在文本中找到的解析后的工具调用。
     pub tool_calls: Vec<ParsedToolCall>,
 }
 
@@ -72,32 +72,32 @@ const FAKE_TOOL_CALL_MARKERS: &[&str] = &[
 
 fn get_tool_call_regex() -> &'static Regex {
     TOOL_CALL_REGEX.get_or_init(|| {
-        // Match [TOOL_CALL] ... [/TOOL_CALL] blocks
+        // 匹配 [TOOL_CALL] ... [/TOOL_CALL] 块
         Regex::new(r"(?s)\[TOOL_CALL\]\s*(.*?)\s*\[/TOOL_CALL\]")
-            .expect("TOOL_CALL regex pattern is valid")
+            .expect("TOOL_CALL 正则表达式有效")
     })
 }
 
 fn get_xml_tool_call_regex() -> &'static Regex {
     XML_TOOL_CALL_REGEX.get_or_init(|| {
-        // Match <codewhale:tool_call>...</codewhale:tool_call> or similar XML patterns
+        // 匹配 <codewhale:tool_call>...</codewhale:tool_call> 或类似的 XML 模式
         Regex::new(r"(?s)<(?:codewhale:)?tool_call[^>]*>\s*(.*?)\s*</(?:codewhale:)?tool_call>")
-            .expect("XML tool_call regex pattern is valid")
+            .expect("XML tool_call 正则表达式有效")
     })
 }
 
 fn get_invoke_regex() -> &'static Regex {
     INVOKE_REGEX.get_or_init(|| {
-        // Match <invoke name="tool_name">...</invoke> patterns
+        // 匹配 <invoke name="tool_name">...</invoke> 模式
         Regex::new(r#"(?s)<invoke\s+name\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>"#)
-            .expect("invoke regex pattern is valid")
+            .expect("invoke 正则表达式有效")
     })
 }
 
 fn get_thinking_regex() -> &'static Regex {
     THINKING_REGEX.get_or_init(|| {
-        // Match thinking blocks including partial closing tags
-        Regex::new(r"(?s)</?(?:think|thinking)[^>]*>").expect("thinking regex pattern is valid")
+        // 匹配思考块，包括部分关闭标签
+        Regex::new(r"(?s)</?(?:think|thinking)[^>]*>").expect("thinking 正则表达式有效")
     })
 }
 
@@ -106,7 +106,7 @@ fn get_fake_tool_wrapper_regex() -> &'static Regex {
         Regex::new(
             r#"(?s)<function_calls>.*?</function_calls>|<｜DSML｜tool_calls>.*?</｜DSML｜tool_calls>|<｜DSML｜invoke\b[^>]*>.*?</｜DSML｜invoke>|<\|DSML\|tool_calls>.*?</\|DSML\|tool_calls>|<\|DSML\|invoke\b[^>]*>.*?</\|DSML\|invoke>|<\|dsml\|tool_calls>.*?</\|dsml\|tool_calls>|<\|dsml\|invoke\b[^>]*>.*?</\|dsml\|invoke>|<\|tool_calls>.*?</\|tool_calls>"#,
         )
-        .expect("fake tool wrapper regex pattern is valid")
+        .expect("fake tool wrapper 正则表达式有效")
     })
 }
 
@@ -121,7 +121,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
     let thinking_regex = get_thinking_regex();
     clean_text = thinking_regex.replace_all(&clean_text, "").to_string();
 
-    // Parse [TOOL_CALL] format
+    // 解析 [TOOL_CALL] 格式
     let regex = get_tool_call_regex();
     for cap in regex.captures_iter(text) {
         let (Some(full_match), Some(inner)) = (cap.get(0), cap.get(1)) else {
@@ -137,7 +137,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
         clean_text = clean_text.replace(full_match, "");
     }
 
-    // Parse XML-style <codewhale:tool_call> or <tool_call> format
+    // 解析 XML 风格 <codewhale:tool_call> 或 <tool_call> 格式
     let xml_regex = get_xml_tool_call_regex();
     for cap in xml_regex.captures_iter(text) {
         let (Some(full_match), Some(inner)) = (cap.get(0), cap.get(1)) else {
@@ -146,7 +146,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
         let full_match = full_match.as_str();
         let inner = inner.as_str().trim();
 
-        // Parse invoke blocks inside
+        // 解析内部的 invoke 块
         if let Some(parsed) = parse_invoke_block(inner, &mut id_counter) {
             tool_calls.push(parsed);
         } else if let Some(parsed) = parse_tool_call_inner(inner, &mut id_counter) {
@@ -156,7 +156,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
         clean_text = clean_text.replace(full_match, "");
     }
 
-    // Also parse standalone <invoke> blocks that might not be wrapped
+    // 也解析可能未被包裹的独立 <invoke> 块
     let invoke_regex = get_invoke_regex();
     for cap in invoke_regex.captures_iter(&clean_text.clone()) {
         let (Some(full_match), Some(tool_name), Some(inner)) = (cap.get(0), cap.get(1), cap.get(2))
@@ -182,7 +182,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
         .replace_all(&clean_text, "")
         .to_string();
 
-    // Clean up extra whitespace and empty lines
+    // 清理多余空格和空行
     clean_text = clean_text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -197,7 +197,7 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
     }
 }
 
-/// Parse an `<invoke>` block into a tool call.
+/// 将 `<invoke>` 块解析为工具调用。
 fn parse_invoke_block(content: &str, id_counter: &mut u32) -> Option<ParsedToolCall> {
     let invoke_regex = get_invoke_regex();
     let cap = invoke_regex.captures(content)?;
@@ -215,7 +215,7 @@ fn parse_invoke_block(content: &str, id_counter: &mut u32) -> Option<ParsedToolC
     })
 }
 
-/// Parse XML-style parameters like <parameter name="foo">value</parameter>
+/// 解析 XML 风格参数，如 <parameter name="foo">value</parameter>
 fn parse_xml_parameters(content: &str) -> Value {
     let param_regex = Regex::new(
         "<(?:parameter|param)\\s+name\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</(?:parameter|param)>",
@@ -226,14 +226,14 @@ fn parse_xml_parameters(content: &str) -> Value {
 
     let mut map = serde_json::Map::new();
 
-    // Try parsing <parameter name="...">value</parameter>
+    // 尝试解析 <parameter name="...">value</parameter>
     if let Some(regex) = param_regex {
         for cap in regex.captures_iter(content) {
             if let (Some(name), Some(value)) = (cap.get(1), cap.get(2)) {
                 let name_str = name.as_str();
                 let value_str = value.as_str().trim();
 
-                // Try to parse as JSON, otherwise use as string
+                // 尝试解析为 JSON，否则用作字符串
                 let json_value = serde_json::from_str(value_str)
                     .unwrap_or_else(|_| Value::String(value_str.to_string()));
                 map.insert(name_str.to_string(), json_value);
@@ -241,7 +241,7 @@ fn parse_xml_parameters(content: &str) -> Value {
         }
     }
 
-    // Also try parsing <tagname>value</tagname> format
+    // 也尝试解析 <tagname>value</tagname> 格式
     if let Some(regex) = simple_tag_regex {
         for cap in regex.captures_iter(content) {
             if let (Some(name), Some(value), Some(close)) = (cap.get(1), cap.get(2), cap.get(3)) {
@@ -249,7 +249,7 @@ fn parse_xml_parameters(content: &str) -> Value {
                     continue;
                 }
                 let name_str = name.as_str();
-                // Skip known wrapper tags
+                // 跳过已知的包装标签
                 if ["invoke", "tool_call", "parameter", "param"].contains(&name_str) {
                     continue;
                 }
@@ -266,27 +266,27 @@ fn parse_xml_parameters(content: &str) -> Value {
     Value::Object(map)
 }
 
-/// Parse the inner content of a `TOOL_CALL` block.
+/// 解析 `TOOL_CALL` 块的内部内容。
 fn parse_tool_call_inner(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCall> {
-    // Try to parse as JSON first
+    // 首先尝试解析为 JSON
     if let Ok(json) = serde_json::from_str::<Value>(inner) {
         return parse_from_json(&json, id_counter);
     }
 
-    // Try the arrow syntax: {tool => "name", args => {...}}
+    // 尝试箭头语法：{tool => "name", args => {...}}
     if let Some(parsed) = parse_arrow_syntax(inner, id_counter) {
         return Some(parsed);
     }
 
-    // Try to extract tool name and args from any format
+    // 尝试从任意格式提取工具名称和参数
     parse_flexible_format(inner, id_counter)
 }
 
-/// Parse from JSON object.
+/// 从 JSON 对象解析。
 fn parse_from_json(json: &Value, id_counter: &mut u32) -> Option<ParsedToolCall> {
     let obj = json.as_object()?;
 
-    // Try different field names for the tool name
+    // 尝试工具名称的不同字段名
     let name = obj
         .get("tool")
         .or_else(|| obj.get("name"))
@@ -294,7 +294,7 @@ fn parse_from_json(json: &Value, id_counter: &mut u32) -> Option<ParsedToolCall>
         .and_then(|v| v.as_str())?
         .to_string();
 
-    // Try different field names for the arguments
+    // 尝试参数的不同字段名
     let args = obj
         .get("args")
         .or_else(|| obj.get("arguments"))
@@ -311,20 +311,20 @@ fn parse_from_json(json: &Value, id_counter: &mut u32) -> Option<ParsedToolCall>
     })
 }
 
-/// Parse the arrow syntax: {tool => "name", args => {...}}
+/// 解析箭头语法：{tool => "name", args => {...}}
 fn parse_arrow_syntax(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCall> {
-    // Extract tool name
+    // 提取工具名称
     let tool_regex = Regex::new(r#"tool\s*=>\s*"([^"]+)""#).ok()?;
     let name = tool_regex.captures(inner)?.get(1)?.as_str().to_string();
 
-    // Extract args - try to find the JSON object after "args =>"
+    // 提取参数——尝试在 "args =>" 之后找到 JSON 对象
     let args = if let Some(args_start) = inner.find("args =>") {
         let args_str = inner[args_start + 7..].trim();
-        // Try to parse as JSON first
+        // 首先尝试解析为 JSON
         if let Ok(args_json) = serde_json::from_str::<Value>(args_str) {
             args_json
         } else if let Some(brace_start) = args_str.find('{') {
-            // Try to extract the content between braces
+            // 尝试提取花括号之间的内容
             let mut brace_count = 0;
             let mut end_idx = brace_start;
             for (i, c) in args_str[brace_start..].chars().enumerate() {
@@ -342,11 +342,11 @@ fn parse_arrow_syntax(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCal
             }
             let content = &args_str[brace_start + 1..end_idx - 1];
 
-            // Try to parse as JSON
+            // 尝试解析为 JSON
             if let Ok(json) = serde_json::from_str::<Value>(&format!("{{{content}}}")) {
                 json
             } else {
-                // Try CLI-style args: --arg_name "value" or --arg_name value
+                // 尝试 CLI 风格参数：--arg_name "value" 或 --arg_name value
                 parse_cli_style_args(content)
             }
         } else {
@@ -364,11 +364,11 @@ fn parse_arrow_syntax(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCal
     })
 }
 
-/// Parse CLI-style arguments: --`arg_name` "value" or --`arg_name` value
+/// 解析 CLI 风格参数：--`arg_name` "value" 或 --`arg_name` value
 fn parse_cli_style_args(content: &str) -> Value {
     let mut map = serde_json::Map::new();
 
-    // Pattern: --arg_name "value" or --arg_name 'value' or --arg_name value
+    // 模式：--arg_name "value" 或 --arg_name 'value' 或 --arg_name value
     let arg_regex =
         Regex::new(r#"--([a-zA-Z_][a-zA-Z0-9_]*)\s+(?:"([^"]*)"|'([^']*)'|(\S+))"#).ok();
 
@@ -376,14 +376,14 @@ fn parse_cli_style_args(content: &str) -> Value {
         for cap in regex.captures_iter(content) {
             if let Some(arg_name) = cap.get(1) {
                 let arg_name = arg_name.as_str();
-                // Get the value from whichever capture group matched
+                // 从任意匹配的捕获组获取值
                 let value = cap
                     .get(2)
                     .or_else(|| cap.get(3))
                     .or_else(|| cap.get(4))
                     .map_or("", |m| m.as_str());
 
-                // Try to parse as JSON value, otherwise use as string
+                // 尝试解析为 JSON 值，否则用作字符串
                 let json_value = serde_json::from_str(value)
                     .unwrap_or_else(|_| Value::String(value.to_string()));
                 map.insert(arg_name.to_string(), json_value);
@@ -391,7 +391,7 @@ fn parse_cli_style_args(content: &str) -> Value {
         }
     }
 
-    // Also try simple key=value format
+    // 也尝试简单的 key=value 格式
     let kv_regex =
         Regex::new(r#"([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]\s*(?:"([^"]*)"|'([^']*)'|(\S+))"#).ok();
     if let Some(regex) = kv_regex {
@@ -415,9 +415,9 @@ fn parse_cli_style_args(content: &str) -> Value {
     Value::Object(map)
 }
 
-/// Try to parse a flexible format.
+/// 尝试解析灵活格式。
 fn parse_flexible_format(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCall> {
-    // Look for common patterns like:
+    // 查找常见模式，如：
     // tool: list_dir
     // name: "list_dir"
     // function: list_dir
@@ -434,7 +434,7 @@ fn parse_flexible_format(inner: &str, id_counter: &mut u32) -> Option<ParsedTool
         {
             let name = name_match.as_str().to_string();
 
-            // Try to extract args/input as JSON
+            // 尝试提取 args/input 作为 JSON
             let args = extract_json_object(inner).unwrap_or(json!({}));
 
             *id_counter += 1;
@@ -449,7 +449,7 @@ fn parse_flexible_format(inner: &str, id_counter: &mut u32) -> Option<ParsedTool
     None
 }
 
-/// Extract the first JSON object from a string.
+/// 从字符串中提取第一个 JSON 对象。
 fn extract_json_object(text: &str) -> Option<Value> {
     let start = text.find('{')?;
     let mut brace_count = 0;
@@ -473,7 +473,7 @@ fn extract_json_object(text: &str) -> Option<Value> {
     serde_json::from_str(json_str).ok()
 }
 
-/// Check if text contains tool call markers (either format).
+/// 检查文本是否包含工具调用标记（任一格式）。
 pub fn has_tool_call_markers(text: &str) -> bool {
     text.contains("[TOOL_CALL]")
         || text.contains("<codewhale:tool_call")

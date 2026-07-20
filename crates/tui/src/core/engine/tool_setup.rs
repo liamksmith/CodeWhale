@@ -1,6 +1,6 @@
-//! Per-turn tool registry setup.
+//! 每回合的工具注册表设置。
 //!
-//! This keeps mode/feature-specific registry construction out of the send path.
+//! 这样可以将模式/功能特定的注册表构建逻辑从发送路径中分离出来。
 
 use super::*;
 use crate::core::authority::shell_policy_for_mode;
@@ -74,36 +74,33 @@ impl Engine {
             .with_user_input_tool()
             .with_parallel_tool();
 
-        // SlopLedger: plan mode only gets read-only query + export.
+        // SlopLedger: 计划模式仅获得只读查询和导出工具。
         builder = builder.with_slop_ledger_read_only_tools();
         if self.config.features.enabled(Feature::WebSearch) {
             builder = builder.with_web_tools();
         }
 
-        // Register the `remember` tool only when the user has opted in to
-        // user-memory (#489). Without that opt-in the tool would always
-        // fail; surfacing it would just waste catalog slots.
-        // TODO(v0.8.71): remove when Moraine recall stable; see #3490, #3495
+        // 仅在用户已选择启用用户记忆时才注册 `remember` 工具 (#489)。
+        // 没有该选项，该工具总是会失败；将其暴露出来只会浪费目录槽位。
+        // TODO(v0.8.71): 当 Moraine 召回稳定时移除；参见 #3490, #3495
         if should_register_remember_tool(self.config.memory_enabled, self.config.moraine_fallback) {
             builder = builder.with_remember_tool();
         }
 
-        // Register image_analyze tool when vision_model is configured and feature enabled.
+        // 当配置了 vision_model 且功能启用时注册 image_analyze 工具。
         if self.config.features.enabled(Feature::VisionModel)
             && let Some(ref vision_config) = self.config.vision_config
         {
             builder = builder.with_vision_tools(vision_config.clone());
         }
 
-        // Register the `notify` tool unconditionally (#1322). It has no
-        // side effects beyond a single terminal escape write and respects
-        // the user's `[notifications].method` config (including `off`),
-        // so there's no failure mode worth gating on.
+        // 无条件注册 `notify` 工具 (#1322)。它除了写入一次终端转义序列外没有其他副作用，
+        // 并且会遵循用户的 `[notifications].method` 配置（包括 `off`），
+        // 因此没有值得加门控的失败模式。
         builder = builder.with_notify_tool();
 
-        // Register the start_mcp_server tool so LLM can dynamically start
-        // MCP servers from conversation context. Only when the pool has been
-        // initialized (lazy via ensure_mcp_pool).
+        // 注册 start_mcp_server 工具，以便 LLM 可以从对话上下文中动态启动
+        // MCP 服务器。仅在池已初始化时（通过 ensure_mcp_pool 惰性初始化）。
         if let Some(ref pool) = self.mcp_pool {
             builder = builder.with_runtime_mcp_tool(Arc::clone(pool));
         }

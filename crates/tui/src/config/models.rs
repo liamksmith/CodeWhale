@@ -1,10 +1,9 @@
-//! Static provider model-name and base-URL constants.
+//! 静态提供者模型名称和基础 URL 常量。
 //!
-//! These are pure data tables (default model identifiers, base URLs, and
-//! curated model lists) extracted verbatim from `config.rs` to keep the
-//! configuration monolith focused on loading/normalization logic. They are
-//! re-exported from `crate::config` via `pub use models::*;`, so every existing
-//! `crate::config::<CONST>` path keeps resolving unchanged (#3311).
+//! 这些是纯数据表（默认模型标识符、基础 URL 和策展模型列表），
+//! 从 `config.rs` 逐字提取，以保持配置主体专注于加载/规范化逻辑。
+//! 它们通过 `pub use models::*;` 从 `crate::config` 重新导出，
+//! 因此每个现有的 `crate::config::<CONST>` 路径保持不变地继续解析 (#3311)。
 
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
@@ -122,12 +121,11 @@ pub const DEFAULT_QIANFAN_BASE_URL: &str = "https://api.baiduqianfan.ai/v1";
 pub const DEFAULT_OPENAI_CODEX_MODEL: &str = "gpt-5.5";
 pub const DEFAULT_OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
 pub const OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: u32 = 400_000;
-/// Legacy `deepseek-cn` provider alias.
+/// 遗留的 `deepseek-cn` 提供者别名。
 ///
-/// DeepSeek's official API host is the same worldwide. Keep this alias for
-/// old configs, but route it through the normal beta-enabled DeepSeek default.
-/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
-/// heuristics for backward compatibility.
+/// DeepSeek 的官方 API 主机在全球是相同的。保留此别名用于旧配置，
+/// 但将其路由到正常的支持 beta 的 DeepSeek 默认配置。
+/// 遗留拼写错误主机名 `api.deepseeki.com` 在 URL 启发式中仍然被识别以保持向后兼容性。
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",

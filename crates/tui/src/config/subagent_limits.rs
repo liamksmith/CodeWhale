@@ -1,48 +1,37 @@
-//! Sub-agent concurrency/timeout limits and their clamp resolvers.
+//! 子代理并发/超时限制及其钳位解析器。
 //!
-//! Pure numeric/string limit constants plus the two private clamp helpers that
-//! operate solely on them. Extracted verbatim from `config.rs`; the constants
-//! are re-exported via `pub use subagent_limits::*;` (preserving each item's
-//! `pub`/`pub(crate)` visibility) and the resolvers are pulled back into
-//! `config.rs` with a private `use`, so no new external surface is created
-//! (#3311).
+//! 纯数值/字符串限制常量以及两个仅对这些常量进行操作的私有钳位辅助函数。
+//! 从 `config.rs` 逐字提取；常量通过 `pub use subagent_limits::*;` 重新导出（保留每个项的
+//! `pub`/`pub(crate)` 可见性），解析器通过私有 `use` 拉回 `config.rs`，因此不会创建新的外部表面（#3311）。
 
-/// Temporary high-throughput default while the shared-context cutover makes
-/// agent fanout cheap. This should eventually be governed by API/backpressure
-/// budgets rather than memory-driven count throttles.
+/// 共享上下文切换使 agent 扇出变得廉价时的临时高吞吐量默认值。
+/// 最终应由 API/背压预算而非内存驱动的计数节流来控制。
 pub const DEFAULT_MAX_SUBAGENTS: usize = 64;
-/// User-configurable ceiling for concurrent sub-agent execution. Keep this
-/// above the default so operators can opt into larger API-bound fanout without
-/// code changes while the full resource budget gate lands.
+/// 用户可配置的并发子代理执行上限。保持此值高于默认值，以便操作员可以在完整的资源预算门控落地前，
+/// 无需代码更改即可选择更大的 API 绑定扇出。
 pub const MAX_SUBAGENTS: usize = 128;
-/// Upper bound for queued + running sub-agent admissions. This is deliberately
-/// higher than the instantaneous concurrency cap so Workflow-style fanout can
-/// opt into large bounded populations without unbounded queue growth.
+/// 排队中 + 运行中的子代理准入上限。此值故意高于瞬时并发上限，以便 Workflow 风格的扇出
+/// 可以选择大的有界种群，而无须无界队列增长。
 pub const MAX_SUBAGENT_ADMISSION: usize = 1024;
-/// Default per-step DeepSeek API timeout for sub-agent requests, in seconds.
-/// Matches the legacy hardcoded value so existing configs keep their old
-/// behavior when `[subagents] api_timeout_secs` is unset (#1806, #1808).
+/// 子代理请求的默认每步 DeepSeek API 超时时间（秒）。
+/// 与旧版硬编码值匹配，以便当 `[subagents] api_timeout_secs` 未设置时，现有配置保持其旧行为（#1806, #1808）。
 pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;
-/// Minimum accepted `[subagents] api_timeout_secs`. Anything lower (including
-/// `0`, which would otherwise produce an immediate timeout footgun) clamps
-/// up to this value before the runtime sees it.
+/// 最小接受的 `[subagents] api_timeout_secs`。任何更低的值（包括 `0`，否则会产生即时超时陷阱）
+/// 在运行时看到之前都会钳位到此值。
 pub const MIN_SUBAGENT_API_TIMEOUT_SECS: u64 = 1;
-/// Maximum accepted `[subagents] api_timeout_secs` (30 minutes). The cap
-/// keeps a misconfigured per-step timeout from masking real model/network
-/// hangs forever.
+/// 最大接受的 `[subagents] api_timeout_secs`（30 分钟）。此上限防止配置错误的每步超时无限期掩盖真实的模型/网络挂起。
 pub const MAX_SUBAGENT_API_TIMEOUT_SECS: u64 = 1800;
-/// Default wall-clock interval without manager-visible sub-agent progress
-/// before a running child can be auto-cancelled to release its slot (#2614).
+/// 在管理器可见的子代理无进展时，自动取消正在运行的子代理以释放其槽位的默认挂钟间隔（#2614）。
 pub const DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 300;
-/// Minimum accepted `[subagents] heartbeat_timeout_secs`.
+/// 最小接受的 `[subagents] heartbeat_timeout_secs`。
 pub const MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
-/// Maximum accepted `[subagents] heartbeat_timeout_secs` (1 hour).
+/// 最大接受的 `[subagents] heartbeat_timeout_secs`（1 小时）。
 pub const MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 3600;
-/// Default per-SSE-chunk idle timeout, in seconds.
+/// 默认每 SSE 块空闲超时时间（秒）。
 pub const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 900;
-/// Minimum accepted stream chunk timeout.
+/// 最小接受的流块超时时间。
 pub const MIN_STREAM_CHUNK_TIMEOUT_SECS: u64 = 1;
-/// Maximum accepted stream chunk timeout.
+/// 最大接受的流块超时时间。
 pub const MAX_STREAM_CHUNK_TIMEOUT_SECS: u64 = 3600;
 pub(crate) const STREAM_CHUNK_TIMEOUT_ENV: &str = "DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS";
 

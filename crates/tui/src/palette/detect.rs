@@ -1,4 +1,4 @@
-//! Terminal palette-mode and color-depth detection.
+//! 终端调色板模式和颜色深度检测。
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -12,8 +12,7 @@ pub enum PaletteMode {
 }
 
 impl PaletteMode {
-    /// Parse `COLORFGBG`, whose last numeric segment is the terminal
-    /// background color. Values >= 8 conventionally indicate a light profile.
+    /// 解析 `COLORFGBG`，其最后一个数值段是终端背景色。值 >= 8 通常表示浅色配置。
     #[must_use]
     pub fn from_colorfgbg(value: &str) -> Option<Self> {
         let bg = value
@@ -23,10 +22,8 @@ impl PaletteMode {
         Some(if bg >= 8 { Self::Light } else { Self::Dark })
     }
 
-    /// Detect the active palette mode. `COLORFGBG` wins when present; macOS
-    /// appearance is a fallback for terminals that omit terminal color hints.
-    /// Missing or unparsable values default to dark so existing terminal setups
-    /// keep the tuned theme.
+    /// 检测当前调色板模式。存在 `COLORFGBG` 时优先；macOS 外观作为省略终端颜色提示的终端的回退。
+    /// 缺失或无法解析的值默认为深色，以便现有终端设置保持已调优的主题。
     #[must_use]
     pub fn detect() -> Self {
         Self::detect_from_sources(

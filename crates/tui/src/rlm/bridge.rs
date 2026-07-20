@@ -1,15 +1,14 @@
-//! RPC bridge that services `llm_query` / `rlm_query` calls coming back
-//! from the long-lived Python REPL during an RLM turn.
+//! RPC 桥接，服务 RLM 回合期间从长生命周期 Python REPL 返回的
+//! `llm_query` / `rlm_query` 调用。
 //!
-//! This is the spiritual successor to the HTTP sidecar from earlier
-//! versions — except instead of binding a localhost port and routing
-//! through `urllib`, requests come in through stdin/stdout and we just
-//! call the LLM client directly here in Rust.
+//! 这是早期版本 HTTP 侧车进程的精神继承者——
+//! 只不过不再绑定本地主机端口并通过 `urllib` 路由，
+//! 请求通过标准输入/标准输出传入，我们直接在这里的 Rust 中调用 LLM 客户端。
 //!
-//! The bridge tracks cumulative token usage and the recursion budget. For
-//! `Rlm` / `RlmBatch` requests it recursively calls `run_rlm_turn_inner`
-//! at depth-1; the future-type cycle (bridge → run_rlm_turn_inner →
-//! bridge) is broken by `run_rlm_turn_inner` returning a boxed dyn future.
+//! 桥接跟踪累积令牌使用量和递归预算。对于
+//! `Rlm` / `RlmBatch` 请求，它递归调用深度为 depth-1 的
+//! `run_rlm_turn_inner`；未来类型循环（桥接 → run_rlm_turn_inner →
+//! 桥接）通过 `run_rlm_turn_inner` 返回盒装 dyn future 来打破。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,18 +23,18 @@ use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, Syst
 use crate::repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
 use crate::utils::spawn_supervised;
 
-/// Per-child completion timeout — same as the previous sidecar default.
+/// 每个子完成的超时时间——与之前侧车默认值相同。
 const CHILD_TIMEOUT_SECS: u64 = 120;
-/// Default `max_tokens` for one-shot child completions.
+/// 一次性子完成的默认 `max_tokens`。
 const DEFAULT_CHILD_MAX_TOKENS: u32 = 4096;
-/// Hard cap on prompts per batch RPC.
+/// 每个批处理 RPC 的提示上限。
 pub const MAX_BATCH: usize = 16;
 
-/// Object-safe slice of the LLM client interface that the RLM bridge needs.
+/// RLM 桥接需要的 LLM 客户端接口的对象安全切片。
 ///
-/// `LlmClient` itself uses native async trait methods, which are not dyn-safe.
-/// The bridge only needs non-streaming completions, so this boxed-future shim
-/// gives tests a clean mock seam without changing the wider provider trait.
+/// `LlmClient` 本身使用原生异步 trait 方法，这些方法不是 dyn 安全的。
+/// 桥接只需要非流式完成，因此这个盒装未来适配器
+/// 为测试提供了一个干净的 mock 接缝，无需改变更广泛的提供商 trait。
 pub(crate) trait RlmLlmClient: Send + Sync {
     fn create_message_boxed(
         &self,
@@ -55,12 +54,12 @@ where
     }
 }
 
-/// State shared with the bridge across all RPC calls in one turn.
+/// 与桥接共享的状态，跨越一个回合中的所有 RPC 调用。
 pub struct RlmBridge {
     client: Arc<dyn RlmLlmClient>,
     child_model: String,
-    /// Recursion budget remaining for `Rlm` / `RlmBatch` requests. When
-    /// zero, those requests fall back to plain `Llm` completions.
+    /// `Rlm` / `RlmBatch` 请求剩余递归预算。当
+    /// 为零时，这些请求回退到普通 `Llm` 完成。
     depth_remaining: u32,
     usage: Arc<Mutex<Usage>>,
 }
@@ -91,10 +90,9 @@ impl RlmBridge {
         system: Option<String>,
     ) -> SingleResp {
         let request = MessageRequest {
-            // The Python helper accepts `model=` for older snippets, but it is
-            // intentionally not authoritative. RLM child calls are pinned to
-            // the tool's configured child model so model-generated Python
-            // cannot silently upgrade cheap fanout work to an expensive model.
+            // Python 助手接受旧代码片段的 `model=`，但有意
+            // 不将其视为权威。RLM 子调用固定到工具的配置子模型，
+            // 因此模型生成的 Python 无法静默地将廉价扇出工作升级到昂贵模型。
             model: self.child_model.clone(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -122,13 +120,13 @@ impl RlmBridge {
                 Ok(Err(e)) => {
                     return SingleResp {
                         text: String::new(),
-                        error: Some(format!("llm_query failed: {e}")),
+                        error: Some(format!("llm_query 失败: {e}")),
                     };
                 }
                 Err(_) => {
                     return SingleResp {
                         text: String::new(),
-                        error: Some(format!("llm_query timed out after {CHILD_TIMEOUT_SECS}s")),
+                        error: Some(format!("llm_query 在 {CHILD_TIMEOUT_SECS} 秒后超时")),
                     };
                 }
             };
@@ -178,15 +176,14 @@ impl RlmBridge {
 
     async fn dispatch_rlm(&self, prompt: String, _model: Option<String>) -> SingleResp {
         if self.depth_remaining == 0 {
-            // Budget exhausted — fall back to a one-shot child completion
-            // rather than returning an error. Matches the paper's behaviour
-            // ("sub_RLM gracefully degrades to llm_query at depth=0").
+            // 预算耗尽——回退到一次性子完成
+            // 而不是返回错误。与论文行为一致
+            //（"sub_RLM 在 depth=0 时优雅降级为 llm_query"）。
             return self.dispatch_llm(prompt, None, None, None).await;
         }
 
-        // Build a drain channel to absorb status events from the nested
-        // turn (we don't surface them; this dispatch is invisible to the
-        // outer agent stream).
+        // 构建一个 drain 通道来吸收嵌套回合的状态事件
+        //（我们不展示它们；此分发对外部代理流不可见）。
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = spawn_supervised(
             "rlm-bridge-drain",
@@ -196,8 +193,8 @@ impl RlmBridge {
 
         let child_model = self.child_model.clone();
 
-        // Recursive call. The dyn-erasure on `run_rlm_turn_inner` breaks
-        // the `bridge → turn → bridge` opaque-future cycle.
+        // 递归调用。`run_rlm_turn_inner` 上的 dyn 擦除打破了
+        // `bridge → turn → bridge` 不透明未来循环。
         let result = super::turn::run_rlm_turn_inner(
             Arc::clone(&self.client),
             child_model.clone(),
@@ -250,7 +247,7 @@ fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<Bat
             results: (0..prompt_count)
                 .map(|_| SingleResp {
                     text: String::new(),
-                    error: Some(format!("batch too large: {prompt_count} > {MAX_BATCH}")),
+                    error: Some(format!("批处理过大: {prompt_count} > {MAX_BATCH}")),
                 })
                 .collect(),
         });
@@ -269,7 +266,7 @@ fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<Bat
                 .map(|_| SingleResp {
                     text: String::new(),
                     error: Some(
-                        "batch requires dependency_mode='independent'; use sub_query_sequence or sequential sub_query calls for dependent work"
+                        "批处理需要 dependency_mode='independent'；对于依赖工作请使用 sub_query_sequence 或顺序 sub_query 调用"
                             .to_string(),
                     ),
                 })
@@ -365,14 +362,14 @@ mod tests {
 
     #[test]
     fn batch_guard_returns_empty_response_for_empty_batches() {
-        let response = batch_guard(0, None).expect("empty batch should be handled");
+        let response = batch_guard(0, None).expect("空批处理应被处理");
         assert!(response.results.is_empty());
     }
 
     #[test]
     fn batch_guard_returns_one_error_per_oversized_prompt() {
         let response = batch_guard(MAX_BATCH + 2, Some("independent"))
-            .expect("oversized batch should be handled");
+            .expect("过大批处理应被处理");
         assert_eq!(response.results.len(), MAX_BATCH + 2);
         assert!(response.results.iter().all(|result| {
             result.text.is_empty()
@@ -385,7 +382,7 @@ mod tests {
 
     #[test]
     fn batch_guard_requires_explicit_independence_for_parallel_work() {
-        let response = batch_guard(2, None).expect("missing dependency mode should be handled");
+        let response = batch_guard(2, None).expect("缺少依赖模式应被处理");
         assert_eq!(response.results.len(), 2);
         assert!(response.results.iter().all(|result| {
             result.text.is_empty()
@@ -396,7 +393,7 @@ mod tests {
         }));
 
         let response = batch_guard(2, Some("sequential"))
-            .expect("dependent dependency mode should be handled");
+            .expect("依赖的依赖模式应被处理");
         assert!(response.results.iter().all(|result| {
             result
                 .error
@@ -425,7 +422,7 @@ mod tests {
                 assert_eq!(single.text, "child answer");
                 assert!(single.error.is_none());
             }
-            other => panic!("expected single response, got {other:?}"),
+            other => panic!("预期单个响应，得到 {other:?}"),
         }
 
         let captured = mock.captured_requests();
@@ -471,7 +468,7 @@ mod tests {
                 assert_eq!(single.text, "cached child answer");
                 assert!(single.error.is_none());
             }
-            other => panic!("expected single response, got {other:?}"),
+            other => panic!("预期单个响应，得到 {other:?}"),
         }
 
         let usage = bridge.usage.lock().await;
@@ -508,7 +505,7 @@ mod tests {
                 assert_eq!(texts, ["one", "two", "three"]);
                 assert!(batch.results.iter().all(|result| result.error.is_none()));
             }
-            other => panic!("expected batch response, got {other:?}"),
+            other => panic!("预期批处理响应，得到 {other:?}"),
         }
 
         let captured = mock.captured_requests();
@@ -542,7 +539,7 @@ mod tests {
                 assert_eq!(single.text, "fallback answer");
                 assert!(single.error.is_none());
             }
-            other => panic!("expected single response, got {other:?}"),
+            other => panic!("预期单个响应，得到 {other:?}"),
         }
 
         let usage = bridge.usage.lock().await;

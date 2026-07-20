@@ -1,4 +1,4 @@
-//! Worktree provisioning owned by Runtime (not Fleet) — #4176 / #4016.
+//! 工作树配置，由 Runtime（而非 Fleet）拥有 — #4176 / #4016。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,16 +8,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 
-/// Spec for an isolated worktree + branch for a lane.
+/// 车道（lane）的隔离工作树 + 分支规格。
 #[derive(Debug, Clone)]
 pub struct WorktreeProvision {
-    /// Git repository root (must contain `.git`).
+    /// Git 仓库根目录（必须包含 `.git`）。
     pub repo_root: PathBuf,
-    /// Branch to create (from `base_ref`).
+    /// 要创建的分支（从 `base_ref` 分出）。
     pub branch: String,
-    /// Directory for the new worktree (created by `git worktree add`).
+    /// 新工作树的目录（由 `git worktree add` 创建）。
     pub path: PathBuf,
-    /// Base ref to branch from (default `HEAD`).
+    /// 分支的基准引用（默认为 `HEAD`）。
     pub base_ref: Option<String>,
 }
 
@@ -27,17 +27,17 @@ pub struct ProvisionedWorktree {
     pub branch: String,
 }
 
-/// Create a git worktree + branch for a lane.
+/// 为车道创建一个 git 工作树 + 分支。
 pub fn provision_worktree(spec: &WorktreeProvision) -> Result<ProvisionedWorktree> {
     if spec.branch.trim().is_empty() {
-        bail!("worktree branch must not be empty");
+        bail!("工作树分支不能为空");
     }
     if !spec.repo_root.exists() {
-        bail!("repo root does not exist: {}", spec.repo_root.display());
+        bail!("仓库根目录不存在：{}", spec.repo_root.display());
     }
     if let Some(parent) = spec.path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("create worktree parent {}", parent.display()))?;
+            .with_context(|| format!("创建工作树父目录 {}", parent.display()))?;
     }
     let base = spec.base_ref.as_deref().unwrap_or("HEAD");
     let status = Command::new("git")
@@ -54,7 +54,7 @@ pub fn provision_worktree(spec: &WorktreeProvision) -> Result<ProvisionedWorktre
         .context("git worktree add")?;
     if !status.success() {
         bail!(
-            "git worktree add failed for branch {} at {}",
+            "git worktree add 失败：分支 {}，路径 {}",
             spec.branch,
             spec.path.display()
         );
@@ -65,9 +65,9 @@ pub fn provision_worktree(spec: &WorktreeProvision) -> Result<ProvisionedWorktre
     })
 }
 
-/// Remove a worktree when TTL has expired (or immediately when TTL is 0).
+/// 当 TTL 已过期（或 TTL 为 0 时立即）移除工作树。
 ///
-/// `stopped_at` is RFC3339. When `ttl_secs` is `None`, no cleanup is performed.
+/// `stopped_at` 是 RFC3339 格式。当 `ttl_secs` 为 `None` 时不执行清理。
 pub fn remove_worktree_if_expired(
     worktree_path: &Path,
     ttl_secs: Option<u64>,
@@ -84,7 +84,7 @@ pub fn remove_worktree_if_expired(
             return Ok(());
         };
         let stopped_ts = DateTime::parse_from_rfc3339(stopped)
-            .with_context(|| format!("parse stopped_at {stopped}"))?
+            .with_context(|| format!("解析 stopped_at {stopped}"))?
             .timestamp() as u64;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -95,7 +95,7 @@ pub fn remove_worktree_if_expired(
         }
     }
 
-    // Best-effort: git worktree remove --force, then rm -rf.
+    // 尽力而为：git worktree remove --force，然后 rm -rf。
     let _ = Command::new("git")
         .args([
             "worktree",
@@ -106,7 +106,7 @@ pub fn remove_worktree_if_expired(
         .status();
     if worktree_path.exists() {
         fs::remove_dir_all(worktree_path)
-            .with_context(|| format!("remove worktree {}", worktree_path.display()))?;
+            .with_context(|| format!("移除工作树 {}", worktree_path.display()))?;
     }
     Ok(())
 }
@@ -181,7 +181,7 @@ mod tests {
         remove_worktree_if_expired(&wt_path, Some(0), Some("2020-01-01T00:00:00Z")).unwrap();
         assert!(
             !wt_path.exists(),
-            "TTL 0 should remove worktree immediately"
+            "TTL 为 0 应立即移除工作树"
         );
     }
 }

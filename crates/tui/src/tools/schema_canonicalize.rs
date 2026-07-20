@@ -1,37 +1,35 @@
-//! Byte-level canonicalization of JSON Schema for prefix-cache stability.
+//! JSON Schema 的字节级规范化，确保前缀缓存稳定性。
 //!
-//! When MCP servers return tool schemas, the field order within each schema
-//! object and the order of entries in `required` / `dependentRequired` arrays
-//! can vary across reconnections. This module normalizes those orderings so
-//! that two logically equivalent schemas always produce identical bytes after
-//! serialization.
+//! 当 MCP 服务器返回工具 schema 时，每个 schema 对象内的字段顺序
+//! 以及 `required` / `dependentRequired` 数组中的条目顺序
+//! 可能在不同重连之间发生变化。此模块将那些顺序标准化，
+//! 使得两个逻辑上等价的 schema 在序列化后始终产生相同的字节。
 //!
-//! The approach mirrors `reasonix/internal/provider/schema_canonicalize.go`:
+//! 方法与 `reasonix/internal/provider/schema_canonicalize.go` 类似：
 //!
-//! 1. Sort every `"required"` array alphabetically.
-//! 2. Sort every `"dependentRequired"` sub-array alphabetically.
-//! 3. Recurse into all nested objects and arrays.
+//! 1. 按字母顺序对每个 `"required"` 数组排序。
+//! 2. 按字母顺序对每个 `"dependentRequired"` 子数组排序。
+//! 3. 递归进入所有嵌套的对象和数组。
 //!
-//! `serde_json::Value::Object` uses `IndexMap` when `preserve_order` is
-//! enabled (which this crate does). We therefore rebuild the map with sorted
-//! keys to guarantee deterministic key ordering.
+//! 当启用 `preserve_order` 时（此 crate 确实启用），
+//! `serde_json::Value::Object` 使用 `IndexMap`。
+//! 因此我们使用排序后的键重建映射，以保证确定的键顺序。
 
 use serde_json::Value;
 
-/// Recursively canonicalize a JSON Schema value in-place.
+/// 原地递归规范化 JSON Schema 值。
 ///
-/// After canonicalization, two schemas that are semantically equivalent
-/// (same keys, same `required` set, same `dependentRequired` sets) will
-/// serialize to byte-identical JSON regardless of the original field or
-/// array order.
+/// 规范化后，两个语义等价的 schema
+///（相同的键、相同的 `required` 集合、相同的 `dependentRequired` 集合）
+/// 无论原始字段或数组顺序如何，都将序列化为字节级相同的 JSON。
 pub fn canonicalize_schema(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            // Sort `required` arrays (they are sets per JSON Schema spec).
+            // 对 `required` 数组排序（根据 JSON Schema 规范，它们是集合）。
             if let Some(Value::Array(req)) = map.get_mut("required") {
                 sort_string_array(req);
             }
-            // Sort `dependentRequired` sub-arrays.
+            // 对 `dependentRequired` 子数组排序。
             if let Some(Value::Object(deps)) = map.get_mut("dependentRequired") {
                 for dep_value in deps.values_mut() {
                     if let Value::Array(arr) = dep_value {
@@ -39,13 +37,13 @@ pub fn canonicalize_schema(value: &mut Value) {
                     }
                 }
             }
-            // Recurse into every child value.
+            // 递归进入每个子值。
             for v in map.values_mut() {
                 canonicalize_schema(v);
             }
-            // Rebuild the map with sorted keys so serialization is deterministic.
-            // serde_json::Map backed by IndexMap (preserve_order) doesn't have
-            // drain(), so we swap to a temporary and rebuild.
+            // 使用排序后的键重建映射，确保序列化结果是确定的。
+            // serde_json::Map 由 IndexMap 支持（preserve_order），
+            // 没有 drain()，因此我们交换到临时映射并重建。
             let old = std::mem::take(map);
             let mut entries: Vec<(String, Value)> = old.into_iter().collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -62,9 +60,9 @@ pub fn canonicalize_schema(value: &mut Value) {
     }
 }
 
-/// Sort a JSON array of string values alphabetically in-place.
+/// 原地按字母顺序排序 JSON 字符串值数组。
 ///
-/// Non-string entries are left at the end in their original relative order.
+/// 非字符串条目会保留在末尾，保持原始的相对顺序。
 fn sort_string_array(arr: &mut [Value]) {
     arr.sort_by(|a, b| match (a.as_str(), b.as_str()) {
         (Some(x), Some(y)) => x.cmp(y),
@@ -92,8 +90,8 @@ mod tests {
 
     #[test]
     fn equivalent_ordering_matches() {
-        // Two schemas that differ only in field order and required order
-        // must serialize to identical bytes.
+        // 仅在字段顺序和 required 顺序上不同的两个 schema
+        // 必须序列化为相同的字节。
         let mut a = json!({
             "required": ["b", "a"],
             "properties": {"x": {}, "y": {}},
@@ -109,7 +107,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&a).unwrap(),
             serde_json::to_string(&b).unwrap(),
-            "logically equivalent schemas must produce identical bytes"
+            "逻辑等价的 schema 必须产生相同的字节"
         );
     }
 
@@ -148,8 +146,8 @@ mod tests {
 
     #[test]
     fn preserves_non_required_array_order() {
-        // Arrays that are not `required` or `dependentRequired` should
-        // keep their semantic order (e.g. enum values, oneOf items).
+        // 非 `required` 或 `dependentRequired` 的数组应
+        // 保持其语义顺序（例如 enum 值、oneOf 项）。
         let mut schema = json!({
             "type": "string",
             "enum": ["z", "a", "m"]

@@ -1,18 +1,16 @@
-//! Streaming-thinking lifecycle for the active cell.
+//! 活跃单元格的流式推理生命周期。
 //!
-//! DeepSeek V4 emits `reasoning_content` chunks before final answers.
-//! These get rendered as a "Thinking" entry inside the per-turn active
-//! cell. This module is the single source of truth for:
+//! DeepSeek V4 在最终答案之前发出 `reasoning_content` 块。
+//! 这些在每个回合的活跃单元格内作为"思考"条目渲染。
+//! 此模块是以下内容的唯一事实来源：
 //!
-//! - creating a streaming thinking entry on first chunk
-//! - appending chunks to the live entry
-//! - showing a localized placeholder while a translation is in-flight
-//!   (and animating its elapsed/spinner suffix)
-//! - replacing the placeholder when the translation arrives
-//! - finalizing the entry (stopping the spinner, stamping duration)
-//!   when a thinking block ends
-//! - stashing the reasoning buffer onto `app.last_reasoning` so the
-//!   summary survives compaction
+//! - 在第一个块上创建流式思考条目
+//! - 将块追加到实时条目
+//! - 翻译进行中时显示本地化占位符
+//!   （并动画化其已用时间/旋转器后缀）
+//! - 翻译到达时替换占位符
+//! - 思考块结束时最终确定条目（停止旋转器，标记持续时间）
+//! - 将推理缓冲区存入 `app.last_reasoning`，以便摘要能在压缩后存活
 
 use std::time::Duration;
 use std::time::Instant;
@@ -21,24 +19,24 @@ use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 
-/// Debounce window for active-cell revision bumps while a thinking block is
-/// streaming (#1620). Reasoning deltas arrive far faster than the eye can
-/// follow, and each revision bump invalidates the active cell's wrap cache,
-/// forcing a full re-wrap of the live tail. Coalescing intermediate bumps to
-/// one per window keeps the perceived stream smooth without re-wrapping per
-/// character. ~100ms ≈ 10 intermediate repaints/sec, well below the 120 FPS
-/// frame cap (see `frame_rate_limiter`) yet imperceptible as lag.
+/// 思考块流式传输时活跃单元格修订版的防抖窗口（#1620）。
+/// 推理增量到达速度远快于人眼能跟上的速度，
+/// 每次修订版碰撞都会使活跃单元格的换行缓存失效，
+/// 强制完全重新换行实时尾部。将中间碰撞合并为
+/// 每窗口一次，使感知到的流保持流畅，而无需每个字符都重新换行。
+/// ~100ms ≈ 每秒 10 次中间重绘，远低于 120 FPS
+/// 帧率上限（参见 `frame_rate_limiter`），但无法感知为延迟。
 ///
-/// Correctness: this only skips *intermediate* repaints. Appended content is
-/// never dropped — it lands in the cell immediately — and finalize always
-/// forces a bump so the final reasoning text is fully rendered.
+/// 正确性：这仅跳过 *中间* 重绘。追加的内容
+/// 永远不会被丢弃——它立即可达单元格——且 finalize 始终
+/// 强制一次碰撞，以便最终的推理文本被完全渲染。
 const THINKING_REVISION_THROTTLE: Duration = Duration::from_millis(100);
 
-/// Bump the active-cell revision for a streaming thinking mutation, but at
-/// most once per [`THINKING_REVISION_THROTTLE`] window. Returns whether a bump
-/// was actually emitted. Skipped bumps coalesce into the next one (or into the
-/// forced finalize bump), so no content is ever lost — only redundant
-/// intermediate re-wraps are dropped.
+/// 为流式思考变异碰撞活跃单元格修订版，但最多
+/// 每个 [`THINKING_REVISION_THROTTLE`] 窗口一次。返回是否
+/// 实际发出了碰撞。跳过的碰撞合并到下一个
+///（或强制 finalize 碰撞），因此没有内容会丢失——只有冗余的
+/// 中间重新换行被丢弃。
 fn bump_thinking_revision_throttled(app: &mut App, now: Instant) -> bool {
     let due = app
         .thinking_revision_last_bump_at
@@ -50,10 +48,10 @@ fn bump_thinking_revision_throttled(app: &mut App, now: Instant) -> bool {
     due
 }
 
-/// Ensure an in-flight Thinking entry exists in `active_cell` and return its
-/// entry index. If no thinking entry is currently streaming, push a fresh one.
-/// P2.3: thinking shares the active cell with subsequent tool calls so the
-/// pair render as one logical "Working…" block.
+/// 确保 `active_cell` 中存在进行中的思考条目并返回其
+/// 条目索引。如果没有思考条目正在流式传输，则推送一个新的。
+/// P2.3：思考与后续工具调用共享活跃单元格，以便
+/// 两者作为一个逻辑 "工作中…" 块渲染。
 pub(super) fn ensure_active_entry(app: &mut App) -> usize {
     if let Some(idx) = app.streaming_thinking_active_entry {
         return idx;
@@ -72,17 +70,16 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
     entry_idx
 }
 
-/// Append text to a streaming Thinking entry inside `active_cell`. The text is
-/// committed to the cell immediately; the active-cell revision bump that
-/// triggers a re-wrap of the live tail is debounced to at most one per
-/// [`THINKING_REVISION_THROTTLE`] window (#1620). Skipped bumps coalesce into
-/// the next append or the forced finalize bump, so no content is ever lost.
+/// 将文本追加到 `active_cell` 内的流式思考条目。文本被
+/// 立即提交到单元格；触发实时尾部重新换行的活跃单元格修订版碰撞
+/// 被防抖，最多每 [`THINKING_REVISION_THROTTLE`] 窗口一次（#1620）。
+/// 跳过的碰撞合并到下一次追加或强制 finalize 碰撞，
+/// 因此没有内容会丢失。
 pub(super) fn append(app: &mut App, entry_idx: usize, text: &str) {
     append_at(app, entry_idx, text, Instant::now());
 }
 
-/// `append` with an injectable clock so the debounce can be tested
-/// deterministically.
+/// 可注入时钟的 `append`，以便防抖可以确定性地测试。
 fn append_at(app: &mut App, entry_idx: usize, text: &str, now: Instant) {
     if text.is_empty() {
         return;
@@ -100,8 +97,8 @@ fn append_at(app: &mut App, entry_idx: usize, text: &str, now: Instant) {
     }
 }
 
-/// Build the spinner-decorated placeholder shown in the thinking entry
-/// while a translation is in flight (`Thinking… (1.2s |)`).
+/// 构建翻译进行中时思考条目中显示的旋转器装饰占位符
+///（`思考中… (1.2s |)`）。
 pub(super) fn translation_placeholder_frame(app: &App) -> String {
     let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
     let elapsed = app
@@ -118,8 +115,8 @@ pub(super) fn translation_placeholder_frame(app: &App) -> String {
     format!("{base} ({elapsed:.1}s {frame})")
 }
 
-/// If the given entry is empty or still showing the translation
-/// placeholder prefix, replace it with the latest animated frame.
+/// 如果给定条目为空或仍显示翻译占位符前缀，
+/// 将其替换为最新的动画帧。
 pub(super) fn set_placeholder(app: &mut App, entry_idx: usize) {
     let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
     let next = translation_placeholder_frame(app);
@@ -141,9 +138,8 @@ pub(super) fn set_placeholder(app: &mut App, entry_idx: usize) {
     }
 }
 
-/// Advance the spinner suffix on every existing translation placeholder
-/// in `active_cell`. Returns true when at least one cell was updated so
-/// the dispatch loop can schedule another tick.
+/// 推进 `active_cell` 中每个现有翻译占位符上的旋转器后缀。
+/// 当至少一个单元格被更新时返回 true，以便调度循环可以安排另一个 tick。
 pub(super) fn animate_pending_translation(app: &mut App, translation_pending: bool) -> bool {
     if !app.translation_enabled {
         return false;
@@ -170,10 +166,9 @@ pub(super) fn animate_pending_translation(app: &mut App, translation_pending: bo
     false
 }
 
-/// Replace a translation placeholder with the finished translated text.
-/// Searches the active cell first, then the finalized history (covers
-/// the case where the translation lands after the thinking block was
-/// already moved into history).
+/// 用完成的翻译文本替换翻译占位符。
+/// 首先搜索活跃单元格，然后搜索已定稿的历史记录（覆盖
+/// 翻译在思考块已移入历史记录后到达的情况）。
 pub(super) fn replace_pending_translation(
     app: &mut App,
     placeholder: &str,
@@ -202,9 +197,9 @@ pub(super) fn replace_pending_translation(
     }
 }
 
-/// Start a new streaming thinking block. If another thinking block is still
-/// active, first drain its pending UI tail so a late block boundary cannot
-/// discard content buffered inside `StreamingState`.
+/// 开始一个新的流式思考块。如果另一个思考块仍然活跃，
+/// 首先排空其待处理的 UI 尾部，以便迟到的块边界不能
+/// 丢弃 `StreamingState` 内缓冲的内容。
 pub(super) fn start_block(app: &mut App) -> bool {
     let finalized_previous = if app.streaming_thinking_active_entry.is_some() {
         let finalized = finalize_current(app);
@@ -223,8 +218,8 @@ pub(super) fn start_block(app: &mut App) -> bool {
     finalized_previous
 }
 
-/// Finalize the currently-streaming thinking entry: drain the pending
-/// state buffer, compute elapsed duration, stop the spinner.
+/// 定稿当前流式思考条目：排空待处理的状态缓冲区，
+/// 计算已用持续时间，停止旋转器。
 pub(super) fn finalize_current(app: &mut App) -> bool {
     let duration = app
         .thinking_started_at
@@ -234,8 +229,8 @@ pub(super) fn finalize_current(app: &mut App) -> bool {
     finalize_active_entry(app, duration, &remaining)
 }
 
-/// Move the in-flight reasoning buffer onto `app.last_reasoning` so the
-/// summary survives compaction or transcript trimming.
+/// 将进行中的推理缓冲区移到 `app.last_reasoning` 上，以便
+/// 摘要能在压缩或记录修剪后存活。
 pub(super) fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
     if app.reasoning_buffer.is_empty() {
         return;
@@ -254,11 +249,11 @@ pub(super) fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
     app.reasoning_buffer.clear();
 }
 
-/// Finalize the in-flight thinking entry in `active_cell`: append the
-/// collector's remaining buffered text, stop the spinner, and stamp the
-/// duration. Returns `true` when a thinking entry was finalized (so the
-/// dispatch loop knows the transcript was touched). No-op if no thinking
-/// entry is currently streaming.
+/// 定稿 `active_cell` 中进行中的思考条目：追加
+/// 收集器的剩余缓冲文本，停止旋转器，并标记
+/// 持续时间。当思考条目被定稿时返回 `true`（以便
+/// 调度循环知道记录被修改）。如果没有思考条目
+/// 正在流式传输，则为无操作。
 pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remaining: &str) -> bool {
     let Some(entry_idx) = app.streaming_thinking_active_entry.take() else {
         return false;
@@ -276,10 +271,10 @@ pub(super) fn finalize_active_entry(app: &mut App, duration: Option<f32>, remain
         *streaming = false;
         *duration_secs = duration;
     }
-    // Red line (#1620): finalize must force a bump so the final reasoning text
-    // is fully rendered even if the last appended chunk was throttled. Reset
-    // the debounce window so the next thinking block's first chunk renders
-    // immediately rather than being coalesced into a stale window.
+    // 红线（#1620）：finalize 必须强制一次碰撞，以便最终的推理文本
+    // 即使最后一个追加的块被节流也被完全渲染。重置
+    // 防抖窗口，以便下一个思考块的第一个块
+    // 立即渲染，而不是被合并到过时的窗口中。
     app.thinking_revision_last_bump_at = None;
     app.bump_active_cell_revision();
     true
@@ -328,16 +323,16 @@ mod tests {
         }
     }
 
-    /// #1620: a burst of reasoning chunks inside one throttle window must
-    /// coalesce to a single active-cell revision bump (so the renderer
-    /// re-wraps the live tail ~10x/sec instead of once per character), while
-    /// every byte of content is preserved and finalize forces a final bump.
+    /// #1620：一个节流窗口内的一连串推理块必须
+    /// 合并为一次活跃单元格修订版碰撞（以便渲染器
+    /// 每秒重新换行实时尾部约 10 次，而不是每个字符一次），同时
+    /// 每个字节的内容都被保留，finalize 强制最终一次碰撞。
     #[test]
     fn issue_1620_throttles_thinking_bumps_without_losing_content() {
         let mut app = test_app();
         let entry = ensure_active_entry(&mut app);
-        // `ensure_active_entry` bumped once on creation; start the measurement
-        // from a clean throttle window so the first append renders immediately.
+        // `ensure_active_entry` 在创建时碰撞了一次；从干净的节流窗口
+        // 开始测量，以便第一次追加立即渲染。
         app.thinking_revision_last_bump_at = None;
         let rev_before = app.active_cell_revision;
 
@@ -345,7 +340,7 @@ mod tests {
         let chunks = [
             "Hel", "lo, ", "this", " is", " a", " lo", "ng", " re", "ason", "ing",
         ];
-        // All ten chunks land within a single 100ms window (5ms apart).
+        // 所有十个块都位于一个 100ms 窗口内（每 5ms 一个）。
         for (i, chunk) in chunks.iter().enumerate() {
             append_at(
                 &mut app,
@@ -360,7 +355,7 @@ mod tests {
             "rapid chunks within one throttle window must coalesce to one bump"
         );
 
-        // A chunk after the window expires is allowed to bump again.
+        // 窗口到期后的块允许再次碰撞。
         append_at(
             &mut app,
             entry,
@@ -373,11 +368,11 @@ mod tests {
             "a chunk past the throttle window should bump once more"
         );
 
-        // No content was dropped despite the skipped intermediate bumps.
+        // 尽管跳过了中间碰撞，没有内容被丢弃。
         let expected = format!("{} stream", chunks.concat());
         assert_eq!(thinking_content(&app, entry), expected);
 
-        // Red line: finalize forces exactly one bump and flushes the tail.
+        // 红线：finalize 强制恰好一次碰撞并刷新尾部。
         let rev_pre_final = app.active_cell_revision;
         let finalized = finalize_active_entry(&mut app, Some(1.5), " [end]");
         assert!(finalized, "finalize should report it finalized an entry");

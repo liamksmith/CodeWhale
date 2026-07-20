@@ -1,24 +1,24 @@
-//! Workroom types — durable chat-native containers for threaded agent work.
+//! Workroom 类型——用于线程化代理工作的持久聊天原生容器。
 //!
-//! A [`Workroom`] groups threads, events, and external references into a
-//! stable, addressable surface that can be accessed from the TUI, mobile page,
-//! chat bridges, and programmatic Runtime API consumers.
+//! 一个 [`Workroom`] 将线程、事件和外部引用分组为一个
+//! 稳定、可寻址的表面，可以从 TUI、移动页面、聊天桥接
+//! 和编程式 Runtime API 消费者访问。
 //!
-//! See `docs/rfcs/3209-workrooms.md` for the full design.
+//! 完整设计见 `docs/rfcs/3209-workrooms.md`。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
-/// Unique identifier for a workroom.
+/// Workroom 的唯一标识符。
 ///
-/// Stable across restarts. Opaque to callers; generated via UUID v4 with a
-/// `wr_` prefix for link recognition.
+/// 跨重启保持稳定。对调用者不透明；通过 UUID v4 生成，
+/// 带有 `wr_` 前缀以便链接识别。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct WorkroomId(pub String);
 
 impl WorkroomId {
-    /// Create a new workroom id from a UUID v4 string.
+    /// 从 UUID v4 字符串创建新的 workroom id。
     pub fn new() -> Self {
         Self(format!("wr_{}", uuid::Uuid::new_v4().simple()))
     }
@@ -36,7 +36,7 @@ impl std::fmt::Display for WorkroomId {
     }
 }
 
-/// A durable container for threaded agent conversations.
+/// 线程化代理对话的持久容器。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workroom {
     pub id: WorkroomId,
@@ -49,24 +49,24 @@ pub struct Workroom {
     pub visibility: WorkroomVisibility,
 }
 
-/// GitHub repository identity attached to a workroom.
+/// 附加到 workroom 的 GitHub 仓库标识。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoRef {
     pub owner: String,
     pub name: String,
 }
 
-/// Visibility controls for a workroom.
+/// Workroom 的可见性控制。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkroomVisibility {
-    /// Only the local user can access.
+    /// 只有本地用户可以访问。
     Private,
-    /// Accessible to callers bearing one of the listed bearer tokens.
+    /// 持有所列承载令牌之一的调用者可访问。
     Shared { allowed_tokens: Vec<String> },
 }
 
-/// A thread within a workroom.
+/// Workroom 内的一个线程。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomThread {
     pub id: String,
@@ -88,9 +88,9 @@ pub enum WorkroomThreadKind {
     ReceiptLog,
 }
 
-/// An external reference that can be attached to a workroom thread.
+/// 可附加到 workroom 线程的外部引用。
 ///
-/// Stores only metadata — no API keys, tokens, or secrets.
+/// 仅存储元数据——无 API 密钥、令牌或秘密。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExternalThreadRef {
@@ -116,7 +116,7 @@ pub enum ExternalThreadRef {
     },
 }
 
-/// An event within a workroom thread, attributed to a specific agent/model.
+/// Workroom 线程内的事件，归属于特定代理/模型。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomEvent {
     pub id: String,
@@ -143,7 +143,7 @@ pub enum WorkroomEventKind {
     Resumed,
 }
 
-/// Attribution metadata recording which agent and model produced an event.
+/// 记录哪个代理和模型产生了事件的归属元数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentAttribution {
     pub provider: String,
@@ -151,7 +151,7 @@ pub struct AgentAttribution {
     pub agent_id: String,
 }
 
-/// A shareable link that resolves to a workroom, thread, or event.
+/// 可解析为 workroom、线程或事件的可分享链接。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomLink {
     pub workroom_id: WorkroomId,
@@ -162,9 +162,9 @@ pub struct WorkroomLink {
 }
 
 impl WorkroomLink {
-    /// Parse a `codewhale://workroom/...` URL.
+    /// 解析 `codewhale://workroom/...` URL。
     ///
-    /// Accepted forms:
+    /// 接受的形式：
     /// - `codewhale://workroom/wr_<id>`
     /// - `codewhale://workroom/wr_<id>/thread/<thread_id>`
     /// - `codewhale://workroom/wr_<id>/event/<event_id>`
@@ -206,7 +206,7 @@ impl WorkroomLink {
         })
     }
 
-    /// Serialise back to the `codewhale://workroom/...` URL form.
+    /// 序列化回 `codewhale://workroom/...` URL 形式。
     pub fn to_url(&self) -> String {
         let mut url = format!("codewhale://workroom/{}", self.workroom_id);
         if let Some(ref thread_id) = self.thread_id {
@@ -237,7 +237,7 @@ fn non_empty_segment(segment: &str) -> Option<String> {
     }
 }
 
-/// Summary projection of a workroom for list/inbox views.
+/// Workroom 用于列表/收件箱视图的摘要投影。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomSummary {
     pub id: WorkroomId,
@@ -246,13 +246,13 @@ pub struct WorkroomSummary {
     pub active_threads: usize,
 }
 
-/// Paginated list of workrooms.
+/// Workroom 的分页列表。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomListResponse {
     pub workrooms: Vec<WorkroomSummary>,
 }
 
-/// Response from the `/workroom/resolve` endpoint.
+/// `/workroom/resolve` 端点的响应。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkroomResolveResponse {
     pub link: WorkroomLink,

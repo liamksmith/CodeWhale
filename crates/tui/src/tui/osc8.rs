@@ -1,33 +1,30 @@
-//! OSC 8 hyperlink emission and stripping.
+//! OSC 8 超链接的发出和剥离。
 //!
-//! Modern terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm,
-//! Alacritty, recent gnome-terminal/konsole) make a substring clickable when
-//! it is wrapped in:
+//! 现代终端（iTerm2、Terminal.app 13+、Ghostty、Kitty、WezTerm、
+//! Alacritty、较新的 gnome-terminal/konsole）在子字符串被包装为
+//! 以下格式时使其可点击：
 //!
 //! ```text
 //! \x1b]8;;TARGET\x1b\\LABEL\x1b]8;;\x1b\\
 //! ```
 //!
-//! Terminals that don't understand the sequence simply render the visible
-//! `LABEL` and ignore the escape. So emitting OSC 8 is a strict UX upgrade for
-//! supporting terminals and a no-op for the rest.
+//! 不理解此序列的终端只渲染可见的 `LABEL` 并忽略转义。因此发出
+//! OSC 8 对支持终端来说是严格的 UX 升级，对其他终端是无操作。
 //!
-//! # Architecture (#3029)
+//! # 架构（#3029）
 //!
-//! The markdown renderer embeds link payloads *in-band* inside `Span::content`
-//! via [`wrap_link`]. ratatui's buffer pipeline drops the leading `ESC` byte
-//! but paints the rest of the payload one-byte-per-cell, which would corrupt
-//! columns. So each render seam calls [`extract_buffer_link_regions`] after
-//! `Paragraph::render`: it recovers each link's target + label display
-//! columns, blanks the payload cells (no cell ever holds `\x1b` or `]8;;`),
-//! and publishes [`LinkRegion`]s to a thread-local. `ColorCompatBackend::draw`
-//! then consumes those regions and emits the OSC 8 escapes *out-of-band* —
-//! interleaved with the cell stream through the backend's `Write` impl, never
-//! inside a buffer cell. The in-band path is the source of link info; the
-//! out-of-band path is what reaches the terminal.
+//! Markdown 渲染器通过 [`wrap_link`] 将链接载荷*内联*嵌入 `Span::content`
+//! 内部。ratatui 的缓冲区管道丢弃前导的 `ESC` 字节，但将载荷的
+//! 其余内容每字节一单元格地绘制，这会破坏列对齐。因此每个渲染接缝
+//! 在 `Paragraph::render` 之后调用 [`extract_buffer_link_regions`]：
+//! 它恢复每个链接的目标 + 标签显示列，将载荷单元格清空（没有单元格
+//! 会包含 `\x1b` 或 `]8;;`），并将 [`LinkRegion`] 发布到线程本地。
+//! 然后 `ColorCompatBackend::draw` 消费这些区域并通过后端的 `Write`
+//! 实现*带外*发出 OSC 8 转义——与单元格流交错发送，永远不会在缓冲区
+//! 单元格内部。内联路径是链接信息的来源；带外路径才是到达终端的。
 //!
-//! The clipboard/selection extraction path still strips any residual codes via
-//! [`strip_into`] / [`strip_ansi_into`] as a defense-in-depth.
+//! 剪贴板/选择提取路径仍然通过 [`strip_into`] / [`strip_ansi_into`]
+//! 剥离任何残留的转义码，作为深度防御。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,7 +32,7 @@ const OSC8_PREFIX: &str = "\x1b]8;;";
 const OSC8_TERMINATOR: &str = "\x1b\\";
 const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
 
-/// A contiguous run of cells on one terminal row that share a hyperlink target.
+/// 在一个终端行上共享一个超链接目标的连续单元格序列。
 #[derive(Debug, Clone)]
 pub struct LinkRegion {
     pub row: u16,
@@ -44,107 +41,101 @@ pub struct LinkRegion {
     pub target: String,
 }
 
-/// Write an OSC 8 hyperlink open sequence for `target` to `w`.
+/// 将 `target` 的 OSC 8 超链接打开序列写入 `w`。
 pub fn write_osc8_open(w: &mut impl std::io::Write, target: &str) -> std::io::Result<()> {
     w.write_all(OSC8_PREFIX.as_bytes())?;
     w.write_all(target.as_bytes())?;
     w.write_all(OSC8_TERMINATOR.as_bytes())
 }
 
-/// Write an OSC 8 hyperlink close sequence to `w`.
+/// 将 OSC 8 超链接关闭序列写入 `w`。
 pub fn write_osc8_close(w: &mut impl std::io::Write) -> std::io::Result<()> {
     w.write_all(OSC8_CLOSE.as_bytes())
 }
 
-/// Process-wide enable flag. Set once at app init from `[tui] osc8_links`
-/// (when present); otherwise defaults to on for macOS/Linux and off for
-/// Windows legacy consoles (see `ui.rs`'s `osc8_default_on`). Read by the
-/// renderer to gate out-of-band OSC 8 emission.
+/// 进程级启用标志。在应用初始化时从 `[tui] osc8_links` 设置一次
+///（当存在时）；否则默认在 macOS/Linux 上启用，在 Windows 旧版
+/// 控制台上禁用（参见 `ui.rs` 中的 `osc8_default_on`）。由渲染器
+/// 读取以控制带外 OSC 8 的发出。
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// Set the process-wide OSC 8 enable flag. Intended to be called once at
-/// startup; subsequent calls take effect immediately.
+/// 设置进程级 OSC 8 启用标志。旨在启动时调用一次；
+/// 后续调用立即可见效。
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// Whether OSC 8 hyperlink emission is currently enabled.
+/// OSC 8 超链接发出当前是否已启用。
 #[must_use]
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-// --- Thread-local link region accumulator (#3029) ---
+// --- 线程本地链接区域累加器（#3029）---
 
 use std::cell::RefCell;
 
 thread_local! {
-    /// Link regions collected during the current render frame.
-    /// Populated by the render closure after scanning the ratatui buffer;
-    /// consumed and cleared by `ColorCompatBackend::draw()`.
+    /// 在当前渲染帧期间收集的链接区域。
+    /// 由渲染闭包在扫描 ratatui 缓冲区后填充；
+    /// 由 `ColorCompatBackend::draw()` 消费并清除。
     pub static FRAME_LINKS: RefCell<Vec<LinkRegion>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Replace the thread-local frame link buffer with `links`.
+/// 用 `links` 替换线程本地帧链接缓冲区。
 pub fn set_frame_links(links: Vec<LinkRegion>) {
     FRAME_LINKS.with(|cell| {
         *cell.borrow_mut() = links;
     });
 }
 
-/// Append `links` to the thread-local frame link buffer. Used when more than
-/// one widget renders link-bearing content into the same frame (e.g. the main
-/// transcript and the live-transcript overlay): each seam appends rather than
-/// replacing, so all regions reach `ColorCompatBackend::draw`.
+/// 将 `links` 追加到线程本地帧链接缓冲区。当多个部件将包含链接的
+/// 内容渲染到同一个帧时使用（例如，主抄本和活跃抄本覆盖层）：
+/// 每个接缝追加而不是替换，以便所有区域都能到达 `ColorCompatBackend::draw`。
 pub fn append_frame_links(links: Vec<LinkRegion>) {
     FRAME_LINKS.with(|cell| cell.borrow_mut().extend(links));
 }
 
-/// Take the thread-local frame links, leaving an empty vec behind.
+/// 取出线程本地帧链接，留下空 vec。
 pub fn take_frame_links() -> Vec<LinkRegion> {
     FRAME_LINKS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
 }
 
-// --- In-band payload extraction (#3029) ---
+// --- 内联载荷提取（#3029）---
 //
-// The markdown renderer embeds OSC 8 hyperlinks *in-band* inside `Span`
-// content via [`wrap_link`]. ratatui's buffer pipeline drops the leading
-// `ESC` byte but paints every other byte of the payload into its own cell,
-// which drifts columns and corrupts the visible glyph stream. Rather than
-// thread structured link metadata through the whole render pipeline, we scan
-// the rendered `Buffer` after each `Paragraph::render` and:
+// Markdown 渲染器通过 [`wrap_link`] 将 OSC 8 超链接*内联*嵌入 `Span`
+// 内容中。ratatui 的缓冲区管道丢弃前导的 `ESC` 字节，但将载荷的
+// 每个其他字节绘制到自己的单元格中，这会漂移列并破坏可见字形流。
+// 我们不是将结构化的链接元数据传递整个渲染管道，而是在每次
+// `Paragraph::render` 之后扫描渲染的 `Buffer`，并且：
 //
-//   1. recover each link's target + the display-column span of its label, and
-//   2. blank the payload cells (the `]8;;`, target, and terminators), leaving
-//      only the clean label behind.
+//   1. 恢复每个链接的目标及其标签的显示列范围，和
+//   2. 清空载荷单元格（`]8;;`、目标、终止符），只留下干净的标签。
 //
-// The recovered [`LinkRegion`]s are handed to [`set_frame_links`] /
-// [`append_frame_links`]; `ColorCompatBackend::draw` consumes them and emits
-// the OSC 8 escapes *out-of-band* through the backend's `Write` impl, so no
-// payload byte ever reaches a buffer cell. This satisfies the #3029
-// acceptance criterion ("no Buffer cell contains `\x1b` or `]8;;`") by
-// construction.
+// 恢复的 [`LinkRegion`] 被传递给 [`set_frame_links`] /
+// [`append_frame_links`]；`ColorCompatBackend::draw` 消费它们并
+// 通过后端的 `Write` 实现*带外*发出 OSC 8 转义，因此没有载荷字节
+// 会到达缓冲区单元格。这通过构造满足了 #3029 验收标准
+//（"没有 Buffer 单元格包含 `\x1b` 或 `]8;;`"）。
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-/// The four cells of the OSC 8 open prefix `ESC ] 8 ; ;` after ratatui strips
-/// the leading ESC: `]`, `8`, `;`, `;`.
+/// OSC 8 打开前缀 `ESC ] 8 ; ;` 在 ratatui 剥离前导 ESC 后的四个单元格：`]`、`8`、`;`、`;`。
 const OPEN_CELLS: [char; 4] = [']', '8', ';', ';'];
 
-/// Scan `area` of `buf` for in-band OSC 8 link payloads, blank their payload
-/// cells, and return one [`LinkRegion`] per recovered link (over the label's
-/// display columns, in absolute buffer coordinates).
+/// 扫描 `buf` 的 `area` 以查找内联 OSC 8 链接载荷，清空其载荷
+/// 单元格，并为每个恢复的链接返回一个 [`LinkRegion`]（位于标签的
+/// 显示列上，使用绝对缓冲区坐标）。
 ///
-/// A complete payload in the buffer (ESC already stripped by ratatui) looks
-/// like `]8;;TARGET\LABEL]8;;\` — four open cells, target bytes, a `\`
-/// terminator, the visible label, then the four-cell close `]8;;\`. If the
-/// close is missing (e.g. the payload was truncated by wrapping), the whole
-/// run is treated as corruption: cells are blanked but no region is emitted,
-/// since a half-link is worse than no link.
+/// 缓冲区中的完整载荷（ESC 已被 ratatui 剥离）看起来像
+/// `]8;;TARGET\LABEL]8;;\`——四个打开单元格、目标字节、`\`
+/// 终止符、可见标签，然后四个单元格的关闭 `]8;;\`。如果
+/// 关闭部分丢失（例如载荷被换行截断），整个运行被视为损坏：
+/// 单元格被清空但不发出区域，因为半链接比没有链接更糟糕。
 ///
-/// `row`/`col_start`/`col_end` are absolute buffer coordinates (they include
-/// `area.x`/`area.y`), matching what `ColorCompatBackend::draw` tests against.
+/// `row`/`col_start`/`col_end` 是绝对缓冲区坐标（包含
+/// `area.x`/`area.y`），与 `ColorCompatBackend::draw` 测试的内容匹配。
 #[must_use]
 pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegion> {
     let mut regions = Vec::new();
@@ -156,10 +147,10 @@ pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegi
     for y in y_start..y_end {
         let mut x = x_start;
         while x < x_end {
-            // Look for the open prefix `]8;;` at the current column.
+            // 在当前列查找打开前缀 `]8;;`。
             if matches_open(buf, x, y, x_end) {
                 let payload_start = x;
-                // Skip the 4 open cells, then consume the target up to `\`.
+                // 跳过 4 个打开单元格，然后消费目标直到 `\`。
                 let mut scan = x + OPEN_CELLS.len() as u16;
                 let mut target = String::new();
                 let mut found_target_term = false;
@@ -173,17 +164,17 @@ pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegi
                     target.push(ch);
                 }
                 if !found_target_term {
-                    // Unterminated payload: blank what we can prove is payload
-                    // (the open prefix) and bail on this run — the rest may be
-                    // legitimate content we must not destroy.
+                    // 未终止的载荷：清空我们可以确定是载荷的内容
+                    //（打开前缀）并放弃此运行——其余内容可能是
+                    // 我们不能破坏的合法内容。
                     blank_cells(buf, payload_start..payload_start + 4, y);
                     x = scan;
                     continue;
                 }
                 let label_start = scan;
-                // Consume label cells until the close prefix `]8;;\`. `scan`
-                // walks one cell at a time; when the next four cells spell
-                // `]8;;` and the fifth is `\`, the label ends just before them.
+                // 消费标签单元格直到关闭前缀 `]8;;\`。`scan`
+                // 一次前进一个单元格；当下四个单元格拼出 `]8;;`
+                // 且第五个是 `\` 时，标签就在它们之前结束。
                 let mut found_close = false;
                 while scan + 4 < x_end {
                     if matches_open(buf, scan, y, x_end) && cell_char(buf, scan + 4, y) == '\\' {
@@ -192,21 +183,20 @@ pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegi
                     }
                     scan += 1;
                 }
-                // `scan` is now either at the close prefix (found) or past the
-                // row end (not found); in both cases the label occupies
-                // `label_start..scan` (exclusive end).
+                // `scan` 现在要么在关闭前缀处（已找到），要么已过
+                // 行尾（未找到）；两种情况下标签占据
+                // `label_start..scan`（不包含结束）。
                 if !found_close {
-                    // No close within the row: blank the open+target+term and
-                    // the partial label, emit no region.
+                    // 行内无关闭：清空打开+目标+终止符和部分标签，不产生区域。
                     blank_cells(buf, payload_start..scan, y);
                     x = scan;
                     continue;
                 }
                 let close_start = scan;
                 let close_end = scan + (OPEN_CELLS.len() as u16) + 1; // `]8;;` + `\`
-                // Record the region over the label's columns. LinkRegion uses
-                // inclusive end coordinates, matching ColorCompatBackend's
-                // `x >= col_start && x <= col_end` test. Skip empty labels.
+                // 在标签的列上记录区域。LinkRegion 使用
+                // 包含结束坐标，匹配 ColorCompatBackend 的
+                // `x >= col_start && x <= col_end` 测试。跳过空标签。
                 if scan > label_start {
                     regions.push(LinkRegion {
                         row: y,
@@ -215,10 +205,10 @@ pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegi
                         target,
                     });
                 }
-                // Blank the payload cells AROUND the label, never the label
-                // itself: the open prefix + target + first `\`, then the close
-                // `]8;;\`. The label cells in `label_start..scan` are left
-                // intact so the visible glyph stream is unchanged.
+                // 清空标签*周围*的载荷单元格，从不清空标签本身的单元格：
+                // 打开前缀 + 目标 + 第一个 `\`，然后关闭 `]8;;\`。
+                // `label_start..scan` 中的标签单元格保持完整，
+                // 这样可见字形流不变。
                 blank_cells(buf, payload_start..label_start, y);
                 blank_cells(buf, close_start..close_end, y);
                 x = close_end;
@@ -230,8 +220,7 @@ pub fn extract_buffer_link_regions(buf: &mut Buffer, area: Rect) -> Vec<LinkRegi
     regions
 }
 
-/// Whether the four cells starting at `(x, y)` spell the OSC 8 open prefix
-/// `]8;;` (clamped to `x_end`).
+/// 从 `(x, y)` 开始的四个单元格是否拼出 OSC 8 打开前缀 `]8;;`（限制到 `x_end`）。
 fn matches_open(buf: &Buffer, x: u16, y: u16, x_end: u16) -> bool {
     if x.saturating_add(OPEN_CELLS.len() as u16) > x_end {
         return false;
@@ -242,16 +231,14 @@ fn matches_open(buf: &Buffer, x: u16, y: u16, x_end: u16) -> bool {
         .all(|(i, want)| cell_char(buf, x + i as u16, y) == *want)
 }
 
-/// First char of the symbol at `(x, y)` (payload bytes are ASCII, so the cell
-/// symbol is a single char). Returns `'\0'` for empty cells so they never
-/// falsely match a payload char.
+/// `(x, y)` 处符号的第一个字符（载荷字节是 ASCII，因此单元格符号是单个字符）。
+/// 对空单元格返回 `'\0'`，以便它们永远不会错误匹配载荷字符。
 fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
     let sym = buf[(x, y)].symbol();
     sym.chars().next().unwrap_or('\0')
 }
 
-/// Reset the cells in `cols` (relative to absolute `x`) on row `y` to a blank
-/// space, clearing any payload bytes.
+/// 将行 `y` 上 `cols`（相对于绝对 `x`）中的单元格重置为空白空格，清除任何载荷字节。
 fn blank_cells(buf: &mut Buffer, cols: std::ops::Range<u16>, y: u16) {
     for x in cols {
         if let Some(cell) = buf.cell_mut(ratatui::layout::Position { x, y }) {
@@ -260,11 +247,11 @@ fn blank_cells(buf: &mut Buffer, cols: std::ops::Range<u16>, y: u16) {
     }
 }
 
-/// Wrap `label` so it links to `target` in OSC 8-aware terminals. The returned
-/// string contains the full `\x1b]8;;TARGET\x1b\LABEL\x1b]8;;\x1b\` payload.
+/// 包装 `label`，使其在支持 OSC 8 的终端中链接到 `target`。返回的
+/// 字符串包含完整的 `\x1b]8;;TARGET\x1b\LABEL\x1b]8;;\x1b\` 载荷。
 ///
-/// Does **not** check [`enabled()`]; callers wanting the runtime gate should
-/// branch on it before calling this. That keeps the helper test-friendly.
+/// **不**检查 [`enabled()`]；想要运行时门控的调用方应在调用之前
+/// 对其分支。这使辅助函数保持对测试友好。
 #[must_use]
 pub fn wrap_link(target: &str, label: &str) -> String {
     let mut out = String::with_capacity(target.len() + label.len() + 12);
@@ -277,16 +264,15 @@ pub fn wrap_link(target: &str, label: &str) -> String {
     out
 }
 
-/// Strip every ANSI escape sequence from `s` into `out`, preserving only the
-/// visible characters. ratatui's buffer drops the leading `ESC` byte but
-/// happily paints every other byte of an escape (`[`, `0`, `;`, `m`, OSC
-/// payloads, etc.) into a buffer cell, drifting columns. Tool stdout that
-/// includes ANSI (e.g. `gh`/`git` with color forced on, anything run through
-/// a PTY) must be sanitized before it enters the transcript.
+/// 从 `s` 中剥离每个 ANSI 转义序列到 `out`，只保留可见字符。
+/// ratatui 的缓冲区丢弃前导的 `ESC` 字节，但愉快地将转义的其他
+/// 每个字节（`[`、`0`、`;`、`m`、OSC 载荷等）绘制到缓冲区单元格中，
+/// 漂移列。包含 ANSI 的工具 stdout（例如强制着色的 `gh`/`git`、
+/// 通过 PTY 运行的任何内容）必须在进入抄本前进行清理。
 ///
-/// Handles CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC \`), DCS, SOS,
-/// PM, APC, and standalone two-byte ESC sequences. OSC 8 hyperlink wrappers
-/// (`ESC ] 8 ; … BEL` / `ESC \`) are stripped along with the rest.
+/// 处理 CSI（`ESC [ … final`）、OSC（`ESC ] … BEL` 或 `ESC \`）、DCS、SOS、
+/// PM、APC 和独立的两字节 ESC 序列。OSC 8 超链接包装
+///（`ESC ] 8 ; … BEL` / `ESC \`）与其他序列一起被剥离。
 pub fn strip_ansi_into(s: &str, out: &mut String) {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -325,16 +311,15 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
                     i = j;
                     continue;
                 }
-                // Standalone two-byte ESC sequence (RIS, charset selection, etc.)
+                // 独立的两字节 ESC 序列（RIS、字符集选择等）
                 _ => {
                     i += 2;
                     continue;
                 }
             }
         }
-        // Strip lone control bytes that ratatui would otherwise drop (and which
-        // mean nothing in transcript output) but keep \n, \r, \t as legitimate
-        // formatting.
+        // 剥离 ratatui 否则会丢弃的孤立控制字节（在抄本输出中
+        // 没有意义），但保留 \n、\r、\t 作为合法的格式化字符。
         let b = bytes[i];
         if b < 0x80 {
             if b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t' {
@@ -344,9 +329,9 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
             out.push(b as char);
             i += 1;
         } else {
-            // UTF-8 multi-byte sequence: copy the whole code point intact.
-            // Pushing `b as char` would mis-decode it as Latin-1 and mangle
-            // non-ASCII text (CJK, accented Latin, emoji, …).
+            // UTF-8 多字节序列：完整复制整个码点。
+            // 将 `b` 作为 char 推入会将其误解码为 Latin-1 并破坏
+            // 非 ASCII 文本（中文、重音拉丁文、表情符号等）。
             let len = utf8_seq_len(b);
             let end = (i + len).min(bytes.len());
             if let Ok(chunk) = std::str::from_utf8(&bytes[i..end]) {
@@ -357,9 +342,8 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
     }
 }
 
-/// Length in bytes of the UTF-8 sequence that starts with `lead`. Falls back
-/// to `1` for continuation bytes / invalid leads so callers always make
-/// forward progress.
+/// 以 `lead` 开头的 UTF-8 序列的字节长度。对于续字节/无效前导字节
+/// 回退到 `1`，以便调用方总能向前推进。
 fn utf8_seq_len(lead: u8) -> usize {
     if lead < 0xc0 {
         1
@@ -372,22 +356,21 @@ fn utf8_seq_len(lead: u8) -> usize {
     }
 }
 
-/// Strip OSC 8 escape sequences from `s` into `out`, preserving the visible
-/// label text. Other escapes (color, style) pass through untouched. The
-/// implementation handles both the standard `ESC \` and the lone `BEL`
-/// terminators that some emitters use.
+/// 从 `s` 中剥离 OSC 8 转义序列到 `out`，保留可见的标签文本。
+/// 其他转义（颜色、样式）原样通过。实现处理标准的 `ESC \` 和
+/// 一些发射器使用的孤立的 `BEL` 终止符。
 pub fn strip_into(s: &str, out: &mut String) {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Look for the OSC 8 prefix `ESC ] 8 ;`
+        // 查找 OSC 8 前缀 `ESC ] 8 ;`
         if i + 4 <= bytes.len()
             && bytes[i] == 0x1b
             && bytes[i + 1] == b']'
             && bytes[i + 2] == b'8'
             && bytes[i + 3] == b';'
         {
-            // Skip until the string terminator (ESC \) or BEL.
+            // 跳过直到字符串终止符（ESC \）或 BEL。
             let mut j = i + 4;
             while j < bytes.len() {
                 if bytes[j] == 0x07 {
@@ -423,8 +406,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Serialize tests that read or write the `ENABLED` flag so they don't
-    /// race each other under cargo's default parallel test runner.
+    /// 序列化读取或写入 `ENABLED` 标志的测试，使它们在 cargo
+    /// 默认的并行测试运行程序下不会相互竞争。
     static FLAG_GUARD: Mutex<()> = Mutex::new(());
 
     fn strip(s: &str) -> String {
@@ -462,7 +445,7 @@ mod tests {
 
     #[test]
     fn strip_preserves_non_osc_8_escapes() {
-        // Color escape stays in place; only OSC 8 wrappers are removed.
+        // 颜色转义保持不动；只有 OSC 8 包装被移除。
         let mixed = format!(
             "\x1b[31mred\x1b[0m {wrapped}",
             wrapped = wrap_link("https://example.com", "click")
@@ -496,16 +479,16 @@ mod tests {
 
     #[test]
     fn strip_ansi_drops_lone_control_bytes() {
-        // Bare BEL or other C0 control bytes that aren't \n/\r/\t are dropped
-        // so they can't paint as visible cells.
+        // 孤立的 BEL 或其他非 \n/\r/\t 的 C0 控制字节被丢弃，
+        // 这样它们不会作为可见单元格绘制。
         let s = "a\x07b\x01c";
         assert_eq!(strip_ansi(s), "abc");
     }
 
     #[test]
     fn strip_ansi_preserves_utf8_multibyte_chars() {
-        // CJK, accented Latin, and emoji must survive the strip without being
-        // re-decoded as Latin-1 (which would explode 你 -> ä½ ).
+        // CJK、重音拉丁文和表情符号必须在剥离后存活，而不会被
+        // 重新解码为 Latin-1（这会把 你 炸成 ä½ ）。
         let s = "Phase 1: 第一步 README é 🚀";
         assert_eq!(strip_ansi(s), "Phase 1: 第一步 README é 🚀");
 
@@ -521,9 +504,9 @@ mod tests {
 
     #[test]
     fn enabled_is_true_by_default_when_untouched() {
-        // Hold the flag guard so we observe the initial state, not a value
-        // mid-flight from `set_enabled_round_trips`. The flag *defaults* to
-        // true at static init and tests in this module are the only writers.
+        // 持有标志守卫，以便我们观察初始状态，而不是从
+        // `set_enabled_round_trips` 半路飞过的值。标志*默认*
+        // 在静态初始化时为 true，并且此模块中的测试是唯一的写入者。
         let _g = FLAG_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         assert!(enabled());
     }
@@ -541,9 +524,8 @@ mod tests {
 
     // ── #3029: extract_buffer_link_regions ───────────────────────────────
 
-    /// Render `lines` (whose spans may contain in-band `wrap_link` payloads)
-    /// into a fresh Buffer of `area` and return it, mirroring how the real
-    /// transcript path lays text into the buffer.
+    /// 将 `lines`（其 spans 可能包含内联 `wrap_link` 载荷）渲染到
+    /// `area` 的新 Buffer 中并返回它，镜像真实抄本路径布局文本的方式。
     fn render_lines(
         lines: Vec<ratatui::text::Line<'static>>,
         area: ratatui::layout::Rect,
@@ -562,8 +544,8 @@ mod tests {
 
     #[test]
     fn extract_finds_label_span_target_and_blanks_payload() {
-        // wrap_link("https://x.test", "click") occupies, after ratatui strips
-        // ESC: ]8;;<target>\<label>]8;;\  (label "click" between terminators).
+        // wrap_link("https://x.test", "click") 在 ratatui 剥离 ESC 后占用：
+        // ]8;;<target>\<label>]8;;\（终止符之间的标签 "click"）。
         let target = "https://x.test";
         let label = "click";
         let wrapped = wrap_link(target, label);
@@ -580,20 +562,19 @@ mod tests {
         let r = &regions[0];
         assert_eq!(r.row, 0);
         assert_eq!(r.target, target);
-        // Label columns derived from the payload layout: open(4) + target + \(1),
-        // then label cells. Compute rather than hardcode to stay correct if the
-        // fixture changes.
+        // 标签列源自载荷布局：open(4) + target + \(1)，
+        // 然后标签单元格。计算而非硬编码以在测试数据更改时保持正确。
         let expected_start = 4 + target.len() as u16 + 1;
         let expected_end = expected_start + label.len() as u16 - 1;
         assert_eq!(r.col_start, expected_start);
         assert_eq!(r.col_end, expected_end);
-        // Label cells survive intact.
+        // 标签单元格保持完整。
         assert_eq!(
             row_text(&buf, 0, expected_start, expected_start + label.len() as u16),
             label
         );
-        // No payload byte remains anywhere: open, target, and both terminators
-        // are blanked. The whole row, outside the label span, is spaces.
+        // 任何地方都没有残留的载荷字节：打开、目标和两个终止符
+        // 都被清空。整行除标签范围外都是空格。
         let full = row_text(&buf, 0, 0, expected_end + 6);
         assert!(
             !full.contains(']') && !full.contains('\\') && !full.contains('h'),
@@ -618,11 +599,11 @@ mod tests {
         assert_eq!(regions.len(), 2, "two disjoint links");
         assert_eq!(regions[0].target, "https://a.test");
         assert_eq!(regions[1].target, "https://b.test");
-        // Labels survive and are disjoint.
+        // 标签存活且不重叠。
         let a_span = regions[0].col_start..=regions[0].col_end;
         let b_span = regions[1].col_start..=regions[1].col_end;
         assert!(a_span.end() < b_span.start(), "regions must not overlap");
-        // No residual payload bytes anywhere on the row.
+        // 行上任何位置都没有残留的载荷字节。
         let full = row_text(&buf, 0, 0, 60);
         assert!(!full.contains(']'), "no open/close brackets remain");
         assert!(!full.contains('\\'), "no terminator backslash remains");
@@ -630,7 +611,7 @@ mod tests {
 
     #[test]
     fn extract_uses_absolute_coordinates_with_area_offset() {
-        // The backend tests absolute (x,y); regions must include area.x/area.y.
+        // 后端测试绝对 (x,y)；区域必须包含 area.x/area.y。
         let wrapped = wrap_link("u", "L");
         let area = ratatui::layout::Rect::new(5, 3, 30, 2);
         let mut buf = render_lines(
@@ -665,15 +646,15 @@ mod tests {
 
     #[test]
     fn extract_blanks_unterminated_payload_and_emits_no_region() {
-        // A payload whose close was truncated (e.g. by wrapping) must not
-        // produce a half-link; its payload cells are still blanked.
-        // Build a buffer that has `]8;;ab\cd` with NO trailing close.
+        // 关闭部分被截断（例如因换行）的载荷不得产生半链接；
+        // 其载荷单元格仍然被清空。
+        // 构建一个包含 `]8;;ab\cd` 且没有尾部关闭的缓冲区。
         let area = ratatui::layout::Rect::new(0, 0, 12, 1);
         let mut buf = render_lines(
             vec![ratatui::text::Line::from(vec![ratatui::text::Span::raw(
-                // wrap_link minus the trailing close: open+target+term+label.
-                // We can't easily produce "no close" via wrap_link, so craft
-                // the in-band bytes directly (ESC will be stripped by ratatui).
+                // wrap_link 减去尾部关闭：open+target+term+label。
+                // 我们不能轻松地通过 wrap_link 产生"无关闭"，因此直接
+                // 构建内联字节（ESC 将被 ratatui 剥离）。
                 "\x1b]8;;t\x1b\\lab",
             )])],
             area,

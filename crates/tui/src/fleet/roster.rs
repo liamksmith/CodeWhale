@@ -1,16 +1,15 @@
-//! Fleet roster — the persistent, inspectable party of named agent roles.
+//! Fleet 花名册——命名的代理角色的持久化、可检查的队伍。
 //!
-//! The roster merges three layers into one config-backed lineup shared by
-//! model-spawned sub-agents and fleet dispatch (#fleet-roster cutover
-//! (v0.8.67)):
+//! 花名册将三个层合并为一个由配置支持的阵容，由
+//! 模型生成的子代理和 fleet 调度共享（#fleet-roster 切换 v0.8.67）：
 //!
-//! - built-in members (the default party, always available),
-//! - `[fleet.profiles]` entries from config.toml,
-//! - workspace `.codewhale/agents/*.toml` profile files.
+//! - 内置成员（默认队伍，始终可用），
+//! - 来自 config.toml 的 `[fleet.profiles]` 条目，
+//! - 工作区 `.codewhale/agents/*.toml` 配置文件。
 //!
-//! Precedence is Workspace > Config > BuiltIn, merged by id. Loading never
-//! fails the session: an unreadable workspace profile dir degrades to the
-//! built-in + config layers with a log line.
+//! 优先级是 Workspace > Config > BuiltIn，按 id 合并。加载永远
+//! 不会使会话失败：不可读取的工作区配置文件目录会降级为
+//! 内置 + 配置层，并记录一条日志。
 
 #![allow(dead_code)]
 
@@ -26,8 +25,7 @@ use codewhale_config::{
 
 use super::profile::{AgentProfile, load_workspace_agent_profiles};
 
-/// Which layer a roster member came from. Higher layers override lower ones
-/// by id (Workspace > Config > BuiltIn).
+/// 花名册成员来自哪个层。更高层按 id 覆盖更低层（Workspace > Config > BuiltIn）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileOrigin {
@@ -46,16 +44,15 @@ impl std::fmt::Display for ProfileOrigin {
     }
 }
 
-/// The merged fleet roster. Think RPG saved party / K8s runconfig: a stable,
-/// named lineup of agent roles the session can inspect and dispatch against.
+/// 合并后的 fleet 花名册。类似 RPG 保存的队伍 / K8s 运行配置：
+/// 一个稳定的、命名的代理角色阵容，会话可以检查和调度。
 #[derive(Debug, Clone)]
 pub struct FleetRoster {
     members: Vec<AgentProfile>,
 }
 
 impl FleetRoster {
-    /// Roster containing only the built-in party. Used as the runtime default
-    /// before config/workspace layers are wired in.
+    /// 仅包含内置队伍的花名册。在配置/工作区层接入之前用作运行时默认值。
     #[must_use]
     pub fn built_ins_only() -> Self {
         Self {
@@ -63,12 +60,12 @@ impl FleetRoster {
         }
     }
 
-    /// Load and merge the full roster for a workspace.
+    /// 加载并合并工作区的完整花名册。
     ///
-    /// Config members come from `[fleet.profiles]` (id = map key). Workspace
-    /// members come from `.codewhale/agents/*.toml`; a load failure there is
-    /// logged and skipped so a broken profile file cannot take down the
-    /// session — the roster degrades to built-ins + config.
+    /// 配置成员来自 `[fleet.profiles]`（id = map key）。工作区
+    /// 成员来自 `.codewhale/agents/*.toml`；那里的加载失败会被
+    /// 记录并跳过，因此损坏的配置文件不会使会话
+    /// 宕机——花名册降级为内置 + 配置。
     #[must_use]
     pub fn load(fleet_config: &FleetConfigToml, workspace: &Path) -> Self {
         let mut built_ins = Self::built_in_members();
@@ -100,20 +97,19 @@ impl FleetRoster {
             }
         }
 
-        // Built-ins keep their canonical slot order (overrides included);
-        // config/workspace-only extras follow alphabetically.
+        // 内置成员保持其规范槽位顺序（包括覆盖）；
+        // 仅配置/工作区的额外成员按字母顺序排列。
         extras.sort_by_key(|a| a.id.to_lowercase());
         let mut members = built_ins;
         members.extend(extras);
         Self { members }
     }
 
-    /// The default party. Built-ins carry no permission grants (permissions
-    /// stay at the [`FleetProfilePermissions::default`] floor); behavior comes
-    /// from the role posture / system prompts plus the role `instructions`
-    /// below, which encode the operation hierarchy: the **operator** (the
-    /// session's `/model` selection) runs the operation and assigns managers
-    /// to workflows; a **manager** is the middle manager of one workflow.
+    /// 默认队伍。内置成员不带权限授予（权限
+    /// 保持在 [`FleetProfilePermissions::default`] 基线）；行为来自
+    /// 角色姿态/系统提示加上下面的角色 `instructions`，
+    /// 它们编码了操作层级：**operator**（会话的 `/model` 选择）
+    /// 运行操作并将 managers 分配给工作流；**manager** 是一个工作流的中层管理者。
     #[must_use]
     pub fn built_in_members() -> Vec<AgentProfile> {
         [
@@ -205,7 +201,7 @@ impl FleetRoster {
         .collect()
     }
 
-    /// Look up a member by id (trimmed, case-insensitive).
+    /// 按 id 查找成员（去空格，不区分大小写）。
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&AgentProfile> {
         let id = id.trim();
@@ -214,17 +210,17 @@ impl FleetRoster {
             .find(|member| member.id.trim().eq_ignore_ascii_case(id))
     }
 
-    /// All members in stable order: built-in canonical order first (an
-    /// overridden built-in keeps its slot but shows its overriding origin),
-    /// then extra config/workspace-only members alphabetically.
+    /// 所有成员按稳定顺序：首先内置规范顺序（被覆盖的内置成员
+    /// 保留其槽位但显示其覆盖来源），
+    /// 然后额外的仅配置/工作区成员按字母顺序排列。
     #[must_use]
     pub fn members(&self) -> &[AgentProfile] {
         &self.members
     }
 
-    /// Per-member explicit model pins, keyed by lowercased member id.
-    /// Feeds the sub-agent `role_models` lookup; explicit `[subagents]`
-    /// overrides are merged on top by the engine and win.
+    /// 每个成员的显式模型锁定，以小写成员 id 为键。
+    /// 供给子代理的 `role_models` 查找；显式的 `[subagents]`
+    /// 覆盖由引擎合并到顶层并生效。
     #[must_use]
     pub fn model_overrides(&self) -> HashMap<String, String> {
         self.members
@@ -237,8 +233,8 @@ impl FleetRoster {
     }
 }
 
-/// Overlay `member` onto the roster layers: replace an existing member with
-/// the same id (case-insensitive) in place, otherwise collect it as an extra.
+/// 将 `member` 叠加到花名册层上：替换具有相同 id（不区分大小写）的
+/// 现有成员，否则将其作为额外成员收集。
 fn merge_member(
     built_ins: &mut [AgentProfile],
     extras: &mut Vec<AgentProfile>,
@@ -323,9 +319,8 @@ mod tests {
                 member.id
             );
             assert!(member.profile.model.is_none(), "{}", member.id);
-            // The coordination hierarchy (operator/manager) and the
-            // adversarial reviewer carry role doctrine; the remaining
-            // built-ins get behavior from posture / system prompts alone.
+            // 协调层级（operator/manager）和对抗性 reviewer
+            // 带有角色教义；其余内置成员仅从姿态/系统提示中获得行为。
             let carries_doctrine =
                 matches!(member.id.as_str(), "manager" | "operator" | "reviewer");
             assert_eq!(

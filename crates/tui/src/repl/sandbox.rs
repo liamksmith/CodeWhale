@@ -1,16 +1,14 @@
-//! REPL fence-extraction utilities.
+//! REPL 围栏提取工具函数。
 //!
-//! The agent's main loop scans assistant text for ` ```repl ` fenced blocks
-//! and feeds them to a [`crate::repl::runtime::PythonRuntime`]. Capturing
-//! `FINAL(...)` and routing sub-LLM RPCs are handled inside the runtime via
-//! a stdin/stdout protocol — no scraping required here.
+//! agent 的主循环扫描助手的文本中的 ` ```repl ` 围栏块，并将其提供给 [`crate::repl::runtime::PythonRuntime`]。
+//! 捕获 `FINAL(...)` 和路由子 LLM RPC 都是在运行时内部通过 stdin/stdout 协议处理的——此处无需抓取。
 
-/// Check if a string contains a `` ```repl `` fenced code block.
+/// 检查字符串是否包含 `` ```repl `` 围栏代码块。
 pub fn has_repl_block(text: &str) -> bool {
     text.contains("```repl")
 }
 
-/// Extract every `` ```repl `` block from `text` with byte offsets.
+/// 从 `text` 中提取每个 `` ```repl `` 块及其字节偏移量。
 pub fn extract_repl_blocks(text: &str) -> Vec<ReplBlock> {
     let mut blocks = Vec::new();
     let mut rest = text;
@@ -36,7 +34,7 @@ pub fn extract_repl_blocks(text: &str) -> Vec<ReplBlock> {
     blocks
 }
 
-/// A `` ```repl `` code block with byte-offset position info.
+/// 一个带有字节偏移位置信息的 `` ```repl `` 代码块。
 #[derive(Debug, Clone)]
 pub struct ReplBlock {
     pub code: String,

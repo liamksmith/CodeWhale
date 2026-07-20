@@ -1,4 +1,4 @@
-//! Cucumber acceptance test for directory listing.
+//! 目录列表的 Cucumber 验收测试。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

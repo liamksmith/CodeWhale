@@ -1,13 +1,13 @@
-//! TUI runtime logging. Initializes a `tracing-subscriber` that writes to a
-//! per-process file under `~/.codewhale/logs/tui-YYYY-MM-DD-PID.log`, and (on
-//! Unix and Windows) redirects the process's `stderr` handle/fd to that same
-//! file for the lifetime of the alt-screen TUI.
+//! TUI 运行时日志。初始化一个 `tracing-subscriber`，写入
+//! `~/.codewhale/logs/tui-YYYY-MM-DD-PID.log` 下的每个进程文件，
+//! 并且（在 Unix 和 Windows 上）在 alt-screen TUI 的生命周期内
+//! 将进程的 `stderr` 句柄/fd 重定向到同一个文件。
 //!
-//! Why this exists:
+//! 为什么存在：
 //!
-//! The TUI runs inside an alt-screen buffer drawn by `ratatui` using an
-//! incremental diff renderer. The renderer assumes nothing else is writing
-//! to the terminal — its internal "current cells" model is the only source
+//! TUI 在由 `ratatui` 使用增量差异渲染器绘制的 alt-screen 缓冲区中
+//! 运行。渲染器假设没有其他东西在向终端写入——其内部的"当前单元格"
+//! 模型是唯
 //! of truth for what's on screen. If anything emits raw bytes to stdout or
 //! stderr while the alt-screen is active (an `eprintln!` from a sub-agent,
 //! a `tracing` warning that defaulted to `stderr`, a panic message, a

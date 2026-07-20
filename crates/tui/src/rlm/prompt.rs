@@ -1,12 +1,12 @@
-//! RLM system prompt — adapted from the reference implementation
-//! (alexzhang13/rlm) and Zhang et al., arXiv:2512.24601.
+//! RLM 系统提示词——改编自参考实现
+//!（alexzhang13/rlm）和 Zhang 等人，arXiv:2512.24601。
 //!
-//! The prompt is deliberately strict: the only way to make progress is
-//! through a `repl` block. There is no fall-through prose path.
+//! 提示词刻意严格：取得进展的唯一方式是通过 `repl` 块。
+//! 没有可回退的散文路径。
 
 use crate::models::SystemPrompt;
 
-/// Build the system prompt for a Recursive Language Model (RLM) root call.
+/// 构建递归语言模型（RLM）根调用的系统提示词。
 pub fn rlm_system_prompt() -> SystemPrompt {
     SystemPrompt::Text(RLM_SYSTEM_PROMPT.trim().to_string())
 }

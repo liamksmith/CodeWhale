@@ -1,4 +1,4 @@
-//! `/cache` command — per-turn prefix-cache telemetry and inspection.
+//! `/cache` 命令——每轮前缀缓存遥测和检查。
 
 use std::time::Instant;
 
@@ -8,10 +8,10 @@ use crate::localization::{Locale, MessageId, tr};
 use crate::models::MessageRequest;
 use crate::tui::app::{App, AppAction, TurnCacheRecord};
 
-/// Show per-turn DeepSeek prefix-cache telemetry for the last N turns (#263).
+/// 显示最后 N 轮的每轮 DeepSeek 前缀缓存遥测（#263）。
 ///
-/// `arg` is parsed as a count override (default 10, capped at the ring size).
-/// Renders a fixed-width table the user can paste into a bug report.
+/// `arg` 被解析为数量覆盖（默认 10，上限为环形缓冲区大小）。
+/// 渲染用户可粘贴到错误报告中的固定宽度表格。
 pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
     if let Some(flags) = arg.and_then(|a| a.strip_prefix("inspect")) {
@@ -282,18 +282,17 @@ fn short_hash(hash: &str) -> &str {
     &hash[..hash.len().min(12)]
 }
 
-/// Render a prefix-cache stability and health summary for `/cache stats`.
+/// 渲染 `/cache stats` 的前缀缓存稳定性和健康摘要。
 ///
-/// Surfaces the current prefix fingerprint, stability ratio, change history,
-/// and an aggregated cache-hit summary from per-turn telemetry.  When the
-/// prefix has changed, a prominent warning is included so users can
-/// correlate cache misses with prefix drift.
+/// 显示当前前缀指纹、稳定性比率、变更历史以及从每轮遥测
+/// 聚合的缓存命中摘要。当前缀已更改时，包含显着的警告，
+/// 以便用户可以将缓存未命中与前缀漂移相关联。
 fn format_cache_stats(app: &App) -> String {
     let mut out = String::new();
     out.push_str("Cache Stats\n");
 
-    // ── Prefix stability ──────────────────────────────────────────────
-    out.push_str("\n── Prefix Stability\n");
+    // ── 前缀稳定性 ──────────────────────────────────────────────
+    out.push_str("\n── 前缀稳定性\n");
     match app.prefix_stability_pct {
         Some(pct) => {
             let checks = app.prefix_checks_total;
@@ -302,64 +301,58 @@ fn format_cache_stats(app: &App) -> String {
 
             if changes == 0 {
                 out.push_str(&format!(
-                    "  Stability: {pct}% ({stable_checks}/{checks} checks)\n"
+                    "  稳定性: {pct}% ({stable_checks}/{checks} 次检查)\n"
                 ));
-                out.push_str("  Status:    stable (no prefix changes this session)\n");
+                out.push_str("  状态:    稳定（此会话中无前缀变更）\n");
             } else {
                 out.push_str(&format!(
-                    "  Stability: {pct}% ({stable_checks}/{checks} checks, {changes} change{})\n",
-                    if changes == 1 { "" } else { "s" }
+                    "  稳定性: {pct}% ({stable_checks}/{checks} 次检查，{changes} 次变更)\n",
                 ));
-                out.push_str("  Status:    WARNING — prefix has changed\n");
+                out.push_str("  状态:    警告——前缀已变更\n");
                 if let Some(ref desc) = app.last_prefix_change_desc {
-                    out.push_str(&format!("  Last change: {desc}\n"));
+                    out.push_str(&format!("  上次变更: {desc}\n"));
                 }
             }
         }
         None => {
-            out.push_str("  Stability: unknown (no checks recorded yet)\n");
-            out.push_str("  Run a turn first to collect prefix stability data.\n");
+            out.push_str("  稳定性: 未知（尚未记录检查）\n");
+            out.push_str("  先运行一轮以收集前缀稳定性数据。\n");
         }
     }
 
-    // ── Prefix fingerprint ────────────────────────────────────────────
-    out.push_str("\n── Prefix Fingerprint\n");
+    // ── 前缀指纹 ────────────────────────────────────────────
+    out.push_str("\n── 前缀指纹\n");
     match &app.last_pinned_prefix_hash {
         Some(hash) => {
-            out.push_str(&format!("  Pinned hash: {hash}\n"));
+            out.push_str(&format!("  固定哈希: {hash}\n"));
             let short = if hash.len() >= 12 { &hash[..12] } else { hash };
-            out.push_str(&format!("  Short id:    {short}\n"));
+            out.push_str(&format!("  短 ID:    {short}\n"));
             if app.prefix_change_count > 0 {
-                out.push_str("  Drift:       WARNING — hash has changed during this session\n");
+                out.push_str("  漂移:     警告——哈希在此会话期间已变更\n");
                 out.push_str(&format!(
-                    "               ({change} change{plural} detected)\n",
+                    "               （检测到 {change} 次变更）\n",
                     change = app.prefix_change_count,
-                    plural = if app.prefix_change_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
                 ));
             } else {
-                out.push_str("  Drift:       none (hash stable)\n");
+                out.push_str("  漂移:     无（哈希稳定）\n");
             }
         }
         None => {
-            out.push_str("  Pinned hash: unavailable\n");
-            out.push_str("  Run a turn first, or use /cache inspect.\n");
+            out.push_str("  固定哈希: 不可用\n");
+            out.push_str("  先运行一轮，或使用 /cache inspect。\n");
         }
     }
 
-    // ── Cache hit-rate summary ────────────────────────────────────────
-    out.push_str("\n── Cache Hit Rate\n");
+    // ── 缓存命中率摘要 ────────────────────────────────────────
+    out.push_str("\n── 缓存命中率\n");
     let history = &app.session.turn_cache_history;
     if history.is_empty() {
-        out.push_str("  No turn telemetry recorded yet.\n");
+        out.push_str("  尚未记录轮次遥测。\n");
     } else {
-        // Aggregate only cache-aware turns; skip turns where the provider
-        // did not report cache telemetry (cache_hit_tokens is None).
-        // When cache_miss_tokens is None, infer it as
-        //   input_tokens − cache_hit_tokens  (matches /cache table logic).
+        // 仅聚合启用缓存的轮次；跳过提供者未报告缓存遥测的轮次
+        //（cache_hit_tokens 为 None）。
+        // 当 cache_miss_tokens 为 None 时，推断为
+        //   input_tokens − cache_hit_tokens（匹配 /cache 表逻辑）。
         let mut turns = 0u64;
         let (hit, miss, input) = app.session.turn_cache_history.iter().fold(
             (0u64, 0u64, 0u64),
@@ -382,105 +375,99 @@ fn format_cache_stats(app: &App) -> String {
         } else {
             0.0
         };
-        out.push_str(&format!("  Turns recorded: {turns}\n"));
+        out.push_str(&format!("  记录轮次: {turns}\n"));
         out.push_str(&format!(
-            "  Cache hit tokens:  {hit} ({avg_pct:.1}% of {total_cache} cache-aware tokens)\n",
+            "  缓存命中 token:   {hit}（占 {total_cache} 个缓存感知 token 的 {avg_pct:.1}%）\n",
             hit = format_tokens(hit),
             total_cache = format_tokens(total_cache),
         ));
         out.push_str(&format!(
-            "  Cache miss tokens: {miss}\n",
+            "  缓存未命中 token: {miss}\n",
             miss = format_tokens(miss),
         ));
         out.push_str(&format!(
-            "  Total input tokens: {input}\n",
+            "  总输入 token: {input}\n",
             input = format_tokens(input),
         ));
         if avg_pct < 80.0 {
-            out.push_str("  NOTE: cache hit rate is low (< 80%). Check prefix stability above or consider /compact.\n");
+            out.push_str("  注意：缓存命中率偏低（< 80%）。请检查上方的前缀稳定性或考虑 /compact。\n");
         }
     }
 
     out
 }
 
-/// Render three-zone prefix contract status for `/cache zones` (#2264).
+/// 渲染 `/cache zones` 的三区域前缀契约状态（#2264）。
 ///
-/// Displays the PinnedPrefix fingerprint, AppendLog size, and TurnScratch
-/// state. The zones are type scaffolding only (Phase 1) — not yet
-/// enforcing the full contract at request time.
+/// 显示 PinnedPrefix 指纹、AppendLog 大小和 TurnScratch
+/// 状态。这些区域仅为类型脚手架（阶段 1）——尚未在请求时
+/// 强制执行完整契约。
 fn format_cache_zones(app: &App) -> String {
     let mut out = String::new();
     out.push_str("Cache Zones (#2264 three-zone contract, Phase 1 foundation)\n");
 
     // ── PinnedPrefix ─────────────────────────────────────────────────
-    out.push_str("\n── PinnedPrefix (system + tools, frozen baseline)\n");
+    out.push_str("\n── PinnedPrefix（系统 + 工具，冻结基线）\n");
     match &app.last_pinned_prefix_hash {
         Some(hash) => {
             let short = if hash.len() >= 12 { &hash[..12] } else { hash };
-            out.push_str(&format!("  Short id: {short}\n"));
+            out.push_str(&format!("  短 ID: {short}\n"));
             if app.prefix_change_count > 0 {
                 out.push_str(&format!(
-                    "  Status:    WARNING — {change} drift{plural} detected\n",
+                    "  状态:    警告——检测到 {change} 次漂移\n",
                     change = app.prefix_change_count,
-                    plural = if app.prefix_change_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
                 ));
             } else {
-                out.push_str("  Status:    stable (no drift this session)\n");
+                out.push_str("  状态:    稳定（此会话中无漂移）\n");
             }
             if let Some(pct) = app.prefix_stability_pct {
-                out.push_str(&format!("  Stability: {pct}%\n"));
+                out.push_str(&format!("  稳定性: {pct}%\n"));
             }
         }
         None => {
-            out.push_str("  Status:    unavailable (not yet frozen)\n");
-            out.push_str("  Run a turn first to freeze the baseline.\n");
+            out.push_str("  状态:    不可用（尚未冻结）\n");
+            out.push_str("  先运行一轮以冻结基线。\n");
         }
     }
 
     // ── AppendLog ────────────────────────────────────────────────────
-    out.push_str("\n── AppendLog (conversation history, append-only)\n");
-    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
+    out.push_str("\n── AppendLog（对话历史，仅追加）\n");
+    out.push_str("  状态:      阶段 1 脚手架——尚未接入引擎\n");
     let msg_count = app.api_messages.len();
-    out.push_str(&format!("  Messages:    {msg_count}\n"));
+    out.push_str(&format!("  消息数:    {msg_count}\n"));
     let history_count = app
         .api_messages
         .iter()
         .filter(|m| m.role != "system")
         .count();
-    out.push_str(&format!("  History msgs: {history_count}\n"));
+    out.push_str(&format!("  历史消息数: {history_count}\n"));
 
     // ── TurnScratch ──────────────────────────────────────────────────
-    out.push_str("\n── TurnScratch (per-turn ephemeral data)\n");
-    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
+    out.push_str("\n── TurnScratch（每轮临时数据）\n");
+    out.push_str("  状态:      阶段 1 脚手架——尚未接入引擎\n");
 
-    // ── Zone contract summary ────────────────────────────────────────
-    out.push_str("\n── Contract Status\n");
+    // ── 区域契约摘要 ────────────────────────────────────────
+    out.push_str("\n── 契约状态\n");
     let has_drift = app.prefix_change_count > 0;
     out.push_str(&format!(
         "  PinnedPrefix: {}\n",
         if app.last_pinned_prefix_hash.is_some() {
             if has_drift {
-                "WARNING — drifted"
+                "警告——已漂移"
             } else {
                 "OK"
             }
         } else {
-            "not frozen"
+            "未冻结"
         }
     ));
-    out.push_str("  AppendLog:    Phase 1 foundation\n");
-    out.push_str("  TurnScratch:  Phase 1 foundation\n");
+    out.push_str("  AppendLog:    阶段 1 基础\n");
+    out.push_str("  TurnScratch:  阶段 1 基础\n");
 
     out
 }
 
-/// Formats a u64 token count with a compact suffix: K for thousands,
-/// M for millions. Never returns scientific notation.
+/// 使用紧凑后缀格式化 u64 token 计数：K 表示千，M 表示百万。从不返回科学计数法。
 pub(crate) fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -594,10 +581,9 @@ fn format_cache_history(app: &App, count: usize, locale: Locale) -> String {
         let route_cell = format_turn_cache_route(rec);
         let age = humanize_age(now.saturating_duration_since(rec.recorded_at));
 
-        // No cache telemetry → render `—` everywhere and don't pollute totals
-        // with inferred zeros. Some providers (and some routes inside DeepSeek)
-        // skip the cache fields; including a synthesized 0/N for those turns
-        // would make every aggregate ratio look broken.
+        // 无缓存遥测 → 所有地方渲染 `—` 且不污染总计为推断的零。
+        // 某些提供者（以及 DeepSeek 内的某些路由）跳过缓存字段；
+        // 为这些轮次包含合成的 0/N 会使每个聚合比率看起来损坏。
         let Some(hit) = rec.cache_hit_tokens else {
             body.push_str(&format!(
                 "{turn:>4}  {route:<24}  {input:>5}  {output:>5}  {hit:>5}  {miss:>5}  {replay:>6}   {ratio:>6}   {age}\n",

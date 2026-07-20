@@ -16,9 +16,9 @@ fn assert_workflow_trace_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    // v4 (goal-progress migration) adds `thread_goals.continuation_count` on top
-    // of the v3 workflow-trace + thread_goals tables. The table set asserted
-    // below is unchanged; only the schema version advanced.
+    // v4（目标进度迁移）在 v3 工作流追踪 + thread_goals 表之上
+    // 添加了 `thread_goals.continuation_count`。下面断言的表集
+    // 保持不变；只有模式版本升级了。
     assert_eq!(user_version, 4);
 
     for table in [
@@ -181,7 +181,7 @@ fn init_schema_migration() {
         assert_eq!(message.created_at, i as i64);
     }
 
-    // Test idempotent
+    // 测试幂等性
     StateStore::open(Some(path.clone())).expect("open state store");
 }
 
@@ -350,7 +350,7 @@ fn init_schema_migration_same_second_messages() {
     assert_eq!(messages[2].parent_entry_id, Some(messages[1].id));
     assert_eq!(messages[3].parent_entry_id, Some(messages[2].id));
 
-    // Test idempotent reopen after same-second parent links are migrated.
+    // 测试在同时父链接迁移后的幂等重新打开
     StateStore::open(Some(path.clone())).expect("open state store - idempotent");
 }
 

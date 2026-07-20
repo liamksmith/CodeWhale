@@ -1,4 +1,4 @@
-//! Shared helpers for core slash commands.
+//! 核心斜杠命令的共享辅助函数。
 
 pub(super) fn parse_depth_prefixed_arg(
     arg: Option<&str>,

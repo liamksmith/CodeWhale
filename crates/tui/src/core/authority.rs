@@ -1,4 +1,4 @@
-//! Turn authority and mode/posture policy projections.
+//! 会话权限与模式/姿态策略投影。
 //!
 //! 将模式、审批、Shell、沙箱、信任和输入来源的决策集中在一起，避免各处逻辑不一致。
 //! 
@@ -18,7 +18,7 @@ use super::ops::UserInputProvenance;  // 用户输入的"来源"，比如是真�
 /// 会话级模式偏好
 /// 这是"持久化的 Agent 时代权限基线"，Plan 和 YOLO模式切换回来时都会恢复到这个基线。避免模式切换
 /// 时权限混乱。
-/// Durable Agent-era permission baseline that Plan/YOLO restore to (#3386).
+/// Agent 时代可持久化的权限基线，Plan/YOLO 切换回来时恢复到此基线（#3386）。
 ///
 /// 在 Agent 模式下，用户设定了一套权限配置（比如是否允许执行 shell 命令、是否信任某些操作等）
 /// 当用户从 Plan/YOLO 模式切换回来时，权限会还原到这套配置，而不是回到某个默认值
@@ -39,7 +39,7 @@ pub(crate) struct ModeSessionPrefs {
 }
 
 /// [`AppMode`]模式解析后的有效权限
-/// The permission policy a given [`AppMode`] resolves to (#3386).
+/// 给定 [`AppMode`] 解析出的权限策略（#3386）。
 /// 这是解析后的最终权限策略——某个模式 + 用户偏好计算得出。
 /// 四个字段就是"当前能做什么"的结论：是否允许 shell、是否信任、什么审批策略。
 #[derive(Debug, Clone, Copy)]
@@ -52,14 +52,14 @@ pub(crate) struct EffectiveModePolicy {
 }
 
 /// 核心权限映射函数
-/// Resolve a mode's effective permission policy from the durable Agent baseline.
+/// 从可持久化的 Agent 基线解析模式的有效权限策略。
 ///
-/// This is the single source of truth for the mode/permission table:
+/// 这是模式/权限表的唯一真相来源：
 /// - `Plan`   -> 纯只读——允许执行 shell，不信任，审批策略是 Suggest（系统会建议但需要用户明确同意）。
 /// - `Agent`  -> 使用用户在会话偏好中设置的权限基线。(`prefs`).
-/// - `Auto`   -> compatibility alias for Agent; not a separate behavior.
+/// - `Auto`   -> Agent 的兼容别名；不是独立行为。
 /// - `Operate` -> Agent baseline plus orchestration posture in prompts(Agent + 编排姿态)。
-/// - `Yolo`   -> legacy compat; 完全信任: shell + trust + `Bypass`(审批直接绕过).
+/// - `Yolo`   -> 旧版本兼容；完全信任: shell + trust + `Bypass`(审批直接绕过)。
 #[must_use]
 pub(crate) fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveModePolicy {
     match mode {
@@ -84,7 +84,7 @@ pub(crate) fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> E
     }
 }
 
-/// Effective authority for one engine turn after provenance narrowing.
+/// 来源收窄后单次引擎轮次的有效权限。
 /// 单个引擎轮次的权限快照
 #[derive(Debug, Clone)]
 pub(crate) struct TurnAuthority {
@@ -232,7 +232,7 @@ pub(crate) fn agent_approval_mode_for_turn(
     }
 }
 
-/// Pick the sandbox policy that gates shell commands for a given UI mode.
+/// 为给定的 UI 模式选择控制 Shell 命令的沙箱策略。
 /// - Plan 模式：沙箱只读，任何写操作都被阻止。
 /// - Agent/Auto/Operate 模式：限制在 workspace 内可写——能写工作区目录。
 /// - Yolo 模式：完全访问（DangerFullAccess里的 Danger 就是在警告你"危险"）。
@@ -250,7 +250,7 @@ pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> Sandbo
     }
 }
 
-/// Resolve the effective shell policy for a turn from legacy shell opt-in plus mode.
+/// 根据旧版 shell 选择加入标志和模式解析轮次的有效 Shell 策略。
 /// - 如果压根不允许 allow_shell = false → 直接返回 None
 /// - Plan 模式天然禁止 shell。
 /// - 其他模式在 allow_shell = true 时返回 ShellPolicy::Full.

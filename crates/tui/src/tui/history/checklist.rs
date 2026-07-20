@@ -1,4 +1,4 @@
-//! Checklist and todo transcript rendering helpers.
+//! 清单和待办事项记录渲染辅助函数。
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -40,10 +40,9 @@ pub(super) struct ChecklistSnapshot {
     pub(super) total: usize,
 }
 
-/// Pull a structured checklist snapshot out of the tool's text output.
-/// The tool emits a leading human-readable line followed by JSON, so we
-/// scan for the first `{` and parse from there. Returns `None` if the
-/// payload is missing the expected `items` array.
+/// 从工具的文本输出中提取结构化的清单快照。
+/// 工具会先发出一个人可读的行，然后是 JSON，因此我们扫描第一个 `{` 并从那里开始解析。
+/// 如果负载缺少预期的 `items` 数组，则返回 `None`。
 pub(super) fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot> {
     let json_start = output.find('{')?;
     let parsed: Value = serde_json::from_str(&output[json_start..]).ok()?;
@@ -93,24 +92,20 @@ pub(super) fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot
     })
 }
 
-/// One parsed "Updated todo #N to STATUS" prefix line emitted by
-/// `todo_update` / `checklist_update`. Used by [`render_checklist_change_card`]
-/// to show a compact state-change line instead of the full item list.
+/// 由 `todo_update` / `checklist_update` 发出的一个已解析的 "Updated todo #N to STATUS" 前缀行。
+/// 由 [`render_checklist_change_card`] 用于显示紧凑的状态变更行，而不是完整项目列表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ChecklistChange {
     pub(super) id: u32,
     pub(super) status: String,
 }
 
-/// Parse the leading line of a checklist-update tool output. Returns
-/// `None` for non-update outputs (e.g. `todo_write` snapshots, errors,
-/// or an unexpected format) so the caller falls back to the full-list
-/// renderer.
+/// 解析清单更新工具输出的首行。对于非更新输出（例如 `todo_write` 快照、错误
+/// 或意外格式）返回 `None`，以便调用者回退到完整列表渲染器。
 pub(super) fn parse_update_prefix(output: &str) -> Option<ChecklistChange> {
-    // The tool output shape is `Updated todo #3 to in_progress\n{ ... }`.
-    // We tolerate `checklist` or `todo` as the noun and any reasonable
-    // status word (the snapshot lookup in the renderer is the source of
-    // truth for the title — we just need the id+status pair).
+    // 工具输出格式为 `Updated todo #3 to in_progress\n{ ... }`。
+    // 我们接受 `checklist` 或 `todo` 作为名词，以及任何合理的状态词
+    //（渲染器中的快照查找是标题的真实来源——我们只需要 id+status 对）。
     let first = output.lines().next()?.trim();
     let rest = first
         .strip_prefix("Updated todo #")
@@ -124,11 +119,9 @@ pub(super) fn parse_update_prefix(output: &str) -> Option<ChecklistChange> {
     Some(ChecklistChange { id, status })
 }
 
-/// Render a compact one-line state-change card for `todo_update` /
-/// `checklist_update` calls (#403). Shows the changed item's marker,
-/// title, and old -> new status, with a `M/N · pct%` progress summary
-/// in the header. The full list is still available through the tool
-/// detail record.
+/// 为 `todo_update` / `checklist_update` 调用渲染紧凑的单行状态变更卡片 (#403)。
+/// 显示已变更项目的标记、标题和旧 -> 新状态，头部带有 `M/N · pct%` 进度摘要。
+/// 完整列表仍然可以通过工具详情记录查看。
 pub(super) fn render_checklist_change_card(
     name: &str,
     status: ToolStatus,
@@ -152,8 +145,7 @@ pub(super) fn render_checklist_change_card(
         low_motion,
     ));
 
-    // Look up the title from the snapshot. `id` in tool input is
-    // 1-indexed; `items` is 0-indexed.
+    // 从快照中查找标题。工具输入中的 `id` 从 1 开始；`items` 从 0 开始。
     let item = (change.id as usize)
         .checked_sub(1)
         .and_then(|idx| snapshot.items.get(idx));
@@ -192,8 +184,7 @@ pub(super) fn render_checklist_change_card(
     ];
     lines.push(Line::from(spans));
 
-    // Tease that the full list is still available without leaving the
-    // transcript. Mirrors the same affordance used by other tool cells.
+    // 提示完整列表仍然可用，无需离开记录文本。与其他工具单元格使用的功能类似。
     lines.push(render_card_detail_line_single(
         None,
         &format!(
@@ -258,7 +249,7 @@ pub(super) fn render_checklist_card(
     for item in visible {
         let (marker, color) = checklist_status_marker(&item.status);
         let prefix = format!("{marker} ");
-        // Reserve room for the rail + marker prefix when wrapping content.
+        // 在换行内容时为轨道 + 标记前缀预留空间。
         let prefix_width =
             UnicodeWidthStr::width(TRANSCRIPT_RAIL) + UnicodeWidthStr::width(prefix.as_str());
         let content_width = usize::from(width).saturating_sub(prefix_width).max(1);

@@ -1,13 +1,11 @@
-//! OpenAI Codex / ChatGPT OAuth credential loading and token refresh.
+//! OpenAI Codex / ChatGPT OAuth 凭据加载和令牌刷新。
 //!
-//! Reads existing Codex CLI credentials from `~/.codex/auth.json` (or
-//! `$CODEX_HOME/auth.json`) and transparently refreshes expired access tokens
-//! using the OpenAI auth endpoint.
+//! 从 `~/.codex/auth.json`（或 `$CODEX_HOME/auth.json`）读取现有的 Codex CLI 凭据，
+//! 并使用 OpenAI 认证端点透明地刷新过期的访问令牌。
 //!
-//! # Security
+//! # 安全性
 //!
-//! Token values are never logged or printed. All debug representations
-//! redact sensitive fields.
+//! 令牌值永远不会被记录或打印。所有调试表示都会编辑敏感字段。
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,7 +15,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 
-/// OAuth token payload stored in `auth.json`.
+/// 存储在 `auth.json` 中的 OAuth 令牌负载。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct AuthTokens {
@@ -27,7 +25,7 @@ struct AuthTokens {
     account_id: Option<String>,
 }
 
-/// Top-level structure of Codex CLI's `auth.json`.
+/// Codex CLI 的 `auth.json` 顶层结构。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct CodexAuthFile {
@@ -35,7 +33,7 @@ struct CodexAuthFile {
     last_refresh: Option<String>,
 }
 
-/// Resolved OAuth credentials ready for API use.
+/// 已解析的、可供 API 使用的 OAuth 凭据。
 #[derive(Debug, Clone)]
 pub struct CodexCredentials {
     pub access_token: String,
@@ -43,16 +41,16 @@ pub struct CodexCredentials {
     pub account_id: Option<String>,
 }
 
-/// JWT claims subset for expiry extraction.
+/// 用于提取过期的 JWT 声明子集。
 #[derive(Debug, Deserialize)]
 struct JwtClaims {
     exp: Option<u64>,
 }
 
-/// Resolve the path to the Codex auth file.
+/// 解析 Codex 认证文件的路径。
 ///
-/// Priority:
-/// 1. `OPENAI_CODEX_AUTH_FILE` env var
+/// 优先级：
+/// 1. `OPENAI_CODEX_AUTH_FILE` 环境变量
 /// 2. `$CODEX_HOME/auth.json`
 /// 3. `~/.codex/auth.json`
 pub fn auth_file_path() -> PathBuf {
@@ -72,8 +70,8 @@ pub fn auth_file_path() -> PathBuf {
     codex_home.join("auth.json")
 }
 
-/// Try to extract `exp` (epoch seconds) from a JWT without verifying
-/// the signature. Returns `None` on any parse failure.
+/// 尝试从 JWT 中提取 `exp`（纪元秒）而不验证签名。
+/// 在任何解析失败时返回 `None`。
 fn jwt_expiry_seconds(token: &str) -> Option<u64> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() < 2 {
@@ -85,7 +83,7 @@ fn jwt_expiry_seconds(token: &str) -> Option<u64> {
     claims.exp
 }
 
-/// Check whether an access token is expired, with a 60-second safety margin.
+/// 检查访问令牌是否已过期，带有 60 秒的安全余量。
 fn token_is_expired(access_token: &str) -> bool {
     match jwt_expiry_seconds(access_token) {
         Some(exp) => {
@@ -93,18 +91,18 @@ fn token_is_expired(access_token: &str) -> bool {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs();
-            // 60-second safety margin
+            // 60 秒安全余量
             now + 60 >= exp
         }
-        // If we can't parse expiry, assume it might be expired — try refresh.
+        // 如果无法解析过期时间，假设它可能已过期 — 尝试刷新。
         None => true,
     }
 }
 
-/// Load Codex credentials from the auth file.
+/// 从认证文件加载 Codex 凭据。
 ///
-/// Returns `Ok(None)` if the file doesn't exist or has no usable tokens.
-/// Returns `Err` only on parse/IO errors that aren't "file not found".
+/// 如果文件不存在或没有可用令牌，返回 `Ok(None)`。
+/// 仅在非"文件未找到"的解析/IO 错误时返回 `Err`。
 pub fn load_credentials() -> Result<Option<CodexCredentials>> {
     let path = auth_file_path();
     if !path.exists() {
@@ -129,12 +127,12 @@ pub fn load_credentials() -> Result<Option<CodexCredentials>> {
     }))
 }
 
-/// Refresh an expired access token using the refresh token.
+/// 使用刷新令牌刷新过期的访问令牌。
 ///
-/// Calls the OpenAI token endpoint and returns new credentials.
-/// On success, updates the auth file on disk. Synchronous (blocking) so it can
-/// run inside the prompt-free, sync config credential-resolution path, matching
-/// the Kimi OAuth refresh flow.
+/// 调用 OpenAI 令牌端点并返回新凭据。
+/// 成功后，更新磁盘上的认证文件。同步（阻塞）因此可以
+/// 在无提示词、同步配置凭据解析路径中运行，
+/// 与 Kimi OAuth 刷新流程一致。
 fn refresh_access_token(refresh_token: &str) -> Result<CodexCredentials> {
     let client = crate::tls::reqwest_blocking_client_builder()
         .timeout(Duration::from_secs(30))
@@ -163,7 +161,7 @@ fn refresh_access_token(refresh_token: &str) -> Result<CodexCredentials> {
     let new_refresh = body["refresh_token"].as_str().map(ToOwned::to_owned);
     let new_id = body["id_token"].as_str().map(ToOwned::to_owned);
 
-    // Extract account_id from id_token if available.
+    // 从 id_token 中提取 account_id（如果可用）。
     let account_id = new_id.as_deref().and_then(extract_account_id_from_id_token);
 
     let creds = CodexCredentials {
@@ -172,16 +170,15 @@ fn refresh_access_token(refresh_token: &str) -> Result<CodexCredentials> {
         account_id,
     };
 
-    // Persist refreshed credentials.
+    // 持久化已刷新的凭据。
     if let Err(e) = save_credentials(&creds, new_id.as_deref()) {
-        tracing::warn!("Failed to persist refreshed Codex credentials: {e}");
+        tracing::warn!("持久化已刷新的 Codex 凭据失败: {e}");
     }
 
     Ok(creds)
 }
 
-/// Extract `chatgpt_account_id` from the `https://api.openai.com/auth`
-/// JWT claim namespace.
+/// 从 `https://api.openai.com/auth` JWT 声明命名空间中提取 `chatgpt_account_id`。
 fn extract_account_id_from_id_token(id_token: &str) -> Option<String> {
     let parts: Vec<&str> = id_token.split('.').collect();
     if parts.len() < 2 {
@@ -196,7 +193,7 @@ fn extract_account_id_from_id_token(id_token: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Save credentials back to the auth file, preserving file permissions.
+/// 将凭据保存回认证文件，保留文件权限。
 fn save_credentials(creds: &CodexCredentials, id_token: Option<&str>) -> Result<()> {
     let path = auth_file_path();
     if let Some(parent) = path.parent() {
@@ -233,23 +230,22 @@ fn save_credentials(creds: &CodexCredentials, id_token: Option<&str>) -> Result<
 }
 
 fn chrono_humanize_if_available() -> String {
-    // Simple ISO-ish timestamp without adding a chrono dependency.
+    // 不带 chrono 依赖的简单 ISO 风格时间戳。
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| format!("{} seconds since epoch", d.as_secs()))
+        .map(|d| format!("自纪元以来的 {} 秒", d.as_secs()))
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// Load or refresh Codex credentials.
+/// 加载或刷新 Codex 凭据。
 ///
-/// 1. Try env overrides first (`OPENAI_CODEX_ACCESS_TOKEN` / `CODEX_ACCESS_TOKEN`).
-/// 2. Load from auth file.
-/// 3. If access token is expired and refresh token is available, refresh.
+/// 1. 首先尝试环境变量覆盖（`OPENAI_CODEX_ACCESS_TOKEN` / `CODEX_ACCESS_TOKEN`）。
+/// 2. 从认证文件加载。
+/// 3. 如果访问令牌已过期且有刷新令牌，则刷新。
 ///
-/// Synchronous so it can be called from the prompt-free config credential
-/// resolution path (mirrors the Kimi OAuth flow).
+/// 同步，因此可以从无提示词的配置凭据解析路径调用（与 Kimi OAuth 流程一致）。
 pub fn get_credentials() -> Result<CodexCredentials> {
-    // Env override takes priority.
+    // 环境变量覆盖优先。
     if let Ok(token) = std::env::var("OPENAI_CODEX_ACCESS_TOKEN")
         && !token.trim().is_empty()
     {
@@ -271,15 +267,15 @@ pub fn get_credentials() -> Result<CodexCredentials> {
 
     let creds = load_credentials()?.with_context(missing_auth_message)?;
 
-    // Check if the access token is still valid.
+    // 检查访问令牌是否仍然有效。
     if !token_is_expired(&creds.access_token) {
         return Ok(creds);
     }
 
-    // Try refreshing.
+    // 尝试刷新。
     match creds.refresh_token {
         Some(ref rt) if !rt.trim().is_empty() => {
-            tracing::info!("Codex access token expired, refreshing...");
+            tracing::info!("Codex 访问令牌已过期，正在刷新...");
             refresh_access_token(rt)
         }
         _ => bail!(
@@ -300,11 +296,10 @@ pub fn missing_auth_message() -> String {
     )
 }
 
-/// Best-effort ChatGPT account id for the `chatgpt-account-id` request header.
+/// 尽力获取 `chatgpt-account-id` 请求头的 ChatGPT 账户 ID。
 ///
-/// Resolves from env overrides first, then the on-disk auth file. Never
-/// refreshes and never errors — a missing account id just means the header is
-/// omitted.
+/// 首先从环境变量覆盖解析，然后从磁盘上的认证文件解析。
+/// 从不刷新也从不报错 — 缺少账户 ID 只是意味着该头被省略。
 pub fn codex_account_id() -> Option<String> {
     if let Some(id) = codex_account_id_env() {
         return Some(id);
@@ -312,7 +307,7 @@ pub fn codex_account_id() -> Option<String> {
     load_credentials().ok().flatten().and_then(|c| c.account_id)
 }
 
-/// Read a ChatGPT account id from env overrides only.
+/// 仅从环境变量覆盖中读取 ChatGPT 账户 ID。
 fn codex_account_id_env() -> Option<String> {
     for var in ["OPENAI_CODEX_ACCOUNT_ID", "CODEX_ACCOUNT_ID"] {
         if let Ok(value) = std::env::var(var) {
@@ -325,7 +320,7 @@ fn codex_account_id_env() -> Option<String> {
     None
 }
 
-/// OpenAI OAuth constants (from Codex CLI reference implementation).
+/// OpenAI OAuth 常量（来自 Codex CLI 参考实现）。
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
@@ -335,7 +330,7 @@ mod tests {
 
     #[test]
     fn jwt_expiry_parses_valid_token() {
-        // A minimal JWT with {"exp": 9999999999} as payload.
+        // 一个最小的 JWT，负载为 {"exp": 9999999999}。
         let payload = URL_SAFE_NO_PAD.encode(b"{\"exp\":9999999999}");
         let token = format!("header.{payload}.signature");
         assert_eq!(jwt_expiry_seconds(&token), Some(9999999999));
@@ -350,7 +345,7 @@ mod tests {
 
     #[test]
     fn token_is_expired_detects_future() {
-        // Far future — should not be expired.
+        // 遥远的未来 — 不应过期。
         let payload = URL_SAFE_NO_PAD.encode(b"{\"exp\":9999999999}");
         let token = format!("header.{payload}.sig");
         assert!(!token_is_expired(&token));
@@ -358,7 +353,7 @@ mod tests {
 
     #[test]
     fn token_is_expired_detects_past() {
-        // Way in the past.
+        // 很久以前。
         let payload = URL_SAFE_NO_PAD.encode(b"{\"exp\":1000000000}");
         let token = format!("header.{payload}.sig");
         assert!(token_is_expired(&token));
@@ -366,7 +361,7 @@ mod tests {
 
     #[test]
     fn auth_file_path_respects_env() {
-        // Just verify it returns a path without panicking.
+        // 只需验证它返回路径而不崩溃。
         let path = auth_file_path();
         assert!(path.to_string_lossy().contains("auth.json"));
     }

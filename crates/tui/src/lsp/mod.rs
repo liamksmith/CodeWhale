@@ -1,18 +1,15 @@
-//! LSP integration: post-edit diagnostics injection (#136).
+//! LSP 集成：编辑后诊断注入（#136）。
 //!
-//! After the agent performs a successful file edit (`edit_file`,
-//! `apply_patch`, or `write_file`) the engine asks the [`LspManager`] for
-//! diagnostics on that file. The manager spawns the appropriate LSP server
-//! lazily on first use, sends `didOpen`/`didChange`, waits up to a bounded
-//! timeout for `publishDiagnostics`, normalizes the result, and returns it
-//! to the engine.
+//! 代理成功编辑文件（`edit_file`、`apply_patch` 或 `write_file`）后，
+//! 引擎向 [`LspManager`] 请求该文件的诊断信息。管理器在首次使用时
+//! 惰性启动相应的 LSP 服务器，发送 `didOpen`/`didChange`，等待有界
+//! 超时内的 `publishDiagnostics`，规范化结果，并将其返回给引擎。
 //!
-//! Failure modes are non-blocking by design: a missing LSP binary, a
-//! crashed server, or a timeout all degrade to "no diagnostics this turn"
-//! rather than stalling the agent. We log a one-time warning per language
-//! when the binary is missing.
+//! 失败模式设计为非阻塞：缺少 LSP 二进制文件、服务器崩溃或超时，
+//! 都会降级为"本轮无诊断"而不会阻塞代理。当二进制文件缺失时，
+//! 我们每种语言记录一次一次性警告。
 //!
-//! # Wiring
+//! # 接线
 //!
 //! ```text
 //! Engine  ── after successful edit ──▶  LspManager.diagnostics_for(path, seq)
@@ -24,14 +21,13 @@
 //!                                      LspTransport (stdio)
 //! ```
 //!
-//! # Configuration
+//! # 配置
 //!
-//! The `[lsp]` table in `~/.deepseek/config.toml` controls behavior:
-//! `enabled`, `poll_after_edit_ms`, `max_diagnostics_per_file`, `include_warnings`,
-//! an optional `servers` override, and a `custom` table for registering LSP
-//! servers for file extensions not covered by the built-in registry (e.g. Ruby,
-//! PHP, C#). See [`LspConfig`] for defaults and `config.example.toml` for
-//! documentation.
+//! `~/.deepseek/config.toml` 中的 `[lsp]` 表控制行为：
+//! `enabled`、`poll_after_edit_ms`、`max_diagnostics_per_file`、`include_warnings`、
+//! 可选的 `servers` 覆盖，以及用于注册内置注册表未覆盖的文件扩展名
+//! （例如 Ruby、PHP、C#）的 LSP 服务器的 `custom` 表。
+//! 请参阅 [`LspConfig`] 了解默认值，以及 `config.example.toml` 了解文档。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,10 +46,10 @@ pub use client::{LspTransport, StdioLspTransport};
 pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity, render_blocks};
 pub use registry::Language;
 
-/// User-defined LSP server for one file extension.
+/// 用户为某个文件扩展名定义的 LSP 服务器。
 ///
-/// Registered via `[lsp.custom.<ext>]` in the config. The extension key is the
-/// file suffix (without the leading dot), e.g. `"php"`, `"rb"`, `"cs"`.
+/// 通过配置文件中的 `[lsp.custom.<ext>]` 注册。扩展键是文件后缀
+/// （不含前导点号），例如 `"php"`、`"rb"`、`"cs"`。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CustomLspDef {
     /// LSP `languageId` value used in `textDocument/didOpen`.
@@ -65,28 +61,22 @@ pub struct CustomLspDef {
     pub args: Vec<String>,
 }
 
-/// `[lsp]` config schema. Mirrors the TOML keys documented in
-/// `config.example.toml`. Unknown keys are ignored.
+/// `[lsp]` 配置模式。镜像 `config.example.toml` 中记录的 TOML 键。未知键会被忽略。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct LspConfig {
-    /// Master switch. When `false`, the manager skips every operation and
-    /// returns an empty diagnostics list.
+    /// 总开关。当为 `false` 时，管理器跳过所有操作并返回空诊断列表。
     pub enabled: bool,
-    /// Maximum time in milliseconds to wait for the LSP server to publish
-    /// diagnostics after a `didOpen`/`didChange`. Default 5000 ms.
+    /// 等待 LSP 服务器在 `didOpen`/`didChange` 后发布诊断的最大时间（毫秒）。默认 5000 毫秒。
     pub poll_after_edit_ms: u64,
-    /// Maximum diagnostics to keep per file. Excess items are dropped after
-    /// sorting by severity. Default 20.
+    /// 每个文件保留的最大诊断数。按严重性排序后多余项将被丢弃。默认 20。
     pub max_diagnostics_per_file: usize,
-    /// When `true`, warnings (severity 2) are kept in the output. When
-    /// `false` (default), only errors (severity 1) are surfaced.
+    /// 当为 `true` 时，警告（严重性 2）会保留在输出中。当为 `false`（默认）时，
+    /// 仅显示错误（严重性 1）。
     pub include_warnings: bool,
-    /// Optional override for the `Language -> (cmd, args)` table. Keys use
-    /// [`Language::as_key`] (e.g. `"rust"`).
+    /// `Language -> (cmd, args)` 表的可选覆盖。键使用 [`Language::as_key`]（例如 `"rust"`）。
     pub servers: HashMap<String, Vec<String>>,
-    /// User-defined LSP servers for file extensions not in the built-in
-    /// registry. Keyed by extension (e.g. `"php"`, `"rb"`).
+    /// 用户为内置注册表未涵盖的文件扩展名定义的 LSP 服务器。按键是扩展名（例如 `"php"`、`"rb"`）。
     #[serde(default)]
     pub custom: HashMap<String, CustomLspDef>,
 }
@@ -105,8 +95,7 @@ impl Default for LspConfig {
 }
 
 impl LspConfig {
-    /// Resolve `(command, args)` for `lang`. User-supplied overrides take
-    /// precedence over the built-in registry.
+    /// 解析 `lang` 的 `(command, args)`。用户提供的覆盖优先于内置注册表。
     fn resolve_command(&self, lang: Language) -> Option<(String, Vec<String>)> {
         if let Some(parts) = self.servers.get(lang.as_key())
             && let Some((first, rest)) = parts.split_first()
@@ -121,29 +110,24 @@ impl LspConfig {
     }
 }
 
-/// The LspManager holds a lazily populated map of `Language -> Transport`.
-/// One transport is reused across files of the same language for the
-/// session's lifetime.
+/// LspManager 持有一个惰性填充的 `Language -> Transport` 映射。
+/// 在会话生命周期内，同一语言的多个文件复用同一个传输层。
 pub struct LspManager {
     config: LspConfig,
     workspace: PathBuf,
-    /// Per-language transports. Wrapped in `Arc` so we can release the outer
-    /// lock before driving I/O on a single transport.
+    /// 每种语言的传输层。包装在 `Arc` 中，以便在驱动单个传输层的 I/O 前释放外部锁。
     transports: AsyncMutex<HashMap<Language, Arc<dyn LspTransport>>>,
-    /// Per-language "we already warned the user that the binary is missing"
-    /// guard so we do not spam the audit log on every edit.
+    /// 每种语言的"已警告用户二进制文件缺失"防护，避免每次编辑都刷审计日志。
     missing_warned: AsyncMutex<HashSet<Language>>,
-    /// Test seam: when set, `diagnostics_for` uses these instead of spawning
-    /// real LSP processes. Keyed by language.
+    /// 测试接缝：设置后，`diagnostics_for` 使用这些替代启动真实的 LSP 进程。按键是语言。
     test_transports: AsyncMutex<HashMap<Language, Arc<dyn LspTransport>>>,
-    /// Per-extension transports for user-defined custom language servers.
+    /// 用户定义的自定义语言服务器每种扩展名的传输层。
     custom_transports: AsyncMutex<HashMap<String, Arc<dyn LspTransport>>>,
-    /// Per-extension "we already warned" guard for custom servers.
-    custom_missing_warned: AsyncMutex<HashSet<String>>,
+    /// 自定义服务器的每种扩展名的"已警告"防护。
 }
 
 impl LspManager {
-    /// Build a new manager. Does not spawn any LSP servers — that is lazy.
+    /// 构建一个新的管理器。不会启动任何 LSP 服务器——这是惰性的。
     #[must_use]
     pub fn new(config: LspConfig, workspace: PathBuf) -> Self {
         Self {
@@ -157,28 +141,23 @@ impl LspManager {
         }
     }
 
-    /// Read-only access to the resolved config. Used by the engine to skip
-    /// the post-edit hook entirely when `enabled = false`.
+    /// 对已解析配置的只读访问。引擎使用它在 `enabled = false` 时完全跳过编辑后钩子。
     #[must_use]
     pub fn config(&self) -> &LspConfig {
         &self.config
     }
 
-    /// Inject a fake transport for a language. Used by tests so we never
-    /// fork a real LSP server in CI.
+    /// 为一种语言注入伪造的传输层。测试使用此方法以避免在 CI 中 fork 真实的 LSP 服务器。
     #[cfg(test)]
     pub async fn install_test_transport(&self, lang: Language, transport: Arc<dyn LspTransport>) {
         self.test_transports.lock().await.insert(lang, transport);
     }
 
-    /// Poll the LSP server for diagnostics on `file`. Returns the rendered
-    /// [`DiagnosticBlock`] (already truncated to the configured per-file
-    /// max) or `None` when the manager is disabled / has no server / the
-    /// poll times out.
+    /// 轮询 LSP 服务器获取 `file` 的诊断信息。返回渲染后的 [`DiagnosticBlock`]
+    /// （已截断至配置的每文件最大值），当管理器被禁用/没有服务器/轮询超时时返回 `None`。
     ///
-    /// The `_edit_seq` argument is currently a no-op; it exists in the
-    /// signature so the engine can correlate diagnostics back to a specific
-    /// edit when we add request batching in v0.7.x.
+    /// `_edit_seq` 参数目前为空操作；它存在于签名中以便引擎在 v0.7.x 添加请求批处理时
+    /// 能够将诊断关联回特定的编辑。
     pub async fn diagnostics_for(&self, file: &Path, _edit_seq: u64) -> Option<DiagnosticBlock> {
         if !self.config.enabled {
             return None;
@@ -186,8 +165,7 @@ impl LspManager {
 
         let lang = registry::detect_language(file);
         if lang == Language::Other {
-            // Custom extension fallback: check user-defined LSP servers
-            // for file extensions not covered by the built-in registry.
+        // 自定义扩展名回退：为内置注册表未覆盖的文件扩展名检查用户定义的 LSP 服务器。
             if let Some(custom) = self.config.custom_for_extension(file) {
                 return self.diagnostics_for_custom(file, custom).await;
             }
@@ -210,8 +188,7 @@ impl LspManager {
         self.poll_diagnostics(file, &text, transport).await
     }
 
-    /// Shared diagnostics polling: send didOpen/didChange, wait, filter,
-    /// sort, and truncate.
+    /// 共享的诊断轮询：发送 didOpen/didChange、等待、过滤、排序和截断。
     async fn poll_diagnostics(
         &self,
         file: &Path,
@@ -232,7 +209,7 @@ impl LspManager {
             }
         };
 
-        // Filter, sort, and truncate.
+        // 过滤、排序和截断。
         let include_warnings = self.config.include_warnings;
         let mut items: Vec<Diagnostic> = raw
             .into_iter()
@@ -260,7 +237,7 @@ impl LspManager {
         }
     }
 
-    /// Diagnostics path for a user-defined custom language server.
+    /// 用户定义的自定义语言服务器的诊断路径。
     async fn diagnostics_for_custom(
         &self,
         file: &Path,
@@ -281,7 +258,7 @@ impl LspManager {
         self.poll_diagnostics(file, &text, transport).await
     }
 
-    /// Lazy-spawn a custom LSP server for an extension.
+    /// 为扩展名惰性启动自定义 LSP 服务器。
     async fn transport_for_custom(
         &self,
         ext: &str,
@@ -322,8 +299,7 @@ impl LspManager {
         }
     }
 
-    /// Resolve (and lazily spawn) the transport for `lang`. Tests can
-    /// short-circuit this via `install_test_transport` (cfg-test only).
+    /// 解析（并惰性启动）`lang` 的传输层。测试可以通过 `install_test_transport` 绕过此操作（仅在 cfg-test 中）。
     async fn transport_for(&self, lang: Language) -> Option<Arc<dyn LspTransport>> {
         if let Some(t) = self.test_transports.lock().await.get(&lang) {
             return Some(t.clone());
@@ -361,8 +337,7 @@ impl LspManager {
         }
     }
 
-    /// Best-effort shutdown of every spawned transport. Called when the
-    /// session ends.
+    /// 尽力关闭每个已启动的传输层。在会话结束时调用。
     #[allow(dead_code)]
     pub async fn shutdown_all(&self) {
         let transports: Vec<Arc<dyn LspTransport>> =
@@ -407,9 +382,8 @@ fn relative_to_workspace(workspace: &Path, path: &Path) -> PathBuf {
     )
 }
 
-/// Used for tests / no-op runs. Builds an empty manager that always returns
-/// `None`. Needed because the engine constructs an `LspManager` even when
-/// the user has disabled LSP, so the field is always present.
+/// 用于测试/空运行。构建一个始终返回 `None` 的空管理器。
+/// 引擎即使当用户禁用了 LSP 时也会构造一个 `LspManager`，因此该字段始终存在。
 impl LspManager {
     #[must_use]
     pub fn disabled() -> Self {
@@ -429,8 +403,7 @@ pub(crate) mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Fake transport: returns a fixed list of diagnostics. Used by
-    /// integration tests so we never spawn a real LSP server in CI.
+    /// 伪造传输层：返回固定的诊断列表。集成测试使用此方法以避免在 CI 中启动真实的 LSP 服务器。
     pub(crate) struct FakeTransport {
         items: Vec<Diagnostic>,
         calls: AtomicUsize,
@@ -572,7 +545,7 @@ pub(crate) mod tests {
 
         let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
         assert_eq!(block.items.len(), 2);
-        // Errors come first after sorting.
+        // 排序后错误排在前面。
         assert_eq!(block.items[0].severity, Severity::Error);
         assert_eq!(block.items[1].severity, Severity::Warning);
     }
@@ -662,7 +635,7 @@ pub(crate) mod tests {
         assert_eq!(cmd, "rust-analyzer");
     }
 
-    // ── custom server extension tests ─────────────────────────────────────
+    // ── 自定义服务器扩展名测试 ─────────────────────────────────────
 
     #[test]
     fn custom_for_extension_none_for_empty_config() {
@@ -705,8 +678,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn custom_fallback_only_for_other_language() {
-        // Even if [lsp.custom.go] is configured, .go files must still use
-        // the built-in gopls path — custom is a fallback, not an override.
+        // 即使配置了 [lsp.custom.go]，.go 文件仍必须使用内置的 gopls 路径——custom 是回退，而非覆盖。
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = LspConfig::default();
         cfg.custom.insert(
@@ -721,9 +693,7 @@ pub(crate) mod tests {
         let path = dir.path().join("main.go");
         tokio::fs::write(&path, b"package main\n").await.unwrap();
 
-        // Inject a fake transport for the built-in Go path; we do NOT
-        // inject one for the custom path — so if it accidentally takes
-        // the custom route it will return None.
+        // 为内置 Go 路径注入伪造传输层；我们不为自定义路径注入——因此如果它错误地走了自定义路由，将返回 None。
         let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
             line: 1,
             column: 1,
@@ -732,8 +702,7 @@ pub(crate) mod tests {
         }]));
         mgr.install_test_transport(Language::Go, fake).await;
 
-        // No custom transport injected — if it hits custom, it returns None.
-        // If it hits built-in, it returns the fake diagnostic.
+        // 未注入自定义传输层——如果命中 custom 则返回 None。如果命中内置则返回伪造的诊断。
         let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
         let rendered = block.render();
         assert!(
@@ -758,7 +727,7 @@ pub(crate) mod tests {
         let path = dir.path().join("app.rb");
         tokio::fs::write(&path, b"def foo; end\n").await.unwrap();
 
-        // Inject fake transport into the custom-transport map.
+        // 将伪造传输层注入到自定义传输层映射中。
         let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
             line: 1,
             column: 5,
@@ -784,7 +753,7 @@ pub(crate) mod tests {
         let path = dir.path().join("script.lua");
         tokio::fs::write(&path, b"print('hi')\n").await.unwrap();
 
-        // No custom config for .lua and Lua is not built-in → should be None.
+        // 没有为 .lua 配置自定义，且 Lua 不是内置的 → 应为 None。
         assert!(mgr.diagnostics_for(&path, 1).await.is_none());
     }
 }

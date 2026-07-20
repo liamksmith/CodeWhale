@@ -1,15 +1,13 @@
-//! Terminal UI (TUI) module for `DeepSeek` CLI.
+//! `DeepSeek` CLI 的终端 UI（TUI）模块。
 
-// The rendering layer runs inside the alt-screen. Raw stdio prints
-// produce the scroll demon (see `runtime_log` for full context). Use
-// `tracing::*` for diagnostics — `runtime_log` captures it to disk.
-// `ui::run_event_loop` legitimately prints a post-exit resume hint
-// AFTER `LeaveAlternateScreen`; that single site uses
-// `#[allow(clippy::print_stdout)]` locally.
+// 渲染层在备用屏幕内运行。原始的 stdio 打印会产生滚动恶魔（详见 `runtime_log`）。
+// 请使用 `tracing::*` 进行诊断 — `runtime_log` 将其捕获到磁盘。
+// `ui::run_event_loop` 在 `LeaveAlternateScreen` 之后合法地打印退出后的恢复提示；
+// 该单一位置局部使用了 `#[allow(clippy::print_stdout)]`。
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
-// === Submodules ===
+// === 子模块 ===
 
 pub mod active_cell;
 pub mod app;
@@ -80,7 +78,7 @@ pub mod vim_mode;
 pub mod widgets;
 pub mod workspace_context;
 
-// === Re-exports ===
+// === 重导出 ===
 
 pub use app::{InitialInput, TuiOptions};
 pub use ui::run_tui;

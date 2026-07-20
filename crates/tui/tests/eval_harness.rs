@@ -1,4 +1,4 @@
-//! Integration tests for the offline evaluation harness.
+//! 离线评估框架的集成测试。
 
 use std::fs;
 
@@ -205,7 +205,7 @@ fn record_flag_writes_one_jsonl_line_per_step() {
         "one JSONL line per step expected"
     );
 
-    // Each line is a self-contained JSON object with the documented schema.
+    // 每行是一个自包含的 JSON 对象，符合文档中定义的 schema。
     for line in lines {
         let parsed: serde_json::Value =
             serde_json::from_str(line).expect("each fixture line is valid JSON");

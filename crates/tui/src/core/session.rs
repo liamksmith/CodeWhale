@@ -1,6 +1,6 @@
-//! Session state management for the core engine.
+//! 核心引擎的会话状态管理。
 //!
-//! Tracks conversation history, token usage, and session metadata.
+//! 跟踪对话历史、Token 用量统计和会话元数据。
 //! 这是一个会话状态管理模块，负责跟踪对话历史、Token 用量统计和会话元数据。
 //! 它属于CodeWhale TUI引擎的"核心层"——引擎每次与模型对话时，都依赖这个Session来维护对话上下文。
 
@@ -12,15 +12,14 @@ use crate::tui::approval::ApprovalMode;  // 审批模式枚举（比如 "Suggest
 use crate::working_set::WorkingSet;  // 工作集——跟踪当前活跃的文件和路径
 use std::path::PathBuf;
 
-/// Session state for the engine.
+/// 引擎的会话状态。
 #[derive(Debug, Clone)]
 pub struct Session {
     /// 当前使用的模型名称（如 "deepseek-v4-pro"）。
     pub model: String,
 
-    /// Reasoning-effort tier for DeepSeek thinking mode:
-    /// `"off" | "low" | "medium" | "high" | "max"`. `None` lets the provider
-    /// apply its own defaults.
+    /// DeepSeek 思考模式的推理强度等级：
+    /// `"off" | "low" | "medium" | "high" | "max"`。`None` 让供应商使用其自身默认值。
     /// 控制 DeepSeek 思考模式的深度。None（空值）让供应商使用默认值。
     pub reasoning_effort: Option<String>,
     /// 标记用户是否选择了"自动推理强度"。
@@ -76,33 +75,31 @@ pub struct Session {
     /// 仓库感知的工作集，用于上下文管理。跟踪当前激活的文件和路径。
     pub working_set: WorkingSet,
 
-    /// Prefix-cache stability monitor (inspired by Reasonix's Pillar 1).
-    /// Tracks the immutable prefix fingerprint and detects drift across turns.
-    /// Set during engine construction; None until the first system prompt assembly.
+    /// 前缀缓存稳定性监视器（受 Reasonix 的 Pillar 1 启发）。
+    /// 跟踪不可变前缀的指纹，检测跨轮次的偏移。
+    /// 在引擎构造时设置；第一次组装系统提示词之前为 None。
     /// 前缀缓存稳定性监视器。跟踪不可变前缀的"指纹"，在每一轮间检测是否发生了偏移。
     /// 在引擎构造时设置；第一次组装系统提示词之前为 None。
     pub prefix_stability: Option<PrefixStabilityManager>,
 
-    /// Three-zone immutable prefix baseline (#2264). Frozen on the first
-    /// request of the session; verified against the current system+tool
-    /// state before every subsequent request. None until the first turn.
+    /// 三区不可变前缀基线 (#2264)。在会话的第一次请求时冻结；
+    /// 后续每次请求前，都要拿当前系统+工具状态与之比对验证。第一次轮次之前为 None。
     /// 三区不可变前缀基线。在会话的第一次请求时冻结；后续每次请求前，都要拿当前系统+工具状态与之比对验证。
     /// 为什么冻结？因为 DeepSeek 的 KV 缓存依赖于字节级稳定的前缀——前缀一旦冻结，后续轮次可以复用缓存，
     /// 大幅降低成本（缓存命中比未命中便宜约 100 倍）。
     pub frozen_prefix: Option<FrozenPrefix>,
 
-    /// Monotonic counter bumped on every direct mutation of `messages`.
-    /// Consumed by [`crate::core::engine::token_estimate_cache::TokenEstimateCache`]
-    /// to memoize the per-turn token estimate without re-walking the message
-    /// list. Defaults to 0; bumped in [`Session::add_message`],
-    /// [`Session::replace_messages`], and at other mutation sites in
-    /// `core/engine.rs`.
+    /// 每次直接修改 `messages` 时递增的单调计数器。
+    /// 被 [`crate::core::engine::token_estimate_cache::TokenEstimateCache`]
+    /// 用于记忆化每轮 Token 估算，而无需重新遍历消息列表。
+    /// 默认为 0；在 [`Session::add_message`]、
+    /// [`Session::replace_messages`] 以及 `core/engine.rs` 中的其他修改点递增。
     /// 单调递增计数器。每次直接修改 messages 时 +1。
     /// 被 Token 估算缓存消费——缓存通过比对版本号来判断是否需要重新计算，而不是每次都遍历消息列表。
     pub messages_revision: u64,
 }
 
-/// Cumulative usage statistics for a session.
+/// 会话的累计用量统计。
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct SessionUsage {
@@ -116,7 +113,7 @@ pub struct SessionUsage {
 }
 
 impl SessionUsage {
-    /// Add usage from a turn
+    /// 添加一轮次的用量
     pub fn add(&mut self, usage: &Usage) {
         self.input_tokens += u64::from(usage.input_tokens);
         self.output_tokens += u64::from(usage.output_tokens);
@@ -133,7 +130,7 @@ impl SessionUsage {
 }
 
 impl Session {
-    /// Create a new session
+    /// 创建一个新会话
     /// `model` 模型名
     /// `workspace` 工作区路径
     /// `allow_shell` 是否允许 Shell
@@ -148,7 +145,7 @@ impl Session {
         notes_path: PathBuf,
         mcp_config_path: PathBuf,
     ) -> Self {
-        // Load project context from AGENTS.md, CLAUDE.md, etc.
+        // 从 AGENTS.md、CLAUDE.md 等文件加载项目上下文。
         // 从工作区目录开始，向上递归查找 AGENTS.md、CLAUDE.md 等文件，加载项目上下文。
         let project_context = load_project_context_with_parents(&workspace);
         let has_context = project_context.has_instructions();  // 检查是否加载到了有效指令。
@@ -184,16 +181,14 @@ impl Session {
         }
     }
 
-    /// Add a message to the conversation
+    /// 向对话中添加一条消息
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
         self.messages_revision = self.messages_revision.saturating_add(1);
     }
 
-    /// Replace the entire message history. Used by session resume and
-    /// compaction. Bumps `messages_revision` exactly once even when the new
-    /// history has a different length, so downstream caches invalidate
-    /// atomically.
+    /// 替换整个消息历史。由会话恢复和压缩使用。
+    /// 即使新历史有不同的长度，也仅递增一次 `messages_revision`，以便下游缓存原子地失效。
     /// 替换整个消息历史。
     #[allow(dead_code)]
     pub fn replace_messages(&mut self, messages: Vec<Message>) {
@@ -201,17 +196,16 @@ impl Session {
         self.messages_revision = self.messages_revision.saturating_add(1);
     }
 
-    /// Bump `messages_revision` without otherwise mutating the message list.
-    /// Reserved for sites that mutate the message list in place (e.g. an
-    /// in-place rewrite of a content block). Most call sites do not need
-    /// this — prefer [`add_message`](Self::add_message) and
-    /// [`replace_messages`](Self::replace_messages).
+    /// 不修改消息列表内容，只递增 `messages_revision`。
+    /// 预留给那些就地修改消息列表的场景（例如，就地重写内容块）。
+    /// 大多数调用点不需要这个——推荐使用 [`add_message`](Self::add_message) 和
+    /// [`replace_messages`](Self::replace_messages)。
     /// 不修改消息列表内容，只增加版本号。预留给那些就地修改消息的场景（比如改写某个内容块）。
     pub fn bump_messages_revision(&mut self) {
         self.messages_revision = self.messages_revision.saturating_add(1);
     }
 
-    /// Rebuild the working set from current messages (best effort).
+    /// 从当前消息中重建工作集（尽力而为）。
     /// 从当前消息中重建工作集（尽力而为）
     pub fn rebuild_working_set(&mut self) {
         self.working_set

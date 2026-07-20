@@ -1,10 +1,8 @@
-//! `/hooks` slash command — read-only listing of configured
-//! lifecycle hooks (#460 MVP).
+//! `/hooks` 斜杠命令 —— 已配置生命周期钩子的只读列表（#460 MVP）。
 //!
-//! The full picker / persisted enable-disable surface in #460 is
-//! still M-sized. This MVP gives the user a no-typing view of what's
-//! actually configured in `~/.codewhale/config.toml`'s `[hooks]`
-//! table — the most-asked question once hooks start firing.
+//! #460 中的完整选择器/持久化启用-禁用功能仍在 M 级规模。
+//! 这个 MVP 让用户无需输入即可查看 `~/.codewhale/config.toml` 的 `[hooks]`
+//! 表中实际配置的内容——这是钩子开始触发后最常被问到的问题。
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::hooks::HookEvent;
@@ -32,16 +30,14 @@ impl RegisterCommand for HooksCmd {
     }
 }
 
-/// Top-level dispatch for `/hooks`. Subcommands:
+/// `/hooks` 的顶层调度。子命令：
 ///
-/// * `/hooks`         — same as `/hooks list`.
-/// * `/hooks list`    — show every configured hook grouped by event,
-///   noting whether the global `[hooks].enabled` flag suppresses
-///   them.
-/// * `/hooks events`  — list every supported `HookEvent` value the
-///   user can target in `[[hooks.hooks]]` entries. Useful for
-///   discovery — without this, the only way to learn the event
-///   names is to read source.
+/// * `/hooks`         —— 同 `/hooks list`。
+/// * `/hooks list`    —— 按事件分组显示每个已配置的钩子，
+///   并注明全局 `[hooks].enabled` 标志是否抑制它们。
+/// * `/hooks events`  —— 列出用户在 `[[hooks.hooks]]` 条目中可以定位的每个受支持的
+///   `HookEvent` 值。用于发现 —— 没有这个，了解事件名称的唯一方法
+///   就是阅读源码。
 pub fn hooks(app: &App, arg: Option<&str>) -> CommandResult {
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     match sub.as_str() {
@@ -58,9 +54,9 @@ fn events() -> CommandResult {
     out.push_str(
         "Available hook events (use one of these as `event = \"...\"` in your `[[hooks.hooks]]` entry):\n\n",
     );
-    // Order matters — group lifecycle events first, then per-tool,
-    // then situational. Stays stable across releases so users can
-    // grep on it.
+    // 顺序很重要 —— 先生命周期事件，再每个工具，
+    // 然后是情境性事件。在各版本间保持稳定，以便用户可以
+    // 用 grep 搜索。
     let ordered = [
         (HookEvent::SessionStart, "fires once when the TUI launches"),
         (HookEvent::SessionEnd, "fires once on graceful shutdown"),
@@ -206,7 +202,7 @@ fn condition_summary(condition: &crate::hooks::HookCondition) -> String {
     }
 }
 
-/// Single-line preview of the shell command, capped at `max_chars`.
+/// shell 命令的单行预览，限制在 `max_chars` 个字符。
 fn preview_command(command: &str, max_chars: usize) -> String {
     let single_line: String = command.chars().filter(|c| *c != '\n').collect();
     if single_line.chars().count() <= max_chars {
@@ -311,8 +307,8 @@ mod tests {
             )
         })
         .collect();
-        // Documented order is lifecycle → tool-call → situational.
-        // Each subsequent position must be greater than the previous.
+        // 文档顺序是生命周期 → 工具调用 → 情境性。
+        // 每个后续位置必须大于前一个位置。
         for window in positions.windows(2) {
             let (a_pos, a_name) = window[0];
             let (b_pos, b_name) = window[1];
@@ -321,15 +317,15 @@ mod tests {
                 "expected `{a_name}` before `{b_name}` in events listing"
             );
         }
-        // Each event line includes the descriptive blurb.
+        // 每个事件行都包含描述性文字。
         assert!(body.contains("fires once when the TUI launches"));
         assert!(body.contains("read-only observer"));
     }
 
     #[test]
     fn event_label_covers_every_variant() {
-        // Compile-time `match` exhaustiveness; this just sanity-checks
-        // the rendered strings stay stable.
+        // 编译时 `match` 穷尽性检查；此测试仅验证
+        // 渲染的字符串保持稳定。
         assert_eq!(event_label(HookEvent::SessionStart), "session_start");
         assert_eq!(event_label(HookEvent::SessionEnd), "session_end");
         assert_eq!(event_label(HookEvent::ToolCallBefore), "tool_call_before");
@@ -347,11 +343,10 @@ mod tests {
 
     #[test]
     fn list_renders_hooks_grouped_by_event_and_notes_disabled_state() {
-        // We test the formatter directly via a synthetic HooksConfig
-        // because `App` is heavyweight to spin up here. The actual
-        // `list(&App)` path is exercised once we hand the real
-        // config in via `app.hooks.config()`; the formatter logic is
-        // unit-tested standalone below.
+        // 我们通过合成 HooksConfig 直接测试格式化器，
+        // 因为 `App` 在这里启动成本很高。实际的
+        // `list(&App)` 路径在通过 `app.hooks.config()` 传入真实
+        // 配置时被测试；格式化器逻辑在下面独立进行单元测试。
         let cfg = crate::hooks::HooksConfig {
             enabled: false,
             hooks: vec![
@@ -365,15 +360,14 @@ mod tests {
             ..crate::hooks::HooksConfig::default()
         };
 
-        // Synthesize the expected sections by re-running the same
-        // formatter logic against the BTreeMap grouping.
+        // 针对 BTreeMap 分组重新运行相同的格式化器逻辑来合成预期的部分。
         let mut by_event: std::collections::BTreeMap<&str, Vec<&Hook>> =
             std::collections::BTreeMap::new();
         for h in &cfg.hooks {
             by_event.entry(event_label(h.event)).or_default().push(h);
         }
         let events: Vec<&&str> = by_event.keys().collect();
-        // BTreeMap sorts alphabetically — `session_start` before `tool_call_after`.
+        // BTreeMap 按字母顺序排序 —— `session_start` 在 `tool_call_after` 之前。
         assert_eq!(events, vec![&"session_start", &"tool_call_after"]);
     }
 }

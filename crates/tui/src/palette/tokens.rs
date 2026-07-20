@@ -1,8 +1,8 @@
-//! Color token constants — RGB tuples and semantic `Color` roles.
+//! 颜色令牌常量——RGB 元组和语义化的 `Color` 角色。
 
 use ratatui::style::Color;
 
-// v0.8.46 Whale dark palette — improved contrast and layer separation.
+// v0.8.46 Whale 深色调色板——改进的对比度和层次分离。
 pub const WHALE_BG_RGB: (u8, u8, u8) = (10, 17, 32); // #0A1120 Deep Navy
 pub const WHALE_PANEL_RGB: (u8, u8, u8) = (22, 34, 56); // #162238
 pub const WHALE_ELEVATED_RGB: (u8, u8, u8) = (36, 52, 78); // #24344E
@@ -29,7 +29,7 @@ pub const WHALE_REASONING_TEXT_RGB: (u8, u8, u8) = (224, 153, 72); // #E09948
 pub const WHALE_REASONING_SURFACE_RGB: (u8, u8, u8) = (42, 34, 24); // #2A2218
 pub const WHALE_REASONING_TINT_RGB: (u8, u8, u8) = (24, 36, 52); // #182434
 
-// Solarized Light palette RGB tuples
+// Solarized Light 调色板 RGB 元组
 pub const SOLARIZED_BASE03_RGB: (u8, u8, u8) = (0x00, 0x2B, 0x36);
 pub const SOLARIZED_BASE02_RGB: (u8, u8, u8) = (0x07, 0x36, 0x42);
 pub const SOLARIZED_BASE01_RGB: (u8, u8, u8) = (0x58, 0x6E, 0x75);
@@ -75,7 +75,7 @@ pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
 pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (100, 116, 139); // #64748B
 pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (30, 41, 59); // #1E293B
 
-// Solarized Light palette colors
+// Solarized Light 调色板颜色
 pub const SOLARIZED_TEXT_DIM: Color = Color::Rgb(
     SOLARIZED_BASE00_RGB.0,
     SOLARIZED_BASE00_RGB.1,
@@ -158,7 +158,7 @@ pub const SOLARIZED_SELECT_BG: Color = Color::Rgb(
 );
 pub const SOLARIZED_DIFF_ADDED_BG: Color = Color::Rgb(0xEA, 0xF2, 0xE0);
 pub const SOLARIZED_ERROR_SURFACE: Color = Color::Rgb(0xFD, 0xEE, 0xEB);
-/// Same tone as the error surface; kept as a distinct alias for diff context.
+/// 与错误表面相同的色调；作为 diff 上下文的独立别名保留。
 pub const SOLARIZED_DIFF_DELETED_BG: Color = SOLARIZED_ERROR_SURFACE;
 pub const SOLARIZED_ERROR_TEXT: Color = Color::Rgb(0x8B, 0x00, 0x00);
 pub const SOLARIZED_ERROR_HOVER: Color = Color::Rgb(0xE0, 0x55, 0x52);
@@ -193,7 +193,7 @@ pub const MATRIX_TEXT_SOFT_RGB: (u8, u8, u8) = (221, 255, 221); // #DDFFDD
 pub const MATRIX_TEXT_DIM_RGB: (u8, u8, u8) = (0, 68, 0); // #004400
 pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
 
-// New semantic colors
+// 新的语义颜色
 pub const BORDER_COLOR_RGB: (u8, u8, u8) = WHALE_BORDER_RGB; // #2A4A7F
 
 pub const WHALE_ACCENT_PRIMARY: Color = Color::Rgb(
@@ -340,7 +340,7 @@ pub const SELECTION_TEXT: Color = Color::Rgb(
     WHALE_TEXT_BODY_RGB.0,
     WHALE_TEXT_BODY_RGB.1,
     WHALE_TEXT_BODY_RGB.2,
-); // Ivory — softer than pure white
+); // Ivory——比纯白色更柔和
 pub const TEXT_SOFT: Color = Color::Rgb(
     WHALE_TEXT_SOFT_RGB.0,
     WHALE_TEXT_SOFT_RGB.1,
@@ -352,14 +352,14 @@ pub const TEXT_REASONING: Color = Color::Rgb(
     WHALE_REASONING_TEXT_RGB.2,
 );
 
-// Compatibility aliases for existing call sites.
+// 现有调用点的兼容性别名。
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
 pub const TEXT_MUTED: Color = TEXT_SECONDARY;
 pub const TEXT_DIM: Color = TEXT_HINT;
 pub const USER_BODY: Color = Color::Rgb(74, 222, 128); // #4ADE80 green
 pub const LIGHT_USER_BODY: Color = Color::Rgb(21, 128, 61); // #15803D green
 
-// New semantic colors for UI theming
+// UI 主题化的新语义颜色
 pub const BORDER_COLOR: Color =
     Color::Rgb(BORDER_COLOR_RGB.0, BORDER_COLOR_RGB.1, BORDER_COLOR_RGB.2);
 #[allow(dead_code)]
@@ -412,7 +412,7 @@ pub const SURFACE_TOOL_ACTIVE: Color = Color::Rgb(
     WHALE_TOOL_ACTIVE_RGB.2,
 );
 #[allow(dead_code)]
-pub const SURFACE_SUCCESS: Color = Color::Rgb(18, 42, 37); // dark teal tint
+pub const SURFACE_SUCCESS: Color = Color::Rgb(18, 42, 37); // 深青色
 #[allow(dead_code)]
 pub const SURFACE_ERROR: Color = Color::Rgb(
     WHALE_ERROR_SURFACE_RGB.0,
@@ -455,7 +455,7 @@ pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(
     WHALE_TOOL_OUTPUT_RGB.2,
 );
 
-// Legacy status colors - keep for backward compatibility
+// 遗留状态颜色——保持向后兼容性
 pub const STATUS_SUCCESS: Color = Color::Rgb(
     WHALE_SUCCESS_RGB.0,
     WHALE_SUCCESS_RGB.1,
@@ -470,7 +470,7 @@ pub const STATUS_ERROR: Color = Color::Rgb(WHALE_ERROR_RGB.0, WHALE_ERROR_RGB.1,
 #[allow(dead_code)]
 pub const STATUS_INFO: Color = Color::Rgb(WHALE_INFO_RGB.0, WHALE_INFO_RGB.1, WHALE_INFO_RGB.2);
 
-// Mode-specific accent colors for mode badges
+// 特定模式的强调色，用于模式徽章
 pub const MODE_AGENT: Color = Color::Rgb(
     WHALE_MODE_AGENT_RGB.0,
     WHALE_MODE_AGENT_RGB.1,

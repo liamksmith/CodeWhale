@@ -1,4 +1,4 @@
-//! Compact transcript rendering for agent and activity metadata cells.
+//! 代理和活动元数据单元格的紧凑对话渲染。
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -17,10 +17,9 @@ pub(super) fn render_agent_compact(cell: &GenericToolCell, low_motion: bool) -> 
         .and_then(extract_agent_id)
         .map(str::to_string)
         .unwrap_or_else(|| delegate_identity_fallback(cell));
-    // Inspections and joins must not draw the same "delegate done" line as a
-    // spawn — during a fan-out session every peek/status/wait would otherwise
-    // read as yet another completed delegate (#4112, dogfood A5). The action
-    // is stamped at the front of the args summary by tool_routing.
+    // 检查和 join 不能绘制与 spawn 相同的"delegate done"行——
+    // 在扇出会话期间，每次 peek/status/wait 否则会被解读为又一个已完成的委托
+    // (#4112, dogfood A5)。该操作由 tool_routing 标记在 args summary 的开头。
     let state_label = match agent_inspection_action(cell) {
         Some(AgentCompactAction::Check) => match cell.status {
             super::ToolStatus::Running => "checking",
@@ -43,14 +42,14 @@ pub(super) fn render_agent_compact(cell: &GenericToolCell, low_motion: bool) -> 
 }
 
 enum AgentCompactAction {
-    /// Read-only inspection: peek / status / progress / list / inspect.
+    /// 只读检查：peek / status / progress / list / inspect。
     Check,
-    /// Blocking join: wait / join / await / block.
+    /// 阻塞式 join：wait / join / await / block。
     Wait,
 }
 
-/// Whether this `agent` cell is a read-only inspection or join rather than a
-/// spawn — those stay compact even in Transcript mode.
+/// 判断此 `agent` 单元格是只读检查或 join（而非 spawn）——
+/// 即使在 Transcript 模式下它们也保持紧凑。
 pub(super) fn is_agent_inspection(cell: &GenericToolCell) -> bool {
     agent_inspection_action(cell).is_some()
 }
@@ -105,10 +104,10 @@ fn delegate_identity_fallback(cell: &GenericToolCell) -> String {
             }
         }
     }
-    // #4148: never surface the raw internal fallback token ("unknown child")
-    // in the default transcript. When we can't resolve a concrete role, slug,
-    // or agent id, a friendly, non-leaky label reads best next to the
-    // "delegate" verb ("delegate running · subagent").
+    // #4148: 绝不在默认对话中暴露原始的内部回退令牌（"unknown child"）。
+    // 当我们无法解析具体的 role、slug 或 agent id 时，
+    // 在"delegate"动词旁边使用友好且不泄露信息的标签读起来效果最好
+    //（"delegate running · subagent"）。
     "subagent".to_string()
 }
 

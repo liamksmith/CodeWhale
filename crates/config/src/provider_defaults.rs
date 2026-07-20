@@ -1,9 +1,9 @@
-//! Built-in provider default seeds: per-provider default model ids and
-//! base URLs, plus the named model/tier constants the alias-normalization
-//! tables resolve to. Extracted verbatim from `lib.rs` (#3311) to separate
-//! these provider execution defaults from config schema/loading code; values
-//! are unchanged. Re-exported `pub(crate)` at the crate root so existing
-//! `crate::DEFAULT_*` references keep resolving.
+//! 内置供应商默认种子：每个供应商的默认模型 ID 和
+//! 基础 URL，以及别名规范化表解析到的命名模型/层级常量。
+//! 从 `lib.rs` 逐字提取 (#3311)，以将这些供应商执行默认值
+//! 与配置模式/加载代码分离；值保持不变。
+//! 在 crate 根路径以 `pub(crate)` 重新导出，以便现有的
+//! `crate::DEFAULT_*` 引用继续解析。
 
 pub(crate) const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 pub(crate) const DEFAULT_DEEPSEEK_ANTHROPIC_MODEL: &str = DEFAULT_DEEPSEEK_MODEL;
@@ -101,20 +101,20 @@ pub(crate) const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub(crate) const DEFAULT_OLLAMA_MODEL: &str = "deepseek-v4-flash";
 pub(crate) const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
-// Z.ai (GLM Coding Plan) defaults
+// Z.ai（GLM 编程计划）默认值
 pub(crate) const DEFAULT_ZAI_MODEL: &str = "GLM-5.2";
 pub(crate) const ZAI_GLM_5_1_MODEL: &str = "GLM-5.1";
-// GLM-5.2 is both the default and a named tier; the alias arm resolves the
-// `glm-5.2` spelling to DEFAULT_ZAI_MODEL directly, so this constant is
-// referenced only in cfg(test) assertions (see tests.rs).
+// GLM-5.2 既是默认值也是命名层级；别名 arm 将 `glm-5.2`
+// 拼写直接解析为 DEFAULT_ZAI_MODEL，因此该常量仅在
+// cfg(test) 断言中引用（参见 tests.rs）。
 #[allow(dead_code)]
 pub(crate) const ZAI_GLM_5_2_MODEL: &str = "GLM-5.2";
 pub(crate) const ZAI_GLM_5_TURBO_MODEL: &str = "GLM-5-Turbo";
 pub(crate) const DEFAULT_ZAI_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
-// StepFun / StepFlash defaults
+// StepFun / StepFlash 默认值
 pub(crate) const DEFAULT_STEPFUN_MODEL: &str = "step-3.7-flash";
 pub(crate) const DEFAULT_STEPFUN_BASE_URL: &str = "https://api.stepfun.ai/v1";
-// MiniMax defaults
+// MiniMax 默认值
 pub(crate) const DEFAULT_MINIMAX_MODEL: &str = "MiniMax-M3";
 pub(crate) const MINIMAX_M2_7_MODEL: &str = "MiniMax-M2.7";
 pub(crate) const MINIMAX_M2_7_HIGHSPEED_MODEL: &str = "MiniMax-M2.7-highspeed";
@@ -127,15 +127,15 @@ pub(crate) const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 pub(crate) const DEFAULT_DEEPINFRA_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub(crate) const DEFAULT_DEEPINFRA_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub(crate) const DEFAULT_DEEPINFRA_BASE_URL: &str = "https://api.deepinfra.com/v1/openai";
-// Sakana AI Fugu defaults
+// Sakana AI Fugu 默认值
 pub(crate) const DEFAULT_SAKANA_MODEL: &str = "fugu";
 pub(crate) const DEFAULT_SAKANA_BASE_URL: &str = "https://api.sakana.ai/v1";
-// Meituan LongCat defaults
+// 美团 LongCat 默认值
 pub(crate) const DEFAULT_LONGCAT_MODEL: &str = "LongCat-2.0";
 pub(crate) const DEFAULT_LONGCAT_BASE_URL: &str = "https://api.longcat.chat/openai/v1";
-// Meta Model API / Muse Spark defaults
+// Meta Model API / Muse Spark 默认值
 pub(crate) const DEFAULT_META_MODEL: &str = "muse-spark-1.1";
 pub(crate) const DEFAULT_META_BASE_URL: &str = "https://api.meta.ai/v1";
-// xAI / Grok API-key route defaults
+// xAI / Grox API-key 路由默认值
 pub(crate) const DEFAULT_XAI_MODEL: &str = "grok-4.5";
 pub(crate) const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";

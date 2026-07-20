@@ -1,11 +1,9 @@
-//! Harness posture + profile config types (#3311).
+//! 测试框架姿态 + 配置文件配置类型 (#3311)。
 //!
-//! A *harness posture* is the agent-shaping policy (sub-agent cap, tool
-//! surface, compaction/cache strategy, safety stance); a *harness profile*
-//! binds a posture to a provider route + model pattern. Extracted verbatim
-//! from lib.rs to separate this agent-posture domain from the rest of the
-//! config schema; re-exported at the crate root so existing paths are
-//! unchanged. Behavior is identical.
+//! *测试框架姿态*是代理塑造策略（子代理上限、工具表面、压缩/缓存策略、
+//! 安全立场）；*测试框架配置文件*将姿态绑定到供应商路由 + 模型模式。
+//! 从 lib.rs 原样提取，以将此代理姿态领域与其余配置 schema 分离；
+//! 在 crate 根重新导出，以便现有路径保持不变。行为相同。
 
 use std::sync::OnceLock;
 
@@ -13,30 +11,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::ProviderKind;
 
-/// Kinds of built-in harness postures.
+/// 内置测试框架姿态的种类。
 ///
-/// A posture names the runtime strategy CodeWhale should use for a
-/// provider/model route: how much context to preload, how aggressively to lean
-/// on sub-agents, and how to balance prompt-cache stability against quick
-/// exploration. Runtime selection is wired in later v0.9 slices; this config
-/// model intentionally keeps the policy data explicit first.
+/// 姿态命名了 CodeWhale 应为某个供应商/模型路由使用的运行时策略：
+/// 预加载多少上下文、多积极地依赖子代理，以及如何平衡提示缓存稳定性与快速探索。
+/// 运行时选择将在后续 v0.9 版本中接入；此配置模型有意优先使策略数据保持显式。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessPostureKind {
-    /// Full-featured default: rich constitution, broad tool catalog, and normal
-    /// sub-agent posture.
+    /// 全功能默认：丰富的配置、广泛的工具目录和正常的子代理姿态。
     #[default]
     Standard,
-    /// Cache-heavy: deeper prompt layering and prefix-cache-oriented context.
+    /// 缓存优先：更深的提示分层和面向前缀缓存的上下文。
     CacheHeavy,
-    /// Lean: smaller starting context, faster compaction, and stronger
-    /// exploration/delegation bias.
+    /// 精简：更小的起始上下文、更快的压缩和更强的探索/委派偏向。
     Lean,
-    /// User-defined posture assembled from explicit knobs below.
+    /// 用户自定义姿态，由下方显式参数组装而成。
     Custom,
 }
 
-/// How this posture should approach compaction and prompt-cache stability.
+/// 此姿态应如何处理压缩和提示缓存稳定性。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessCompactionStrategy {
@@ -46,7 +40,7 @@ pub enum HarnessCompactionStrategy {
     Aggressive,
 }
 
-/// Which tool catalog shape this posture prefers.
+/// 此姿态偏好的工具目录形态。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessToolSurface {
@@ -56,7 +50,7 @@ pub enum HarnessToolSurface {
     Auto,
 }
 
-/// Safety posture applied when the runtime consumes a harness profile.
+/// 运行时使用测试框架配置文件时应用的安全姿态。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessSafetyPosture {
@@ -66,26 +60,26 @@ pub enum HarnessSafetyPosture {
     Permissive,
 }
 
-/// A concrete harness posture with policy knobs.
+/// 一个具有策略旋钮的具体测试框架姿态。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessPosture {
-    /// Named posture kind.
+    /// 命名的姿态种类。
     #[serde(default)]
     pub kind: HarnessPostureKind,
-    /// Maximum number of concurrent sub-agents (0 = runtime default).
+    /// 最大并发子代理数（0 = 运行时默认值）。
     #[serde(default)]
     pub max_subagents: usize,
-    /// Prefer search-based/on-demand context over always-on documentation.
+    /// 优先使用基于搜索/按需的上下文，而非常驻文档。
     #[serde(default)]
     pub prefer_codebase_search: bool,
-    /// Compaction and prompt-cache strategy.
+    /// 压缩和提示缓存策略。
     #[serde(default)]
     pub compaction_strategy: HarnessCompactionStrategy,
-    /// Preferred tool catalog shape.
+    /// 偏好的工具目录形态。
     #[serde(default)]
     pub tool_surface: HarnessToolSurface,
-    /// Safety posture for runtime consumers.
+    /// 运行时消费者的安全姿态。
     #[serde(default)]
     pub safety_posture: HarnessSafetyPosture,
 }
@@ -104,7 +98,7 @@ impl Default for HarnessPosture {
 }
 
 impl HarnessPosture {
-    /// A cache-heavy posture tuned for DeepSeek V4 / MiMo-style models.
+    /// 针对 DeepSeek V4 / MiMo 风格模型调优的缓存优先姿态。
     #[must_use]
     pub fn cache_heavy() -> Self {
         Self {
@@ -117,7 +111,7 @@ impl HarnessPosture {
         }
     }
 
-    /// A lean posture for smaller-context or weaker tool-use models.
+    /// 针对较小上下文或工具使用能力较弱模型的精简姿态。
     #[must_use]
     pub fn lean() -> Self {
         Self {
@@ -131,25 +125,24 @@ impl HarnessPosture {
     }
 }
 
-/// A harness profile binds a posture to a provider route and model pattern.
+/// 测试框架配置文件将姿态绑定到供应商路由和模型模式。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessProfile {
-    /// Provider route this profile applies to, e.g. "deepseek" or
-    /// "xiaomi-mimo".
+    /// 此配置文件适用的供应商路由，例如 "deepseek" 或 "xiaomi-mimo"。
     pub provider_route: String,
-    /// Regex or glob pattern for model names, e.g. "deepseek-v4.*".
+    /// 模型名称的正则或 glob 模式，例如 "deepseek-v4.*"。
     pub model_pattern: String,
-    /// The posture to apply.
+    /// 要应用的姿态。
     #[serde(default)]
     pub posture: HarnessPosture,
 }
 
 impl HarnessProfile {
-    /// Return true when this profile applies to the provider/model route.
+    /// 当此配置文件适用于供应商/模型路由时返回 true。
     ///
-    /// This is a pure config helper: matching a profile must not mutate runtime
-    /// provider selection, prompts, auth, tools, context, or persisted config.
+    /// 这是一个纯配置辅助函数：匹配配置文件不得改变运行时供应商选择、
+    /// 提示、认证、工具、上下文或持久化配置。
     #[must_use]
     pub fn matches_route(&self, provider_route: &str, model: &str) -> bool {
         provider_routes_equal(&self.provider_route, provider_route)
@@ -157,10 +150,10 @@ impl HarnessProfile {
     }
 }
 
-/// Built-in profile seeds for common provider/model families.
+/// 常见供应商/模型系列的内置配置文件种子。
 ///
-/// User-configured profiles are always checked first; these seeds only provide
-/// a stable resolver result when config has no narrower match.
+/// 用户配置的配置文件始终优先检查；这些种子仅在配置没有更精确的匹配时
+/// 提供稳定的解析结果。
 #[must_use]
 pub fn built_in_harness_profiles() -> &'static [HarnessProfile] {
     static PROFILES: OnceLock<Vec<HarnessProfile>> = OnceLock::new();

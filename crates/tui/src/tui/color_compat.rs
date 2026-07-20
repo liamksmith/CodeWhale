@@ -1,10 +1,9 @@
-//! Terminal color compatibility shim.
+//! 终端颜色兼容性适配层。
 //!
-//! Ratatui's crossterm backend emits truecolor SGR for every `Color::Rgb`
-//! cell. That is correct for truecolor terminals, but macOS Terminal.app often
-//! advertises only `xterm-256color`; sending `38;2` / `48;2` there can render
-//! as stray green/cyan backgrounds. This backend adapts every cell to the
-//! detected color depth before handing it to crossterm.
+//! Ratatui 的 crossterm 后端对每个 `Color::Rgb` 单元格都会发出 truecolor SGR。
+//! 这对 truecolor 终端是正确的，但 macOS Terminal.app 通常只声明 `xterm-256color`；
+//! 向其发送 `38;2` / `48;2` 可能会渲染为杂乱的绿色/青色背景。
+//! 此后端在将每个单元格传递给 crossterm 之前，根据检测到的颜色深度进行适配。
 
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -26,27 +25,24 @@ pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
     palette_mode: PaletteMode,
-    /// Currently active named theme. `System`/`Whale`/`WhaleLight` make the
-    /// theme remap a no-op (those rely on the dark/light pipeline); the
-    /// community presets (Catppuccin, Tokyo Night, Dracula, Gruvbox) trigger
-    /// a per-cell rewrite of dark-palette constants → preset slots.
+    /// 当前活跃的已命名主题。`System`/`Whale`/`WhaleLight` 使主题重映射为空操作
+    /// （它们依赖暗色/亮色管道）；社区预设（Catppuccin、Tokyo Night、Dracula、Gruvbox）
+    /// 会触发对每个单元格的暗色调色板常量 → 预设槽位的重写。
     theme_id: ThemeId,
-    /// Resolved active `UiTheme`, *including* any user `background_color`
-    /// override (`UiTheme::with_background_color`). The cell remap reads
-    /// target slots from this struct, not from `theme_id.ui_theme()`, so
-    /// `theme = "tokyo-night"` + `background_color = "#000000"` lands as a
-    /// pure-black surface instead of being overwritten back to
-    /// tokyo-night's `#16161e` by the remap.
+    /// 已解析的活跃 `UiTheme`，*包含*任何用户 `background_color` 覆盖
+    /// （`UiTheme::with_background_color`）。单元格重映射从此结构体读取目标槽位，
+    /// 而不是从 `theme_id.ui_theme()`，因此 `theme = "tokyo-night"` +
+    /// `background_color = "#000000"` 会落地为纯黑表面，而不会被重映射
+    /// 覆盖回 tokyo-night 的 `#16161e`。
     active_ui_theme: UiTheme,
-    /// During a resize event the terminal emulator may report stale dimensions
-    /// for a brief window (observed on macOS Terminal.app and Windows ConHost).
-    /// Forcing the expected size prevents ratatui's internal `autoresize` from
-    /// shrinking the viewport back to the stale dimension inside `draw()`.
+    /// 在调整大小事件期间，终端模拟器可能会在短时间内报告过时的尺寸
+    /// （在 macOS Terminal.app 和 Windows ConHost 上观察到）。
+    /// 强制使用预期尺寸可防止 ratatui 的内部 `autoresize` 在 `draw()` 中将视口
+    /// 收缩回旧的尺寸。
     forced_size: Option<Size>,
-    /// Cached terminal size from `crossterm::terminal::size()`, set after
-    /// re-entering alt-screen to avoid stale buffer dimensions on Windows.
-    /// Used as the primary fallback in `size()` before falling through to
-    /// the live crossterm query.
+    /// 来自 `crossterm::terminal::size()` 的缓存终端尺寸，在重新进入 alt-screen
+    /// 后设置，以避免 Windows 上出现陈旧的缓冲区尺寸。
+    /// 在 `size()` 中作为主要回退值使用，再降级到实时的 crossterm 查询。
     terminal_size: Option<Size>,
     render_debug: Option<RenderDebugLog>,
 }
@@ -58,10 +54,9 @@ impl<W: Write> ColorCompatBackend<W> {
             depth,
             palette_mode,
             theme_id: ThemeId::System,
-            // Default to whatever System resolves to right now — it stays a
-            // no-op for the remap since `theme_id` is also System, so this
-            // initial value only matters once `set_theme` flips both fields
-            // to a community preset.
+            // 默认使用 System 当前解析到的值——由于 `theme_id` 也是 System，
+            // 因此对于重映射来说它是一个空操作，所以这个初始值只在
+            // `set_theme` 将两个字段切换为社区预设时才有意义。
             active_ui_theme: UiTheme::detect(),
             forced_size: None,
             terminal_size: None,
@@ -129,21 +124,19 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         if let Some(render_debug) = &mut self.render_debug {
             render_debug.record(viewport, &adapted);
         }
-        // #3029: Emit OSC 8 hyperlinks out-of-band through the backend's
-        // Write impl.  ratatui's buffer pipeline strips ESC bytes, so the
-        // open/close sequences must be interleaved with the cell stream
-        // here.  OSC 8 is stateful and last-writer-wins: every cell painted
-        // between an open and the next close links to that open's target,
-        // so each region's cells must be bracketed by their OWN open/close
-        // pair — never batched.
+        // #3029：通过后端的 Write 实现带外发出 OSC 8 超链接。
+        // ratatui 的缓冲区管道会剥离 ESC 字节，因此打开/关闭序列
+        // 必须在此处与单元格流交错。OSC 8 是有状态的且后写者胜出：
+        // 在打开和下一个关闭之间绘制的每个单元格都链接到该打开的
+        // 目标，因此每个区域的单元格必须由它们自己的打开/关闭对
+        // 包围——绝不能批量处理。
         let mut frame_links = crate::tui::osc8::take_frame_links();
         if frame_links.is_empty() || !crate::tui::osc8::enabled() {
             self.inner
                 .draw(adapted.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
             return Ok(());
         }
-        // Deterministic region lookup when regions are adjacent/overlapping:
-        // the first (top-left-most) region wins.
+        // 当区域相邻/重叠时进行确定性区域查找：第一个（最左上角）区域胜出。
         frame_links.sort_unstable_by_key(|link| (link.row, link.col_start));
         let region_for = |x: u16, y: u16| -> Option<usize> {
             frame_links
@@ -151,9 +144,8 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
                 .position(|link| y == link.row && x >= link.col_start && x <= link.col_end)
         };
 
-        // Walk the diff in its original order and split it into runs at
-        // region boundaries, so the visible byte stream stays identical to
-        // a no-link render apart from the inserted OSC 8 sequences.
+        // 按照原始顺序遍历 diff，并在区域边界处将其分割为运行段，
+        // 以便可见字节流除了插入的 OSC 8 序列外，与无链接渲染保持一致。
         let mut idx = 0;
         while idx < adapted.len() {
             let current_region = region_for(adapted[idx].0, adapted[idx].1);
@@ -206,10 +198,9 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
     }
 
     fn size(&self) -> io::Result<Size> {
-        // forced_size takes priority: it is set during resize events to prevent
-        // ratatui's autoresize from shrinking the viewport back to a stale
-        // dimension. terminal_size is the cached real terminal size used as a
-        // fallback after alt-screen re-entry (Windows buffer width workaround).
+        // forced_size 优先：它在调整大小事件期间设置，以防止 ratatui 的
+        // autoresize 将视口收缩回旧的尺寸。terminal_size 是缓存的真实终端
+        // 尺寸，在重新进入 alt-screen 后用作回退（Windows 缓冲区宽度解决方案）。
         if let Some(size) = self.forced_size.or(self.terminal_size) {
             return Ok(size);
         }
@@ -314,18 +305,17 @@ fn adapt_cell_colors(
     theme_id: ThemeId,
     ui_theme: &UiTheme,
 ) {
-    // Stage 1: community-theme remap (dark palette → preset slots). No-op
-    // for System / Whale / WhaleLight so legacy dark/light flows are
-    // untouched. Runs *before* the palette-mode remap so a light terminal
-    // running e.g. Catppuccin still routes the preset colors through the
-    // light adaptation below (rare combo, but the sequencing is the same).
+    // 阶段 1：社区主题重映射（暗色调色板 → 预设槽位）。对 System / Whale / WhaleLight
+    // 为空操作（no-op），因此传统的暗色/亮色流程不受影响。
+    // 在调色板模式重映射*之前*运行，以便例如运行 Catppuccin 的亮色终端仍然
+    // 将预设颜色通过下面的亮色适配进行路由（很少见的组合，但顺序是相同的）。
     cell.fg = palette::adapt_fg_for_theme(cell.fg, theme_id, ui_theme);
     cell.bg = palette::adapt_bg_for_theme(cell.bg, theme_id, ui_theme);
-    // Stage 2: legacy dark↔light remap.
+    // 阶段 2：传统的暗色↔亮色重映射。
     let original_bg = cell.bg;
     cell.fg = palette::adapt_fg_for_palette_mode(cell.fg, original_bg, palette_mode);
     cell.bg = palette::adapt_bg_for_palette_mode(cell.bg, palette_mode);
-    // Stage 3: depth (truecolor / 256 / 16) downsampling.
+    // 阶段 3：深度（truecolor / 256 / 16）降采样。
     cell.fg = palette::adapt_color(cell.fg, depth);
     cell.bg = palette::adapt_bg(cell.bg, depth);
 }
@@ -569,8 +559,8 @@ mod tests {
         let writer = SharedWriter::default();
         let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
 
-        // forced_size is set during resize events to temporarily override the
-        // cached terminal_size — it must win to prevent viewport shrinking.
+            // forced_size 在调整大小事件期间设置，以临时覆盖缓存的
+            // terminal_size——它必须胜出以防止视口收缩。
         backend.set_terminal_size(Size::new(120, 40));
         backend.force_size(Size::new(80, 25));
         assert_eq!(backend.size().unwrap(), Size::new(80, 25));
@@ -585,7 +575,7 @@ mod tests {
         assert_eq!(backend.size().unwrap(), Size::new(80, 25));
     }
 
-    // ── #3029: OSC 8 emission through the backend byte stream ──────────────
+    // ── #3029：通过后端字节流发出 OSC 8 ──────────────
 
     fn row_cells(symbols: &str) -> Vec<(u16, u16, Cell)> {
         symbols
@@ -603,7 +593,7 @@ mod tests {
     fn osc8_open_close_bracket_only_their_region_cells() {
         use crate::tui::osc8::LinkRegion;
 
-        // Baseline: identical cells, no link regions.
+        // 基线：相同的单元格，无链接区域。
         let baseline_writer = SharedWriter::default();
         let baseline_capture = baseline_writer.0.clone();
         let mut baseline =
@@ -614,7 +604,7 @@ mod tests {
             .unwrap();
         let baseline_out = String::from_utf8_lossy(&baseline_capture.borrow()).to_string();
 
-        // Linked render: columns 2..=3 ("CD") carry one link region.
+        // 链接渲染：列 2..=3（"CD"）承载一个链接区域。
         crate::tui::osc8::set_frame_links(vec![LinkRegion {
             row: 0,
             col_start: 2,
@@ -635,8 +625,8 @@ mod tests {
         assert_eq!(out.matches(open).count(), 1, "exactly one open: {out:?}");
         assert_eq!(out.matches(close).count(), 1, "exactly one close: {out:?}");
 
-        // The open must precede the first linked glyph and the close must sit
-        // between the last linked glyph and the first glyph after the region.
+        // 打开序列必须位于第一个链接字形之前，关闭序列必须位于
+        // 最后一个链接字形和区域后的第一个字形之间。
         let open_at = out.find(open).expect("open present");
         let close_at = out.find(close).expect("close present");
         let c_at = out.find('C').expect("glyph C");
@@ -649,7 +639,7 @@ mod tests {
             "cells after the region must not inherit the link: {out:?}"
         );
 
-        // Visible glyph stream is unchanged by link insertion.
+        // 链接插入不会改变可见字形流。
         let mut baseline_visible = String::new();
         crate::tui::osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
@@ -694,9 +684,9 @@ mod tests {
         assert_eq!(out.matches(second).count(), 1, "{out:?}");
         assert_eq!(out.matches(close).count(), 2, "{out:?}");
 
-        // Pre-#3029-audit bug: both opens were emitted before any cell, so
-        // the whole frame linked to the LAST region's target. Each region's
-        // open must close before the next region's open begins.
+        // #3029 审计前的 bug：两个打开序列都在任何单元格之前发出，
+        // 因此整个帧都链接到了最后一个区域的目标。每个区域的打开序列
+        // 必须在下一个区域的打开序列开始之前关闭。
         let first_at = out.find(first).expect("first open");
         let first_close_at = out[first_at..].find(close).expect("first close") + first_at;
         let second_at = out.find(second).expect("second open");
@@ -704,16 +694,15 @@ mod tests {
             first_close_at < second_at,
             "region one must close before region two opens: {out:?}"
         );
-        // The unlinked middle glyph sits between the two link spans.
+        // 未链接的中间字形位于两个链接跨度之间。
         let z_at = out.find('Z').expect("unlinked glyph");
         assert!(first_close_at < z_at && z_at < second_at, "{out:?}");
     }
 
-    /// #3029 end-to-end: the in-band `wrap_link` payload rendered into a Buffer
-    /// by `Paragraph` must (a) be cleaned out of the cells by the extractor and
-    /// (b) re-emitted out-of-band by the backend around the label glyph. This
-    /// proves producer (`extract_buffer_link_regions` + `set_frame_links`) and
-    /// consumer (`ColorCompatBackend::draw`) compose.
+    /// #3029 端到端：由 `Paragraph` 渲染到 Buffer 中的带内 `wrap_link` 负载
+    /// 必须 (a) 被提取器从单元格中清除，并且 (b) 由后端在标签字形周围
+    /// 带外重新发出。这证明了生产者（`extract_buffer_link_regions` + `set_frame_links`）
+    /// 和消费者（`ColorCompatBackend::draw`）能够组合使用。
     #[test]
     fn osc8_extractor_feeds_backend_out_of_band() {
         use crate::tui::osc8;
@@ -722,8 +711,7 @@ mod tests {
         use ratatui::text::{Line, Span};
         use ratatui::widgets::{Paragraph, Widget};
 
-        // 1. Render an in-band link payload into a buffer, exactly as the
-        //    transcript render seam would.
+        // 1. 将带内链接负载渲染到缓冲区中，就像会话记录渲染接缝所做的那样。
         let target = "https://example.test/e2e";
         let label = "open";
         let wrapped = osc8::wrap_link(target, label);
@@ -731,14 +719,13 @@ mod tests {
         let mut buf = Buffer::empty(area);
         Paragraph::new(vec![Line::from(vec![Span::raw(wrapped)])]).render(area, &mut buf);
 
-        // 2. The extractor recovers the region AND blanks the payload cells.
-        //    Capture the region once — re-running would find nothing because
-        //    the payload is now gone (that's the point).
+        // 2. 提取器恢复区域并清空负载单元格。
+        //    只抓取一次区域——重新运行将找不到任何东西，因为负载现在已经消失了（这就是关键）。
         let regions = osc8::extract_buffer_link_regions(&mut buf, area);
         assert_eq!(regions.len(), 1, "one link recovered: {regions:?}");
         osc8::set_frame_links(regions);
 
-        // 3. Hand the cleaned cells to the backend and capture the byte stream.
+        // 3. 将清理后的单元格交给后端并捕获字节流。
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
         let mut backend = ColorCompatBackend::new(writer, ColorDepth::TrueColor, PaletteMode::Dark);
@@ -753,7 +740,7 @@ mod tests {
             .unwrap();
         let out = String::from_utf8_lossy(&capture.borrow()).to_string();
 
-        // 4. The backend re-emitted the link out-of-band around the label.
+        // 4. 后端在标签周围带外重新发出了链接。
         let open = format!("\x1b]8;;{target}\x1b\\");
         let close = "\x1b]8;;\x1b\\";
         assert_eq!(

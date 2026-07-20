@@ -1,34 +1,30 @@
-//! Transparent string newtypes for provider/model/route identities.
+//! 提供者/模型/路由标识的透明字符串新类型。
 //!
-//! These types make the distinct *meanings* of route strings unmistakable at
-//! the type level so callers can no longer mix:
+//! 这些类型在类型层面明确了路由字符串的不同*含义*，使调用者不再混淆：
 //!
-//! - [`ProviderId`] — a provider's canonical id (e.g. `"deepseek"`).
-//! - [`ModelId`] — a canonical, provider-agnostic logical model id.
-//! - [`WireModelId`] — a provider-owned wire id sent on the request
-//!   (e.g. `"deepseek-ai/DeepSeek-V4-Pro"` on Together).
-//! - [`LogicalModelRef`] — a user/selector reference to a model, which may be
-//!   `"auto"`, a bare model, or an aggregator-prefixed string.
+//! - [`ProviderId`] — 提供者的规范标识（例如 `"deepseek"`）。
+//! - [`ModelId`] — 规范的、与提供者无关的逻辑模型标识。
+//! - [`WireModelId`] — 提供者拥有的、在请求中发送的线路标识
+//!   （例如 Together 上的 `"deepseek-ai/DeepSeek-V4-Pro"`）。
+//! - [`LogicalModelRef`] — 用户/选择器对模型的引用，可以是
+//!   `"auto"`、裸模型名称或聚合器前缀字符串。
 //!
-//! [`ModelId`] and [`WireModelId`] are deliberately DISTINCT types and are
-//! never interchangeable: a canonical model identity is not the same thing as
-//! the provider-specific string put on the wire.
+//! [`ModelId`] 和 [`WireModelId`] 是有意保持**不同**的类型，
+//! 不可互换：规范的模型标识与在线路上发送的提供者特定字符串不同。
 //!
-//! INVARIANT (load-bearing for #2608): a namespace prefix can NEVER become a
-//! provider. There is intentionally NO `From`/`Into` conversion from
-//! [`LogicalModelRef`] or [`NamespaceHint`] to [`ProviderId`]. A prefix like
-//! `deepseek-ai/` is a catalog/namespace hint only; it is not proof of
-//! provider ownership. Do not add such a conversion.
+//! 不变式（对 #2608 至关重要）：命名空间前缀**绝不**能成为
+//! 提供者。有意不提供从 [`LogicalModelRef`] 或 [`NamespaceHint`]
+//! 到 [`ProviderId`] 的 `From`/`Into` 转换。像 `deepseek-ai/` 这样的前缀
+//! 仅是目录/命名空间提示；它不能证明提供者所有权。不要添加此类转换。
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// The `"auto"` router sentinel for [`LogicalModelRef`].
+/// [`LogicalModelRef`] 的 `"auto"` 路由器哨兵。
 ///
-/// `auto` is an opt-in router sentinel — it never refers to a literal model
-/// named "auto". Centralized here so every comparison site uses the same
-/// spelling (#4158).
+/// `auto` 是一个选择加入的路由器哨兵 — 它从不引用字面意义上的名为 "auto" 的模型。
+/// 集中在此处，以便每个比较点都使用相同的拼写 (#4158)。
 pub const AUTO_SENTINEL: &str = "auto";
 
 use crate::ProviderKind;
@@ -41,7 +37,7 @@ macro_rules! string_newtype {
         pub struct $name(String);
 
         impl $name {
-            /// Borrow the inner string slice.
+            /// 借用内部字符串切片。
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -75,86 +71,84 @@ macro_rules! string_newtype {
 }
 
 string_newtype!(
-    /// A provider's canonical identifier (e.g. `"deepseek"`, `"openrouter"`).
+    /// 提供者的规范标识符（例如 `"deepseek"`、`"openrouter"`）。
     ProviderId
 );
 
 string_newtype!(
-    /// A canonical, provider-agnostic logical model identity.
+    /// 规范的、与提供者无关的逻辑模型标识。
     ///
-    /// Distinct from [`WireModelId`]: this is "what the model is", not "what
-    /// string a provider expects on the wire".
+    /// 与 [`WireModelId`] 不同：这是"模型是什么"，而不是"提供者在线路上期望什么字符串"。
     ModelId
 );
 
 string_newtype!(
-    /// A provider-owned wire model id sent verbatim on the request.
+    /// 提供者拥有的、逐字发送在请求上的线路模型标识。
     ///
-    /// Distinct from [`ModelId`]: aggregator-prefixed strings such as
-    /// `"deepseek-ai/DeepSeek-V4-Pro"` are wire ids, not canonical identities.
+    /// 与 [`ModelId`] 不同：像 `"deepseek-ai/DeepSeek-V4-Pro"` 这样的聚合器前缀字符串
+    /// 是线路标识，而非规范标识。
     WireModelId
 );
 
 string_newtype!(
-    /// A user/selector reference to a model.
+    /// 用户/选择器对模型的引用。
     ///
-    /// May be the `"auto"` sentinel, a bare model name, or an
-    /// aggregator-prefixed string. A [`LogicalModelRef`] carries no provider
-    /// authority by itself; see [`Self::namespace_hint`].
+    /// 可以是 `"auto"` 哨兵、裸模型名称或聚合器前缀字符串。
+    /// [`LogicalModelRef`] 本身不携带提供者权限；参见 [`Self::namespace_hint`]。
     LogicalModelRef
 );
 
 impl ProviderId {
-    /// Build a [`ProviderId`] from a [`ProviderKind`] using its canonical id.
+    /// 使用其规范标识从 [`ProviderKind`] 构建一个 [`ProviderId`]。
     #[must_use]
     pub fn from_kind(kind: ProviderKind) -> Self {
         Self(kind.as_str().to_string())
     }
 }
 
-/// A leading namespace/organization prefix carried by a [`LogicalModelRef`].
+/// [`LogicalModelRef`] 携带的前导命名空间/组织前缀。
 ///
-/// A namespace hint is a *catalog* hint only. It is NEVER convertible to a
-/// [`ProviderId`]; an aggregator may serve `deepseek-ai/...` without being
-/// DeepSeek, and a custom endpoint may legitimately use a look-alike string.
+/// 命名空间提示仅作为*目录*提示。它**绝不**可转换为 [`ProviderId`]；
+/// 聚合器可以提供 `deepseek-ai/...` 而非 DeepSeek，
+/// 自定义端点也可能合法地使用相似字符串。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NamespaceHint {
-    /// `deepseek-ai/` prefix.
+    /// `deepseek-ai/` 前缀。
     DeepseekAi,
-    /// `deepseek/` prefix.
+    /// `deepseek/` 前缀。
     Deepseek,
-    /// `anthropic/` prefix.
+    /// `anthropic/` 前缀。
     Anthropic,
-    /// `openai/` prefix.
+    /// `openai/` 前缀。
     Openai,
-    /// `qwen/` prefix.
+    /// `qwen/` 前缀。
     Qwen,
 }
 
 impl LogicalModelRef {
-    /// Borrow the raw selector string.
+    /// 借用原始选择器字符串。
     #[must_use]
     pub fn raw(&self) -> &str {
         self.as_str()
     }
 
-    /// Whether this selector is the explicit `auto` router sentinel.
+    /// 此选择器是否为显式的 `auto` 路由器哨兵。
     ///
-    /// `auto` is an opt-in router sentinel, never a literal model id.
+    /// `auto` 是一个选择加入的路由器哨兵，绝不是字面意义上的模型 ID。
     #[must_use]
     pub fn is_auto(&self) -> bool {
         self.raw() == AUTO_SENTINEL
     }
 
-    /// Parse the leading namespace prefix, if any.
+    /// 解析前导命名空间前缀（如果有）。
     ///
-    /// Returns `Some` only for the curated aggregator/organization prefixes.
-    /// This is a hint about catalog namespace and does NOT identify a provider.
+    /// 仅对策展的聚合器/组织前缀返回 `Some`。
+    /// 这是关于目录命名空间的提示，并不标识提供者。
     #[must_use]
     pub fn namespace_hint(&self) -> Option<NamespaceHint> {
         let raw = self.raw();
-        // Order matters: `deepseek-ai/` must be matched before `deepseek/`.
+        // 顺序很重要：`deepseek-ai/` 必须在 `deepseek/` 之前匹配。
         if raw.starts_with("deepseek-ai/") {
             Some(NamespaceHint::DeepseekAi)
         } else if raw.starts_with("deepseek/") {

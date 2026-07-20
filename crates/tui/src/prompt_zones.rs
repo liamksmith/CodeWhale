@@ -1,28 +1,28 @@
-//! Three-zone prompt contract types for prefix-cache stability (#2264).
+//! 前缀缓存稳定性的三区域提示契约类型（#2264）。
 //!
-//! Divides every request into three rigid zones:
+//! 将每个请求分为三个严格的区域：
 //!
 //! ```text
 //! ┌─────────────────────────────────────────┐
-//! │ PinnedPrefix (frozen after construction) │ ← system prompt + tool catalog
-//! │   combined_sha256 computed at freeze()   │   cache hit candidate
+//! │ PinnedPrefix（构造后冻结）               │ ← 系统提示 + 工具目录
+//! │   freeze() 时计算的 combined_sha256     │   缓存命中候选
 //! ├─────────────────────────────────────────┤
-//! │ AppendLog (append-only)                  │ ← conversation history
-//! │   push() only, no insert / remove / edit │   preserves prefix of prior turns
+//! │ AppendLog（仅追加）                     │ ← 对话历史
+//! │   仅 push()，无插入/移除/编辑             │   保留先前轮次的前缀
 //! ├─────────────────────────────────────────┤
-//! │ TurnScratch (ephemeral)                  │ ← per-turn metadata
-//! │   cleared at every turn boundary         │   the only new content per request
+//! │ TurnScratch（临时）                     │ ← 每轮元数据
+//! │   每轮边界清除                          │   每请求唯一的新内容
 //! └─────────────────────────────────────────┘
 //! ```
 //!
-//! ## Status (Phase 1 foundation)
+//! ## 状态（阶段 1 基础）
 //!
-//! `PinnedPrefix` / `FrozenPrefix` / `PrefixDrift` are ready for use.
-//! `AppendLog` / `TurnScratch` / `ThreeZoneRequest` are type scaffolding
-//! for future phases — not yet wired into the request path.
+//! `PinnedPrefix` / `FrozenPrefix` / `PrefixDrift` 已可供使用。
+//! `AppendLog` / `TurnScratch` / `ThreeZoneRequest` 是用于将来
+//! 阶段的类型脚手架——尚未接入请求路径。
 
 use crate::models::{Message, SystemPrompt, Tool};
-// ── helpers ────────────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -45,7 +45,7 @@ fn system_text(system: Option<&SystemPrompt>) -> String {
     }
 }
 
-/// Serialize tools to a deterministic, sorted JSON string for hashing.
+/// 将工具序列化为确定性的、排序后的 JSON 字符串，用于哈希。
 #[allow(dead_code)]
 fn tool_catalog_digest(tools: &[Tool]) -> String {
     let mut serialized: Vec<String> = tools
@@ -67,11 +67,11 @@ fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
 
 // ── FrozenPrefix ───────────────────────────────────────────────────────
 
-/// An immutable frozen prefix — system prompt text + tool catalog,
-/// hashed at freeze time. The hash is stable as long as the system prompt
-/// text and full tool definitions (name, description, schema) are unchanged.
+/// 不可变的冻结前缀——系统提示文本 + 工具目录，在冻结时哈希。
+/// 只要系统提示文本和完整工具定义（名称、描述、模式）不变，
+/// 哈希就保持稳定。
 ///
-/// Use [`PinnedPrefix::freeze`] to produce one.
+/// 使用 [`PinnedPrefix::freeze`] 来生成一个。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct FrozenPrefix {
@@ -82,10 +82,10 @@ pub struct FrozenPrefix {
 
 #[allow(dead_code)]
 impl FrozenPrefix {
-    /// Verify that `current_system_text` and `current_tools` match the frozen
-    /// prefix. Returns `Ok(())` when stable, `Err(PrefixDrift)` on mismatch.
+    /// 验证 `current_system_text` 和 `current_tools` 是否与冻结的
+    /// 前缀匹配。稳定时返回 `Ok(())`，不匹配时返回 `Err(PrefixDrift)`。
     ///
-    /// Fast path: compares raw text before falling back to SHA-256.
+    /// 快路径：在回退到 SHA-256 之前比较原始文本。
     pub fn verify(
         &self,
         current_system_text: &str,
@@ -108,7 +108,7 @@ impl FrozenPrefix {
         })
     }
 
-    /// Returns a short (12-char) human-readable id for display.
+    /// 返回用于显示的短（12 字符）人类可读 ID。
     #[must_use]
     pub fn short_id(&self) -> &str {
         if self.combined_sha256.len() >= 12 {
@@ -118,7 +118,7 @@ impl FrozenPrefix {
         }
     }
 
-    /// Returns the full combined SHA-256.
+    /// 返回完整的组合 SHA-256。
     #[must_use]
     pub fn hash(&self) -> &str {
         &self.combined_sha256
@@ -127,8 +127,8 @@ impl FrozenPrefix {
 
 // ── PinnedPrefix ───────────────────────────────────────────────────────
 
-/// A mutable prefix builder. Construct from the system prompt and tool
-/// catalog, then call [`freeze`](Self::freeze) to produce a [`FrozenPrefix`].
+/// 可变前缀构建器。从系统提示和工具目录构造，然后调用
+/// [`freeze`](Self::freeze) 来生成 [`FrozenPrefix`]。
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct PinnedPrefix {
@@ -146,7 +146,7 @@ impl PinnedPrefix {
         }
     }
 
-    /// Freeze this prefix into an immutable [`FrozenPrefix`].
+    /// 将此前缀冻结为不可变的 [`FrozenPrefix`]。
     #[must_use]
     pub fn freeze(&self) -> FrozenPrefix {
         let tool_catalog = tool_catalog_digest(&self.tools);
@@ -162,7 +162,7 @@ impl PinnedPrefix {
 
 // ── PrefixDrift ────────────────────────────────────────────────────────
 
-/// Describes how the current prefix differs from the frozen baseline.
+/// 描述当前前缀与冻结基线的差异。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct PrefixDrift {
@@ -191,12 +191,12 @@ impl std::fmt::Display for PrefixDrift {
 
 // ── AppendLog ──────────────────────────────────────────────────────────
 
-/// Append-only conversation history. Derefs to `&[Message]` via
-/// [`Deref`](std::ops::Deref) for transparent read access; mutations go
-/// through explicit methods (`push`, `truncate_to`, `trim_front`, `clear`)
-/// whose names make cache impact obvious.
+/// 仅追加的对话历史。通过 [`Deref`](std::ops::Deref) 解引用到
+/// `&[Message]` 以进行透明读取访问；修改通过显式的方法
+///（`push`、`truncate_to`、`trim_front`、`clear`）进行，
+/// 这些方法的名称使缓存影响显而易见。
 ///
-/// Phase 4: backing store for `Session.messages` (#2264).
+/// 阶段 4：`Session.messages` 的后端存储（#2264）。
 #[derive(Debug, Clone)]
 pub struct AppendLog {
     messages: Vec<Message>,
@@ -213,28 +213,26 @@ impl AppendLog {
         Self { messages }
     }
 
-    /// Append a message to the log. A single-message push is the cheapest
-    /// mutation for prefix-cache stability — it extends the byte sequence
-    /// without disturbing earlier turns.
+    /// 向日志追加一条消息。单条消息的推送对于前缀缓存稳定性
+    /// 是最便宜的变更——它扩展了字节序列而不干扰较早的轮次。
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
     }
 
-    /// Append multiple messages in one operation (fewer cache-line
-    /// invalidations than repeated `push`).
+    /// 一次操作追加多条消息（比重复 `push` 更少的缓存行失效）。
     pub fn push_batch(&mut self, batch: Vec<Message>) {
         self.messages.extend(batch);
     }
 
-    /// Truncate to keep only the most recent `new_len` messages.
-    /// Discards older messages (and their prefix-cache contribution)
-    /// from the front.
+    /// 截断为仅保留最近 `new_len` 条消息。
+    /// 丢弃较早的消息（以及它们对前缀缓存的贡献）
+    /// 从前面开始丢弃。
     pub fn truncate_to(&mut self, new_len: usize) {
         self.messages.truncate(new_len);
     }
 
-    /// Remove `count` messages from the front (oldest first).
-    /// Cache-destroying: drops the prefix that earlier turns share.
+    /// 从前面移除 `count` 条消息（最旧的优先）。
+    /// 破坏缓存：丢弃了较早轮次共享的前缀。
     pub fn trim_front(&mut self, count: usize) {
         if count >= self.messages.len() {
             self.messages.clear();
@@ -243,20 +241,20 @@ impl AppendLog {
         }
     }
 
-    /// Remove all messages. Resets cache state completely.
+    /// 移除所有消息。完全重置缓存状态。
     pub fn clear(&mut self) {
         self.messages.clear();
     }
 
-    /// Return a mutable reference to the last message, if any.
-    /// Prefer this over `last_mut()` on the inner vec — the name signals
-    /// that only the most recent turn's content is being modified.
+    /// 返回最后一条消息的可变引用（如果存在）。
+    /// 优先使用此方法而非内部 vec 上的 `last_mut()`——
+    /// 该名称表明仅修改最近轮次的内容。
     #[must_use]
     pub fn last_mut(&mut self) -> Option<&mut Message> {
         self.messages.last_mut()
     }
 
-    /// Consume and return the inner `Vec<Message>`.
+    /// 消费并返回内部的 `Vec<Message>`。
     #[must_use]
     pub fn into_inner(self) -> Vec<Message> {
         self.messages
@@ -291,9 +289,9 @@ impl std::ops::Deref for AppendLog {
 
 // ── TurnScratch ────────────────────────────────────────────────────────
 
-/// Per-turn ephemeral data. Cleared at every turn boundary.
+/// 每轮临时数据。在每个轮次边界清除。
 ///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
+/// **阶段 1 脚手架**——尚未接入引擎请求路径。
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TurnScratch {
@@ -320,10 +318,10 @@ impl TurnScratch {
 
 // ── ThreeZoneRequest ───────────────────────────────────────────────────
 
-/// A composed three-zone request ready for DeepSeek API serialization.
+/// 准备好进行 DeepSeek API 序列化的组合三区域请求。
 ///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
-/// Currently the engine continues to use [`MessageRequest`] directly.
+/// **阶段 1 脚手架**——尚未接入引擎请求路径。
+/// 当前引擎继续直接使用 [`MessageRequest`]。
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThreeZoneRequest<'a> {
@@ -345,9 +343,8 @@ pub struct ThreeZoneRequest<'a> {
 
 #[allow(dead_code)]
 impl<'a> ThreeZoneRequest<'a> {
-    /// Build the full message list from system prompt, append-log messages,
-    /// and scratch user message. The returned vector is serialized as the
-    /// `messages` field in the DeepSeek chat-completion request.
+    /// 从系统提示、追加日志消息和临时用户消息构建完整消息列表。
+    /// 返回的向量将序列化为 DeepSeek 聊天补全请求中的 `messages` 字段。
     #[must_use]
     pub fn build_messages(&self) -> Vec<Message> {
         let mut messages = Vec::with_capacity(self.message_count());
@@ -401,7 +398,7 @@ impl<'a> ThreeZoneRequest<'a> {
     }
 }
 
-// ── tests ──────────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -528,7 +525,7 @@ mod tests {
 
         let frozen = PinnedPrefix::new(Some(&sys), vec![tool_a]).freeze();
         let drift = frozen.verify("system", &[tool_a_v2]).unwrap_err();
-        // Same name, different schema — should detect the change.
+        // 相同名称，不同模式——应检测到变化。
         assert!(drift.tools_changed);
     }
 
@@ -693,7 +690,7 @@ mod tests {
         let messages = request.build_messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "system");
-        // cache_control should be preserved on the block.
+        // cache_control 应在块上保留。
         if let ContentBlock::Text {
             cache_control: actual_cc,
             ..

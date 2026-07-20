@@ -1,13 +1,13 @@
-//! `/theme` picker with live preview.
+//! 带有实时预览的 `/theme` 选择器。
 //!
-//! Modeled after `feedback_picker`. Differences:
-//! - The option list comes from `palette::SELECTABLE_THEMES`.
-//! - Up/Down emit a `ConfigUpdated{persist:false}` so the host swaps
-//!   `app.ui_theme` immediately and the whole TUI re-paints under the
-//!   modal — the user sees the candidate theme before committing.
-//! - Enter persists (`persist:true`); Esc emits one more
-//!   `ConfigUpdated{persist:false}` to restore the original theme name
-//!   that was active when the picker opened.
+//! 仿照 `feedback_picker` 设计。区别：
+//! - 选项列表来自 `palette::SELECTABLE_THEMES`。
+//! - Up/Down 发出 `ConfigUpdated{persist:false}`，使宿主立即交换
+//!   `app.ui_theme`，整个 TUI 在模态框下方重新绘制——
+//!   用户在提交前就能看到候选主题。
+//! - Enter 持久化（`persist:true`）；Esc 再发出一个
+//!   `ConfigUpdated{persist:false}` 以恢复选择器打开时
+//!   处于活跃状态的原始主题名称。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -26,20 +26,18 @@ use crate::tui::views::{
 
 pub struct ThemePickerView {
     selected: usize,
-    /// Settings name of the theme that was active when the picker opened.
-    /// Used to revert on Esc.
+    /// 选择器打开时处于活跃状态的主题的设置名称。用于在 Esc 时恢复。
     original_name: String,
-    /// Cached UiTheme for `ThemeId::System`, captured once at construction
-    /// so the per-frame render doesn't re-invoke `UiTheme::detect()` (which
-    /// reads `COLORFGBG`) on every keystroke.
+    /// `ThemeId::System` 的缓存 UiTheme，在构造时捕获一次，
+    /// 这样每帧渲染不会在每个按键时都重新调用 `UiTheme::detect()`（它会读取 `COLORFGBG`）。
     system_ui_theme: UiTheme,
 }
 
 impl ThemePickerView {
     #[must_use]
     pub fn new(original_name: String) -> Self {
-        // If the persisted name matches one of the entries, start there;
-        // otherwise fall back to "System" so the cursor lands on a valid row.
+        // 如果持久化的名称匹配某个条目，则从那里开始；
+        // 否则回退到 "System"，以便光标落在有效行上。
         let selected = SELECTABLE_THEMES
             .iter()
             .position(|id| id.name() == original_name.trim().to_ascii_lowercase())
@@ -58,8 +56,7 @@ impl ThemePickerView {
             .unwrap_or(ThemeId::System)
     }
 
-    /// Resolve a theme to a `UiTheme`, returning the cached `System`
-    /// resolution to avoid repeated env-var reads inside `render`.
+    /// 将主题解析为 `UiTheme`，返回缓存的 `System` 解析以避免在 `render` 中重复读取环境变量。
     fn ui_theme_for(&self, id: ThemeId) -> UiTheme {
         if matches!(id, ThemeId::System) {
             self.system_ui_theme
@@ -160,18 +157,17 @@ impl ModalView for ThemePickerView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        // 1 title + 1 spacer + N rows + spacer + the in-body action footer.
-        // centered_modal_area clamps strictly to `area`, so the modal always
-        // fits even on tiny or split-pane terminals.
+        // 1 个标题 + 1 个间距 + N 行 + 间距 + 正文内操作页脚。
+        // centered_modal_area 严格限制在 `area` 内，因此模态框即使在
+        // 微小或分屏终端上也始终适用。
         let needed_height = (SELECTABLE_THEMES.len() as u16).saturating_add(9);
         let popup_area = centered_modal_area(area, 78, needed_height, 44, 8);
 
-        // The live theme has already been swapped under us via ConfigUpdated,
-        // so we pull the *current* preview's UiTheme from the cursor row to
-        // skin the modal chrome. That way the popup itself shifts color as
-        // the cursor moves, matching what the background will look like
-        // after Enter. We keep the live `surface_bg` (not the shared ink) and
-        // the bare `Clear` so the preview backdrop reads as intended.
+        // 实时主题已通过 ConfigUpdated 在我们下方交换，
+        // 因此我们从光标行提取*当前*预览的 UiTheme 来设置模态框外观。
+        // 这样弹出框本身随光标移动而变色，匹配 Enter 后背景的样子。
+        // 我们保留实时 `surface_bg`（而非共享墨水）和裸 `Clear`，
+        // 以便预览背景按预期显示。
         let live = self.ui_theme_for(self.current());
 
         Clear.render(popup_area, buf);
@@ -234,10 +230,8 @@ impl ModalView for ThemePickerView {
             };
             let pointer = if is_selected { "▶" } else { " " };
 
-            // 3-cell color swatch per row using the candidate theme's own
-            // accent + panel + border colors so the picker doubles as a
-            // legend. Use the cached resolver so `System` doesn't repeat
-            // `UiTheme::detect()`.
+            // 每行 3 格色样，使用候选主题自身的强调色 + 面板 + 边框颜色，
+            // 使选择器兼作图例。使用缓存解析器，以便 `System` 不重复 `UiTheme::detect()`。
             let row_theme = self.ui_theme_for(id);
             let swatch = vec![
                 Span::styled("  ", Style::default().bg(row_theme.surface_bg)),

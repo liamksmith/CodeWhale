@@ -1,4 +1,4 @@
-//! Gherkin acceptance coverage for visible core command surfaces.
+//! 可见核心命令表面的 Gherkin 验收覆盖。
 
 use cucumber::{World as _, given, then, when, writer::Stats as _};
 use tempfile::TempDir;
@@ -9,16 +9,16 @@ use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::app::{App, TuiOptions};
 use crate::tui::history::HistoryCell;
 
-const FEATURE_NAME: &str = "Core command visible surfaces";
+const FEATURE_NAME: &str = "核心命令可见表面";
 const FEATURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/features/core_command_surfaces.feature"
 );
 const INFORMATIONAL_SCENARIO: &str =
-    "Core informational commands write visible transcript messages";
-const STATE_SCENARIO: &str = "Core state commands report visible changes";
-const CLEAR_SCENARIO: &str = "Clear replaces prior transcript with visible confirmation";
-const PERSISTENT_WORK_SCENARIO: &str = "Persistent work commands report visible dispatch requests";
+    "核心信息类命令写入可见的对话消息";
+const STATE_SCENARIO: &str = "核心状态类命令报告可见的变更";
+const CLEAR_SCENARIO: &str = "Clear 用可见的确认信息替换之前的对话";
+const PERSISTENT_WORK_SCENARIO: &str = "持久化工作命令报告可见的调度请求";
 
 #[derive(Default, cucumber::World)]
 struct CoreCommandWorld {
@@ -41,9 +41,9 @@ impl std::fmt::Debug for CoreCommandWorld {
     }
 }
 
-#[given("a CodeWhale core command workspace")]
+#[given("一个 CodeWhale 核心命令工作区")]
 fn core_command_workspace(world: &mut CoreCommandWorld) {
-    let tmpdir = TempDir::new().expect("core command TempDir");
+    let tmpdir = TempDir::new().expect("核心命令 TempDir");
     let mut app = create_test_app_with_tmpdir(&tmpdir);
     app.ui_locale = crate::localization::Locale::En;
     app.api_provider = ApiProvider::Deepseek;
@@ -56,38 +56,38 @@ fn core_command_workspace(world: &mut CoreCommandWorld) {
     world.tmpdir = Some(tmpdir);
 }
 
-#[given("a CodeWhale core command workspace with one visible user message")]
+#[given("一个带一条可见用户消息的 CodeWhale 核心命令工作区")]
 fn core_command_workspace_with_one_visible_user_message(world: &mut CoreCommandWorld) {
     core_command_workspace(world);
-    let app = world.app.as_deref_mut().expect("app should exist");
+    let app = world.app.as_deref_mut().expect("app 应存在");
     app.add_message(HistoryCell::User {
-        content: "Remember the whale migration".to_string(),
+        content: "记住鲸鱼迁徙".to_string(),
     });
 }
 
-#[when(regex = r#"^the user runs the core command "([^"]+)"$"#)]
+#[when(regex = r#"^用户运行核心命令 "([^"]+)"$"#)]
 fn user_runs_core_command(world: &mut CoreCommandWorld, command: String) {
     let result = execute_isolated(world, &command);
     record_visible_result(world, result);
 }
 
-#[then(regex = r#"^the message window should include "([^"]+)"$"#)]
+#[then(regex = r#"^消息窗口应包含 "([^"]+)"$"#)]
 fn message_window_should_include(world: &mut CoreCommandWorld, expected: String) {
     let visible = visible_message_window(world);
 
     assert!(
         visible.contains(&expected),
-        "message window should include {expected:?}\nvisible transcript:\n{visible}"
+        "消息窗口应包含 {expected:?}\n可见对话：\n{visible}"
     );
 }
 
-#[then(regex = r#"^the message window should not include "([^"]+)"$"#)]
+#[then(regex = r#"^消息窗口不应包含 "([^"]+)"$"#)]
 fn message_window_should_not_include(world: &mut CoreCommandWorld, forbidden: String) {
     let visible = visible_message_window(world);
 
     assert!(
         !visible.contains(&forbidden),
-        "message window should not include {forbidden:?}\nvisible transcript:\n{visible}"
+        "消息窗口不应包含 {forbidden:?}\n可见对话：\n{visible}"
     );
 }
 
@@ -119,12 +119,12 @@ async fn run_scenario(name: &'static str, expected_steps: usize) {
             feature.name == FEATURE_NAME && scenario.name == name
         })
         .await;
-    assert_eq!(writer.failed_steps(), 0, "scenario failed: {name}");
-    assert_eq!(writer.skipped_steps(), 0, "scenario skipped steps: {name}");
+    assert_eq!(writer.failed_steps(), 0, "场景失败：{name}");
+    assert_eq!(writer.skipped_steps(), 0, "场景跳过步骤：{name}");
     assert_eq!(
         writer.passed_steps(),
         expected_steps,
-        "scenario did not run: {name}"
+        "场景未运行：{name}"
     );
 }
 
@@ -157,15 +157,15 @@ fn execute_isolated(world: &mut CoreCommandWorld, command: &str) -> CommandResul
     let home = world
         .home_path
         .as_ref()
-        .expect("test home should exist")
+        .expect("测试 home 应存在")
         .clone();
-    std::fs::create_dir_all(&home).expect("create isolated test home");
+    std::fs::create_dir_all(&home).expect("创建隔离测试 home");
 
     let _lock = lock_test_env();
     let _home = EnvVarGuard::set("HOME", &home);
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", home.join(".codewhale"));
 
-    let app = world.app.as_deref_mut().expect("app should exist");
+    let app = world.app.as_deref_mut().expect("app 应存在");
     commands::user_registry::reload(Some(&app.workspace));
     commands::execute(command, app)
 }
@@ -175,13 +175,13 @@ fn record_visible_result(world: &mut CoreCommandWorld, result: CommandResult) {
     world.last_message = result.message.clone();
 
     if let Some(message) = result.message {
-        let app = world.app.as_deref_mut().expect("app should exist");
+        let app = world.app.as_deref_mut().expect("app 应存在");
         app.add_message(HistoryCell::System { content: message });
     }
 }
 
 fn visible_message_window(world: &CoreCommandWorld) -> String {
-    let app = world.app.as_deref().expect("app should exist");
+    let app = world.app.as_deref().expect("app 应存在");
     app.history
         .iter()
         .filter_map(|cell| match cell {

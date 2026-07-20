@@ -1,10 +1,8 @@
-//! Lane registry + Runtime backends (#4176).
+//! Lane 注册表 + 运行时后端（#4176）。
 //!
-//! A **Lane** is a running workflow instance (one issue/goal). **Runtime** owns
-//! where/how it executes (tmux, inline, vm, ci) — never Fleet.
+//! **Lane** 是一个正在运行的工作流实例（一个 issue/目标）。**Runtime** 控制其在何处以及如何执行（tmux、inline、vm、ci）——与 Fleet 无关。
 //!
-//! Persistence: `$CODEWHALE_HOME/lanes/<lane-id>.json` plus stream-json logs
-//! under `$CODEWHALE_HOME/lanes/logs/<lane-id>.ndjson`.
+//! 持久化：`$CODEWHALE_HOME/lanes/<lane-id>.json` 以及位于 `$CODEWHALE_HOME/lanes/logs/<lane-id>.ndjson` 下的流式 json 日志。
 
 mod registry;
 mod runtime;

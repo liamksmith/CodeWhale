@@ -1,49 +1,47 @@
-//! Process hardening for Linux sandbox defense-in-depth (#2183).
+//! Linux 沙箱纵深防御的进程强化 (#2183)。
 //!
-//! This module applies kernel-level restrictions to the codewhale-tui process
-//! itself. Unlike Landlock/seccomp which restrict child processes spawned for
-//! shell commands, these hardening measures protect the *parent* TUI process
-//! from information leaks and privilege-escalation vectors.
+//! 本模块对 codewhale-tui 进程本身应用内核级限制。
+//! 与限制为 shell 命令生成的子进程的 Landlock/seccomp 不同，
+//! 这些强化措施保护 *父级* TUI 进程免受信息泄漏和权限提升向量的影响。
 //!
-//! # Ordering constraints
+//! # 顺序约束
 //!
-//! `apply_process_hardening()` MUST be called **before** the Tokio runtime is
-//! booted and **before** any worker threads are spawned. The reasons:
+//! `apply_process_hardening()` 必须在 Tokio 运行时启动 **之前** 以及
+//! 任何工作线程生成 **之前** 调用。原因是：
 //!
-//! 1. `PR_SET_DUMPABLE` — once set to 0, the process cannot be ptraced and
-//!    `/proc/self/` becomes root-owned. This must happen before any threads
-//!    exist, because the kernel applies dumpable state per-thread-group and
-//!    changing it after threads are live can race with `/proc` lookups.
+//! 1. `PR_SET_DUMPABLE`——一旦设置为 0，该进程不能被 ptrace，
+//!    且 `/proc/self/` 变为 root 所有。这必须在任何线程存在之前完成，
+//!    因为内核按线程组应用 dumpable 状态，在线程活跃后更改它
+//!    可能与 `/proc` 查找竞态。
 //!
-//! 2. `PR_SET_NO_NEW_PRIVS` — prevents the process and all descendants from
-//!    ever gaining new privileges via setuid/setgid/fscaps. This is
-//!    irreversible and must be applied before executing any helper binaries or
-//!    subprocesses that might (incorrectly) rely on privilege boundaries.
+//! 2. `PR_SET_NO_NEW_PRIVS`——阻止该进程及其所有后代
+//!    通过 setuid/setgid/fscaps 获得新特权。这是不可逆的，
+//!    必须在执行任何可能（错误地）依赖特权边界的辅助二进制文件
+//!    或子进程之前应用。
 //!
-//! 3. `RLIMIT_CORE` — disables core dumps so that sensitive in-memory data
-//!    (API keys, tokens, prompt content) is never written to disk on a crash.
-//!    Setting this before any data is loaded into memory is the safest posture.
+//! 3. `RLIMIT_CORE`——禁用核心转储，以便敏感的内存数据
+//!   （API 密钥、令牌、提示内容）在崩溃时永远不会写入磁盘。
+//!    在数据加载到内存之前设置此选项是最安全的姿态。
 //!
-//! # Platform support
+//! # 平台支持
 //!
-//! These hardening measures are Linux-only (they use `prctl` and `setrlimit`
-//! from the `libc` crate). On non-Linux platforms, `apply_process_hardening()`
-//! is a no-op that logs a debug-level message.
+//! 这些强化措施仅适用于 Linux（它们使用 `libc` crate 中的 `prctl` 和 `setrlimit`）。
+//! 在非 Linux 平台上，`apply_process_hardening()` 是一个打印调试级别日志的空操作。
 
-/// Apply process-level hardening measures.
+/// 应用进程级强化措施。
 ///
-/// On Linux, this:
-/// - Sets `PR_SET_DUMPABLE` to 0 (prevents ptrace, core dumps)
-/// - Sets `PR_SET_NO_NEW_PRIVS` to 1 (irreversible no-new-privileges)
-/// - Sets `RLIMIT_CORE` to 0 (disables core dumps)
+/// 在 Linux 上执行以下操作：
+/// - 将 `PR_SET_DUMPABLE` 设置为 0（阻止 ptrace、核心转储）
+/// - 将 `PR_SET_NO_NEW_PRIVS` 设置为 1（不可逆的无新特权）
+/// - 将 `RLIMIT_CORE` 设置为 0（禁用核心转储）
 ///
-/// On non-Linux platforms this is a no-op.
+/// 在非 Linux 平台上这是一个空操作。
 ///
 /// # Panics
 ///
-/// Does NOT panic. Failures are logged via `tracing::warn` because the
-/// hardening is defense-in-depth — the sandbox still protects child processes
-/// even if these prctls fail (e.g., in a container where some are restricted).
+/// 不会 panic。失败会通过 `tracing::warn` 记录，因为强化是纵深防御——
+/// 即使这些 prctl 失败（例如在某些受限制的容器中），
+/// 沙箱仍然保护子进程。
 pub fn apply_process_hardening() {
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
@@ -55,19 +53,19 @@ pub fn apply_process_hardening() {
     }
 }
 
-/// Linux-specific hardening implementation.
+/// Linux 特有的强化实现。
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 fn apply_linux_hardening() {
     // ── PR_SET_DUMPABLE = 0 ────────────────────────────────────────────────
     //
-    // When dumpable is 0:
-    // - The process cannot be ptraced by non-root
-    // - /proc/<pid>/ becomes owned by root:root (mode 0400)
-    // - No core dumps are produced
+    // 当 dumpable 为 0 时：
+    // - 非 root 用户无法 ptrace 该进程
+    // - /proc/<pid>/ 归 root:root 所有（模式 0400）
+    // - 不产生核心转储
     //
-    // Pattern from openai/codex codex-rs/codex-sandbox/src/linux.rs; reimplemented.
+    // 来自 openai/codex codex-rs/codex-sandbox/src/linux.rs 的模式；重新实现。
     //
-    // Safety: prctl with PR_SET_DUMPABLE modifies only the calling process.
+    // 安全性：带有 PR_SET_DUMPABLE 的 prctl 仅修改调用进程。
     let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0i64, 0i64, 0i64, 0i64) };
     if result != 0 {
         let err = std::io::Error::last_os_error();
@@ -81,15 +79,14 @@ fn apply_linux_hardening() {
 
     // ── PR_SET_NO_NEW_PRIVS = 1 ────────────────────────────────────────────
     //
-    // Once set, neither this process nor any descendant can ever gain new
-    // privileges via setuid, setgid, file capabilities, or LSMs like SELinux
-    // transitions. This is the strongest anti-escalation primitive the kernel
-    // offers.
+    // 一旦设置，此进程及其任何后代都无法通过 setuid、setgid、
+    // 文件 capabilities 或 SELinux 转换等 LSM 获得新特权。
+    // 这是内核提供的最强大的反权限提升原语。
     //
-    // Pattern from openai/codex codex-rs/codex-sandbox/src/linux.rs; reimplemented.
+    // 来自 openai/codex codex-rs/codex-sandbox/src/linux.rs 的模式；重新实现。
     //
-    // Safety: prctl with PR_SET_NO_NEW_PRIVS modifies only the calling process
-    // and its future descendants.
+    // 安全性：带有 PR_SET_NO_NEW_PRIVS 的 prctl 仅修改调用进程
+    // 及其未来的后代。
     let result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1i64, 0i64, 0i64, 0i64) };
     if result != 0 {
         let err = std::io::Error::last_os_error();
@@ -103,11 +100,10 @@ fn apply_linux_hardening() {
 
     // ── RLIMIT_CORE = 0 ────────────────────────────────────────────────────
     //
-    // Disables core dumps at the rlimit level. In combination with
-    // PR_SET_DUMPABLE=0, this provides a belt-and-suspenders guarantee that
-    // no core file will ever be written.
+    // 在 rlimit 级别禁用核心转储。与 PR_SET_DUMPABLE=0 结合使用，
+    // 提供双重保障，确保永远不会写入核心文件。
     //
-    // Safety: setrlimit modifies resource limits for the calling process only.
+    // 安全性：setrlimit 仅修改调用进程的资源限制。
     let rlim_core = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -130,8 +126,8 @@ mod tests {
 
     #[test]
     fn test_apply_process_hardening_does_not_panic() {
-        // This test exists to ensure the function can be called without
-        // panicking, even on platforms where hardening is a no-op.
+        // 此测试存在是为了确保即使在不支持强化的平台上，
+        // 函数也可以在不 panic 的情况下调用。
         apply_process_hardening();
     }
 }

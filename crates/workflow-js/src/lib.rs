@@ -1,43 +1,34 @@
-//! Dynamic Workflow runtime for CodeWhale.
+//! CodeWhale 的动态 Workflow 运行时。
 //!
-//! This crate is the imperative half of Workflow: a sandboxed QuickJS
-//! (rquickjs) runtime that executes a model-authored JS program which
-//! dispatches fleet-routed subagents via `task()`, fans out with
-//! `parallel()`/`pipeline()`, reports progress with `log()`/`phase()`, and
-//! scales itself to a token pool via the `budget` global. The static,
-//! declarative IR (record/replay, model policy) stays in `codewhale-workflow`;
-//! this crate only speaks to the outside world through the
-//! [`WorkflowDriver`] seam, so it is fully testable without spawning a real
-//! subagent (see [`testing::FakeDriver`]).
+//! 此 crate 是 Workflow 的命令式半部分：一个沙箱化的 QuickJS（rquickjs）运行时，执行模型编写的 JS 程序，
+//! 通过 `task()` 分派舰队路由的子代理，通过 `parallel()`/`pipeline()` 进行扇出，
+//! 通过 `log()`/`phase()` 报告进度，并通过 `budget` 全局对象自我调节 token 池。
+//! 静态声明式 IR（记录/回放、模型策略）保留在 `codewhale-workflow` 中；
+//! 此 crate 仅通过 [`WorkflowDriver`] 接口与外部通信，因此无需启动真实子代理即可完全可测试（参见 [`testing::FakeDriver`]）。
 //!
-//! # Script surface
+//! # 脚本表面
 //!
-//! Every script runs inside an async function with these globals:
+//! 每个脚本都在一个异步函数内运行，具有以下全局变量：
 //!
-//! * `args` — the invocation input, verbatim.
-//! * `await task(opts)` — dispatch one subagent; resolves to the full result
-//!   text, or to a parsed + schema-validated object when `opts.responseSchema`
-//!   is set. Throws on rejection, failure, cancellation, budget exhaustion,
-//!   or once [`WORKFLOW_LIFETIME_CAP`] spawn attempts have been made.
-//! * `parallel(thunks)` — all-settled fan-out; a failed slot becomes `null`;
-//!   at most [`PARALLEL_MAX_ITEMS`] items.
-//! * `pipeline(items, ...stages)` — per-item stage chains with no barrier
-//!   between stages; a stage error drops that item to `null`; same item cap.
-//! * `log(msg)` / `phase(title)` — progress events forwarded to the driver.
-//! * `budget.total` / `budget.spent()` / `budget.remaining()` — live driver
-//!   snapshots (`total` is `null` and `remaining()` is `Infinity` when no
-//!   ceiling is configured).
+//! * `args` — 调用输入，原样传递。
+//! * `await task(opts)` — 分派一个子代理；解析为完整的结果文本，或者当设置了 `opts.responseSchema` 时，
+//!   解析为经过解析和 schema 验证后的对象。在拒绝、失败、取消、预算耗尽或已达到 [`WORKFLOW_LIFETIME_CAP`] 次生成尝试时抛出。
+//! * `parallel(thunks)` — all-settled 扇出；失败的槽位变为 `null`；
+//!   最多 [`PARALLEL_MAX_ITEMS`] 项。
+//! * `pipeline(items, ...stages)` — 逐项阶段链，阶段之间无屏障；
+//!   阶段错误会将该项丢弃为 `null`；相同项数上限。
+//! * `log(msg)` / `phase(title)` — 转发给驱动器的进度事件。
+//! * `budget.total` / `budget.spent()` / `budget.remaining()` — 实时驱动器快照
+//!   （当未配置上限时，`total` 为 `null`，`remaining()` 为 `Infinity`）。
 //!
-//! `Date.now()`, `new Date()`, `Date.parse/UTC`, and `Math.random()` throw:
-//! runs must be deterministic so recorded traces can be replayed.
+//! `Date.now()`、`new Date()`、`Date.parse/UTC` 和 `Math.random()` 会抛出异常：
+//! 运行必须是确定性的，以便可以回放记录的跟踪。
 //!
-//! # Ownership boundaries
+//! # 所有权边界
 //!
-//! Token accounting and reservation (design §5.3) belong to the driver; the
-//! VM only reads snapshots and fast-fails a spawn when the pool is already
-//! exhausted. Fleet roster resolution for `profile` also happens driver-side;
-//! this crate normalizes and token-validates the profile string, nothing
-//! more.
+//! Token 记账和预留（设计 §5.3）属于驱动器；VM 仅读取快照，并在池已耗尽时快速失败生成操作。
+//! 对于 `profile` 的舰队名册解析也在驱动器侧完成；此 crate 仅对 profile 字符串进行规范化
+//! 和 token 验证，不处理其他事项。
 
 mod driver;
 mod error;
@@ -52,21 +43,18 @@ pub use driver::{
 pub use error::{DriverError, WorkflowJsError};
 pub use vm::{VmLimits, WorkflowRunCancel, WorkflowVm};
 
-/// Maximum `task()` spawn attempts per run (design §4.3). Counted in the VM
-/// before the driver is consulted, so a runaway `loop-until-dry` terminates
-/// even if the driver would keep admitting work.
+/// 每次运行的 `task()` 最大生成尝试次数（设计 §4.3）。在咨询驱动器之前在 VM 中计数，
+/// 因此即使驱动器持续接收新任务，失控的 `loop-until-dry` 也会终止。
 ///
-/// Product scale: up to 1_000 agents per Workflow run.
+/// 生产规模：每个 Workflow 运行最多 1_000 个 agent。
 pub const WORKFLOW_LIFETIME_CAP: u64 = 1000;
 
-/// Maximum concurrently executing agents within one Workflow run.
+/// 单个 Workflow 运行内最大并发执行的 agent 数量。
 ///
-/// Fan-out may *declare* more work via `parallel()` / `pipeline()`, but the
-/// host admits at most this many live `task()` children at once; additional
-/// spawns wait for a slot.
+/// 扇出可能通过 `parallel()` / `pipeline()` *声明*更多工作，但宿主一次最多允许这么多活跃的 `task()` 子任务；
+/// 额外的生成操作将等待槽位。
 pub const WORKFLOW_MAX_CONCURRENT: usize = 16;
 
-/// Maximum items per `parallel()` or `pipeline()` call (design §4.2).
-/// Kept at the per-run agent ceiling so a single fan-out cannot declare more
-/// work than the lifetime cap can ever complete.
+/// 每次 `parallel()` 或 `pipeline()` 调用的最大项数（设计 §4.2）。
+/// 保持为每次运行的 agent 上限，以便单次扇出声明的任务量不会超过生命周期上限能完成的总量。
 pub const PARALLEL_MAX_ITEMS: usize = 1000;

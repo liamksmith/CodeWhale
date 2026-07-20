@@ -1,4 +1,4 @@
-//! `/feedback` picker for GitHub feedback destinations.
+//! 用于 GitHub 反馈目标的 `/feedback` 选择器。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -237,8 +237,7 @@ mod tests {
         ));
     }
 
-    /// The four terminal sizes the v0.8.66 modal blocker (#3732) requires
-    /// every overlay to remain readable and fully operable at.
+    /// v0.8.66 模态拦截器 (#3732) 要求每个覆盖层在这些终端尺寸下保持可读和完全可操作的四个尺寸。
     const BLOCKER_SIZES: [(u16, u16); 4] = [(80, 24), (100, 30), (120, 32), (160, 40)];
 
     #[test]

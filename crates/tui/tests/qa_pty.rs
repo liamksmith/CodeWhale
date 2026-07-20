@@ -1,12 +1,11 @@
-//! End-to-end TUI scenarios driven through a real pseudo-terminal.
+//! 通过真实伪终端驱动的端到端 TUI 场景。
 //!
-//! Each scenario boots `deepseek-tui` in a sealed workspace + sealed `$HOME`,
-//! sends scripted input through the PTY, and asserts on the parsed terminal
-//! frame and on the workspace filesystem. See `support/qa_harness/README.md`
-//! for design + how-to.
+//! 每个场景在密封的工作区 + 密封的 `$HOME` 中启动 `deepseek-tui`，
+//! 通过 PTY 发送脚本化输入，并在解析的终端帧和工作区文件系统上断言。
+//! 设计和使用方法见 `support/qa_harness/README.md`。
 //!
-//! These tests are gated to Unix for now. Windows ConPTY behaviour (#923,
-//! #765, #802) needs a separate audit before scenarios light up there.
+//! 这些测试目前仅在 Unix 上启用。Windows ConPTY 行为（#923、#765、#802）
+//! 需要在场景上线前进行单独的审计。
 
 #![cfg(unix)]
 
@@ -51,12 +50,11 @@ fn spawn_minimal(
         .cwd(ws.workspace())
         .clear_env()
         .seal_home(ws.home())
-        // Provide a stub key so the onboarding screen is bypassed and the TUI
-        // boots straight into the composer. The harness never makes a live
-        // request — we just need the binary to think a key exists.
+        // 提供一个存根密钥，以便跳过引导屏幕，TUI 直接启动到编辑器。
+        // 测试工具从不发出真实请求——我们只需要二进制文件认为密钥存在。
         .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        // Force a known base URL so the doctor / model probe never escapes
-        // the box. 127.0.0.1:1 will refuse instantly.
+        // 强制使用已知的 Base URL，使诊断/模型探测永远不会逃出
+        // 沙箱。127.0.0.1:1 会立即拒绝连接。
         .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
         .env("RUST_LOG", "warn")
         .args([
@@ -89,7 +87,7 @@ fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
     let first_row = first_non_blank_row(frame).expect("expected visible frame text");
     assert_eq!(
         first_row, 0,
-        "viewport content drifted below row 0:\n{dump}"
+        "视口内容已漂移到第 0 行以下:\n{dump}"
     );
     assert!(
         frame.row(0).contains("Plan")
@@ -98,13 +96,12 @@ fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
             || frame.row(0).contains("Operate")
             || frame.row(0).contains("Yolo")
             || frame.row(0).contains("DeepSeek"),
-        "expected header content on row 0:\n{dump}"
+        "第 0 行应包含标题内容:\n{dump}"
     );
 }
 
-/// Smoke: the binary boots into an alt-screen, paints a composer, and the
-/// header shows the project label. If this fails, the harness itself is
-/// broken before we worry about any scenario.
+/// 冒烟测试：二进制文件启动到备用屏幕，绘制编辑器，标题显示项目标签。
+/// 如果此测试失败，说明测试工具本身就有问题，不用考虑任何场景。
 #[test]
 fn smoke_boot_paints_composer() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -115,7 +112,7 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
     let f = h.frame();
     assert!(
         f.any_visible_text(),
-        "expected non-empty frame after boot:\n{}",
+        "启动后应存在非空帧:\n{}",
         f.debug_dump()
     );
 
@@ -123,12 +120,11 @@ fn smoke_boot_paints_composer() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression for v0.8.61 startup: the dispatcher-side config writer produced
-/// camelCase keys plus `[features.enabled]`, while the TUI config reader only
-/// accepted snake_case and flat `[features]` booleans. That failed before the
-/// TUI log initialized and looked like an interactive launch crash from the
-/// facade. Boot through a real PTY and prove early init reaches the trust
-/// prompt and accepts input.
+/// v0.8.61 启动回归：调度器端配置写入器产生 camelCase 键加上
+/// `[features.enabled]`，而 TUI 配置读取器只接受 snake_case 和
+/// 扁平的 `[features]` 布尔值。这在 TUI 日志初始化之前就失败了，
+/// 从外观看起来像是交互式启动崩溃。通过真实 PTY 引导并证明
+/// 早期初始化能到达信任提示并接受输入。
 #[test]
 fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -178,8 +174,8 @@ web_search = true
     Ok(())
 }
 
-/// Regression for #1085: after a turn exits through the error path, terminal
-/// origin/scroll-region state must not leave blank rows above the TUI.
+/// #1085 回归：轮次通过错误路径退出后，终端原点/滚动区域状态
+/// 不得在 TUI 上方留下空白行。
 #[test]
 fn viewport_origin_stays_row_zero_after_failed_turn() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -205,9 +201,8 @@ fn viewport_origin_stays_row_zero_after_failed_turn() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies the harness actually sees keystrokes — type a character and watch
-/// it appear in the composer. This is the lowest-effort sanity check before
-/// we lean on it for real scenarios.
+/// 验证测试工具实际能看到按键——输入一个字符并观察它出现在编辑器中。
+/// 这是在将其用于真实场景之前最基础的健全性检查。
 #[test]
 fn smoke_keystroke_reaches_composer() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -221,9 +216,8 @@ fn smoke_keystroke_reaches_composer() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression: `/skills` should reflect the same merged discovery set as the
-/// slash menu and model-visible skills block, not just the first selected
-/// skills directory.
+/// 回归测试：`/skills` 应反映与斜杠菜单和模型可见技能块相同的
+/// 合并发现集，而不仅仅是第一个选定的技能目录。
 #[test]
 fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
@@ -262,10 +256,10 @@ fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
 
     let f = h.frame();
     let dump = f.debug_dump();
-    assert!(f.contains("global-alpha"), "global skill missing:\n{dump}");
+    assert!(f.contains("global-alpha"), "全局技能缺失:\n{dump}");
     assert!(
         f.contains("workspace-beta"),
-        "workspace skill missing:\n{dump}"
+        "工作区技能缺失:\n{dump}"
     );
 
     let _ = h.shutdown();
@@ -273,21 +267,19 @@ fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
 }
 
 // ===========================================================================
-// #1073 — pasting multi-line text with a trailing newline must NOT auto-submit
+// #1073 — 粘贴带有尾部换行符的多行文本不得自动提交
 // ===========================================================================
 
-/// Bracketed-paste path: terminal wraps the payload in `ESC[200~ … ESC[201~`,
-/// crossterm delivers an `Event::Paste(text)`, and the TUI's bracketed path
-/// inserts it into the composer. The trailing `\n` should leave the composer
-/// holding the text, not start a turn.
+/// 括号粘贴路径：终端将负载包裹在 `ESC[200~ … ESC[201~` 中，
+/// crossterm 传递一个 `Event::Paste(text)`，TUI 的括号路径将其插入编辑器。
+/// 尾部的 `\n` 应使编辑器持有文本，而不是开始一轮对话。
 #[test]
 fn paste_bracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (_ws, mut h) = boot_minimal()?;
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
 
-    // ~200 chars matching the original report. Trailing newline is the
-    // payload that historically triggered the auto-submit.
+    // 约 200 个字符，匹配原始报告。尾部换行符是历史上触发自动提交的负载。
     let payload = "first line of the multi-line paste body\n\
          second line continuing the paragraph until the end\n\
          third line that finishes with a trailing newline character\n";
@@ -297,36 +289,33 @@ fn paste_bracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result
     let f = h.frame();
     let dump = f.debug_dump();
 
-    // Auto-submit would replace the composer with a "working / thinking"
-    // status chip and clear the composer text. Either signal indicates the
-    // bug fired.
+    // 自动提交会用 "working / thinking" 状态芯片替换编辑器并清除编辑器文本。
+    // 任一信号都表明 bug 已触发。
     assert!(
         !f.contains("Working") && !f.contains("thinking") && !f.contains("Thinking"),
-        "bracketed paste with trailing newline auto-submitted:\n{dump}"
+        "带有尾部换行符的括号粘贴自动提交了:\n{dump}"
     );
     assert!(
         f.contains("first line") || f.contains("third line"),
-        "pasted text should be visible in composer:\n{dump}"
+        "粘贴的文本应在编辑器中可见:\n{dump}"
     );
 
     let _ = h.shutdown();
     Ok(())
 }
 
-/// Unbracketed-paste path: terminal does NOT wrap the payload, so crossterm
-/// sees the bytes as ordinary keystrokes. The TUI's `paste_burst` detector is
-/// supposed to recognize the rapid stream and treat it as a single paste, but
-/// historically the trailing `\r` (Enter) of the burst leaks through and
-/// triggers submit while the burst flush dumps the text into the now-empty
-/// composer.
+/// 非括号粘贴路径：终端不包裹负载，因此 crossterm 将字节视为普通按键。
+/// TUI 的 `paste_burst` 检测器应识别快速流并将其视为单个粘贴，但历史上
+/// 突发的尾部 `\r`（Enter）会泄漏出去并触发提交，而突发刷新将文本排入
+/// 现在为空的编辑器。
 ///
-/// This is the Windows / PowerShell repro from #1073.
+/// 这是来自 #1073 的 Windows / PowerShell 复现。
 #[test]
 fn paste_unbracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (_ws, mut h) = boot_minimal()?;
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
-    // Let the boot fully settle so input handling is wired up.
+    // 让启动完全稳定下来，使输入处理已经就绪。
     h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(3))?;
 
     let payload = "first line of the multi-line paste body\n\
@@ -337,22 +326,20 @@ fn paste_unbracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Resu
 
     let f = h.frame();
     let dump = f.debug_dump();
-    eprintln!("=== AFTER UNBRACKETED PASTE ===\n{dump}");
+    eprintln!("=== 非括号粘贴后 ===\n{dump}");
 
-    // The visible signal of an auto-submit: the text appears in the
-    // transcript above the composer (sent as a user message). The composer
-    // is also typically reset, but #1073 reports residual text in addition
-    // to the auto-submit, so checking the transcript is more reliable.
+    // 自动提交的可见信号：文本出现在编辑器的上方对话记录中
+    //（作为用户消息发送）。编辑器通常也会被重置，但 #1073 报告
+    // 除了自动提交外还有残留文本，因此检查对话记录更可靠。
     let count = dump.matches("first line").count();
     assert!(
         count <= 1,
-        "'first line' appears {count} times — auto-submitted into transcript AND \
-         composer:\n{dump}"
+        "'first line' 出现 {count} 次——已自动提交到对话记录和编辑器中:\n{dump}"
     );
-    // And the pasted text should be visible somewhere.
+    // 粘贴的文本应在某处可见。
     assert!(
         f.contains("first line"),
-        "pasted text should be on-screen somewhere:\n{dump}"
+        "粘贴的文本应在屏幕某处可见:\n{dump}"
     );
 
     let _ = h.shutdown();

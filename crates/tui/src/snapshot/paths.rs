@@ -1,32 +1,29 @@
-//! Path resolution for the per-workspace snapshot side-repos.
+//! 每个工作空间快照副仓库的路径解析。
 //!
-//! Snapshots live under the resolved state directory
-//! (`~/.codewhale/snapshots` or legacy `~/.deepseek/snapshots`) with
-//! a two-level hash split so we can snapshot multiple worktrees of the
-//! same project independently — `git worktree list` users won't get
-//! cross-talk between feature branches.
+//! 快照存放在已解析的状态目录
+//!（`~/.codewhale/snapshots` 或旧版 `~/.deepseek/snapshots`）下，
+//! 采用两级哈希拆分，以便我们可以独立快照同一项目的多个工作树——
+//! `git worktree list` 用户在特性分支之间不会发生串扰。
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Compute the snapshot directory for a given workspace path.
+/// 计算给定工作空间路径的快照目录。
 ///
-/// Returns `$STATE_DIR/snapshots/<project_hash>/<worktree_hash>/` where
-/// `$STATE_DIR` is resolved via `codewhale_config::resolve_state_dir`.
-/// The caller is responsible for creating it on disk; we purposefully
-/// don't touch the filesystem here so this is cheap to call repeatedly.
+/// 返回 `$STATE_DIR/snapshots/<project_hash>/<worktree_hash>/`，
+/// 其中 `$STATE_DIR` 通过 `codewhale_config::resolve_state_dir` 解析。
+/// 调用方负责在磁盘上创建它；我们特意不在此处访问文件系统，
+/// 以便可以廉价地重复调用。
 ///
-/// The `project_hash` is derived from the canonicalized workspace path
-/// after stripping any `.worktrees/<name>` suffix — multiple worktrees
-/// of the same repo share the same `project_hash` so users can browse
-/// snapshots cross-worktree if they want, but the `worktree_hash` keeps
-/// commits isolated by default.
+/// `project_hash` 基于规范化后的工作空间路径推导，去除任何 `.worktrees/<name>` 后缀——
+/// 同一仓库的多个工作树共享相同的 `project_hash`，以便用户如果需要可以跨工作树浏览快照，
+/// 但 `worktree_hash` 默认保持提交隔离。
 pub fn snapshot_dir_for(workspace: &Path) -> PathBuf {
     snapshot_dir_with_home(workspace, dirs::home_dir())
 }
 
-/// Same as [`snapshot_dir_for`] but with an injectable home directory.
-/// Used by tests so they never touch the user's real state directory.
+/// 与 [`snapshot_dir_for`] 相同，但可注入主目录。
+/// 由测试使用，以便它们永远不会触及用户的真实状态目录。
 pub fn snapshot_dir_with_home(workspace: &Path, home: Option<PathBuf>) -> PathBuf {
     let home = home.unwrap_or_else(|| PathBuf::from("."));
     let canonical = workspace
@@ -42,7 +39,7 @@ pub fn snapshot_dir_with_home(workspace: &Path, home: Option<PathBuf>) -> PathBu
 
 fn snapshot_base_with_home(home: Option<PathBuf>) -> PathBuf {
     let home = home.unwrap_or_else(|| PathBuf::from("."));
-    // Prefer .codewhale, fall back to .deepseek
+    // 优先使用 .codewhale，回退到 .deepseek
     let primary = home.join(".codewhale").join("snapshots");
     if primary.exists() {
         return primary;
@@ -50,21 +47,20 @@ fn snapshot_base_with_home(home: Option<PathBuf>) -> PathBuf {
     home.join(".deepseek").join("snapshots")
 }
 
-/// Resolve the `.git` directory inside the snapshot dir.
+/// 解析快照目录内的 `.git` 目录。
 pub fn snapshot_git_dir(workspace: &Path) -> PathBuf {
     snapshot_dir_for(workspace).join(".git")
 }
 
-/// Ensure the snapshot dir exists on disk and return its path.
+/// 确保快照目录在磁盘上存在并返回其路径。
 pub fn ensure_snapshot_dir(workspace: &Path) -> io::Result<PathBuf> {
     let dir = snapshot_dir_for(workspace);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
-/// Strip a trailing `.worktrees/<name>` segment so all worktrees of the
-/// same checkout share a `project_hash`. If the path doesn't look like a
-/// worktree it's returned unchanged.
+/// 去除末尾的 `.worktrees/<name>` 段，以便同一检出中的所有工作树共享一个 `project_hash`。
+/// 如果路径看起来不像工作树，则原样返回。
 fn strip_worktree_suffix(path: &Path) -> PathBuf {
     let mut components: Vec<_> = path.components().collect();
     if components.len() >= 2
@@ -81,8 +77,8 @@ fn strip_worktree_suffix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Hex-encoded deterministic FNV-1a digest. This is only a directory tag, not
-/// a security boundary, but it must remain stable across process launches.
+/// 十六进制编码的确定性 FNV-1a 摘要。这只是目录标签，不是安全边界，
+/// 但它必须在进程启动之间保持稳定。
 fn stable_hex(path: &Path) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in path.to_string_lossy().as_bytes() {
@@ -120,7 +116,7 @@ mod tests {
         let main_dir = snapshot_dir_with_home(&main_path, Some(tmp.path().to_path_buf()));
         let wt_dir = snapshot_dir_with_home(&wt_path, Some(tmp.path().to_path_buf()));
 
-        // Same project_hash (parent component before the worktree-specific tail).
+        // 相同的 project_hash（工作树特定尾部之前的父组件）。
         let main_components: Vec<_> = main_dir.components().collect();
         let wt_components: Vec<_> = wt_dir.components().collect();
         assert_eq!(
@@ -128,14 +124,14 @@ mod tests {
             wt_components[wt_components.len() - 2],
             "worktrees should share project_hash",
         );
-        // But different worktree_hash (the tail).
+        // 但不同的 worktree_hash（尾部）。
         assert_ne!(main_components.last(), wt_components.last());
     }
 
     #[test]
     fn ensure_snapshot_dir_creates_path() {
         let tmp = tempdir().expect("tempdir");
-        // Use scoped HOME so we don't pollute the real one.
+        // 使用限定范围的 HOME，这样就不会污染真实的 HOME。
         let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().to_path_buf()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(dir.exists());

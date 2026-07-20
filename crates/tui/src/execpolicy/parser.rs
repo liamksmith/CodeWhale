@@ -42,8 +42,7 @@ impl PolicyParser {
         }
     }
 
-    /// Parses a policy, tagging parser errors with `policy_identifier` so failures include the
-    /// identifier alongside line numbers.
+    /// 解析策略，将解析器错误标记上 `policy_identifier`，使得失败信息同时包含标识符和行号。
     pub fn parse(&mut self, policy_identifier: &str, policy_file_contents: &str) -> Result<()> {
         let mut dialect = Dialect::Extended.clone();
         dialect.enable_f_strings = true;

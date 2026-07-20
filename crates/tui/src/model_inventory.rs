@@ -1,8 +1,7 @@
-//! Provider/model inventory for routing policy.
+//! 用于路由策略的提供商/模型清单。
 //!
-//! This is the high-level "what can this user actually run?" object. Auto
-//! routing, fleet workers, and sub-agent policy should consume this shape
-//! instead of guessing model strings from global defaults.
+//! 这是高级别的"用户实际能运行什么？"对象。自动路由、
+//! 工作节点和子代理策略应使用此形状，而不是从全局默认值猜测模型字符串。
 
 use serde::Serialize;
 

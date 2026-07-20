@@ -65,13 +65,12 @@ pub(super) struct SessionsQuery {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct SaveSessionRequest {
-    /// Thread ID to save as a session. If omitted, saves the most recently
-    /// active thread.
+    /// 要保存为会话的线程 ID。如果省略，则保存最近活跃的线程。
     #[serde(default)]
     thread_id: Option<String>,
-    /// If provided, update the existing session with this ID instead of
-    /// creating a new one. This matches TUI's `build_session_snapshot`
-    /// behavior where it updates the current session in-place.
+    /// 如果提供，则使用此 ID 更新现有会话而不是创建新会话。
+    /// 这与 TUI 的 `build_session_snapshot` 行为一致，
+    /// 它会原地更新当前会话。
     #[serde(default)]
     session_id: Option<String>,
 }
@@ -158,8 +157,7 @@ pub(super) async fn resume_session_thread(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to seed thread history: {e}")))?;
 
-    // Link the session to the new thread so that `ensure_engine_loaded`
-    // can restore the full message history from the session file.
+    // 将会话链接到新线程，以便 `ensure_engine_loaded` 可以从会话文件恢复完整的消息历史。
     if let Err(e) = state
         .runtime_threads
         .set_thread_session_id(&thread.id, &id)
@@ -248,8 +246,7 @@ pub(super) async fn create_session_from_thread(
         .save_session(&session)
         .map_err(|e| ApiError::internal(format!("Failed to save session: {e}")))?;
 
-    // Link the session to the thread so that `ensure_engine_loaded` can
-    // restore the full message history from the session file.
+    // 将会话链接到线程，以便 `ensure_engine_loaded` 可以从会话文件恢复完整的消息历史。
     if let Err(e) = state
         .runtime_threads
         .set_thread_session_id(&detail.thread.id, &session_handle)
@@ -354,7 +351,7 @@ pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message>
                     }
                 }
                 TurnItemKind::ToolCall => {
-                    // Check metadata to distinguish tool_use from tool_result.
+                    // 检查元数据以区分 tool_use 和 tool_result。
                     let meta = item.metadata.as_ref();
                     let is_tool_result = meta.and_then(|m| m.get("tool_result_for")).is_some();
                     if is_tool_result {
@@ -402,7 +399,7 @@ pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message>
                         });
                     }
                 }
-                // Skip other item kinds (file_change, command_execution, etc.)
+                // 跳过其他种类的项（file_change、command_execution 等）
                 _ => {}
             }
         }
@@ -413,20 +410,19 @@ pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message>
     messages
 }
 
-/// `PUT /v1/sessions` — save a thread's current engine state as a session.
+/// `PUT /v1/sessions` — 将线程的当前引擎状态保存为会话。
 ///
-/// Unlike `POST /v1/sessions` (which reconstructs messages from stored turn
-/// items), this endpoint asks the engine for its live session snapshot so
-/// token counts and message ordering are authoritative.
+/// 与 `POST /v1/sessions`（从存储的轮次项重建消息）不同，此端点
+/// 要求引擎提供其活跃会话快照，因此 token 计数和消息顺序是权威的。
 pub(super) async fn save_current_session(
     State(state): State<RuntimeApiState>,
     Json(req): Json<SaveSessionRequest>,
 ) -> Result<Json<SaveSessionResponse>, ApiError> {
-    // Find the thread to save.
+    // 查找要保存的线程。
     let thread_id = match req.thread_id {
         Some(id) => id,
         None => {
-            // Find the most recently updated thread.
+            // 查找最近更新的线程。
             let threads = state
                 .runtime_threads
                 .list_threads(ThreadListFilter::IncludeArchived, Some(100))
@@ -440,10 +436,10 @@ pub(super) async fn save_current_session(
         }
     };
 
-    // Get the engine handle (loads the thread into an engine if needed),
-    // then request a session snapshot. This reuses the same code path as
-    // TUI's `build_session_snapshot`: the engine holds the authoritative
-    // messages and token usage, so we don't need to reconstruct from turns.
+    // 获取引擎句柄（必要时将线程加载到引擎中），
+    // 然后请求会话快照。这重用与 TUI 的 `build_session_snapshot`
+    // 相同的代码路径：引擎持有权威的消息和 token 使用情况，
+    // 因此我们不需要从轮次重建。
     let engine = state
         .runtime_threads
         .get_engine(&thread_id)
@@ -458,10 +454,10 @@ pub(super) async fn save_current_session(
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
 
-    // Build or update the session, mirroring TUI's `build_session_snapshot`.
-    // Only `io::ErrorKind::NotFound` falls back to creating a new session;
-    // other I/O errors (e.g. PermissionDenied) are propagated so callers
-    // don't silently overwrite a corrupt or inaccessible session file.
+    // 构建或更新会话，镜像 TUI 的 `build_session_snapshot`。
+    // 仅 `io::ErrorKind::NotFound` 回退到创建新会话；
+    // 其他 I/O 错误（例如 PermissionDenied）会向上传播，因此调用方
+    // 不会静默覆盖损坏或不可访问的会话文件。
     let session = if let Some(ref existing_id) = req.session_id {
         match manager.load_session(existing_id) {
             Ok(existing) => {
@@ -509,14 +505,9 @@ pub(super) async fn save_current_session(
         session
     };
 
-    // Save the session.
-    manager
-        .save_session(&session)
-        .map_err(|e| ApiError::internal(format!("Failed to save session: {e}")))?;
-
-    // Link the session to the thread so that `ensure_engine_loaded` can
-    // restore the full message history (including thinking/tool blocks)
-    // from the session file instead of reconstructing from turns.
+    // 将会话链接到线程，以便 `ensure_engine_loaded` 可以
+    // 从会话文件恢复完整的消息历史（包括 thinking/tool 块）
+    // 而不是从轮次重建。
     let session_handle = session.metadata.id.clone();
     if let Err(e) = state
         .runtime_threads

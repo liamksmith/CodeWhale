@@ -1,4 +1,4 @@
-//! User, assistant, and system message transcript rendering.
+//! 用户、助手和系统消息的对话记录渲染。
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -36,12 +36,11 @@ pub(super) fn render_message_with_copy_metadata(
     content: &str,
     width: u16,
 ) -> Vec<RenderedTranscriptLine> {
-    // An assistant cell whose content is entirely whitespace (e.g. a stray
-    // newline streamed between reasoning and a tool call) would otherwise
-    // render as a bare, orphaned role glyph floating on its own line — the
-    // "blue dots with nothing after them" artifact. Render nothing so the
-    // transcript doesn't accumulate empty markers. Real prose, including
-    // messages that merely start with blank lines, still renders normally.
+    // 一个内容完全是空白字符的助手消息单元（例如在推理和工具调用之间
+    // 流传的杂散换行符）否则会渲染为孤立的角色字形单独浮动一行——
+    // 即"后面没有任何内容的蓝色圆点"伪像。不渲染任何内容，
+    // 这样对话记录就不会累积空白标记。真正的散文内容，
+    // 包括仅以空行开始的消息，仍正常渲染。
     if prefix == ASSISTANT_GLYPH && content.trim().is_empty() {
         return Vec::new();
     }
@@ -120,9 +119,8 @@ pub(super) fn hard_break_copy_lines(lines: Vec<Line<'static>>) -> Vec<RenderedTr
         .collect()
 }
 
-/// Render a plain-text user message: split on newlines, word-wrap each line,
-/// preserve leading whitespace. No markdown interpretation (headings, lists,
-/// code blocks, etc. are rendered as literal text).
+/// 渲染纯文本用户消息：按换行符分割，每行自动换行，保留前导空白。
+/// 不进行 Markdown 解释（标题、列表、代码块等按字面文本渲染）。
 pub(super) fn render_plain_message(
     prefix: &str,
     label_style: Style,
@@ -207,11 +205,10 @@ pub(super) fn user_body_style() -> Style {
     Style::default().fg(palette::USER_BODY)
 }
 
-/// Style for the assistant glyph (`●`). When the cell is streaming and
-/// motion is allowed, the foreground pulses on a 2s cycle between 30% and
-/// 100% brightness — the only deliberately animated element in a calm
-/// transcript. When idle (or low_motion is on) it sits at the full DeepSeek
-/// sky color so finished turns read as solid rather than dim.
+/// 助手字形（`●`）的样式。当消息单元正在流式输出且允许动画时，
+/// 前景色以 2 秒周期在 30% 到 100% 亮度之间脉动——这是平静对话记录中
+/// 唯一刻意动画的元素。当空闲时（或 low_motion 开启时），
+/// 它保持完整的 DeepSeek 天蓝色，使完成的轮次看起来饱满而非暗淡。
 pub(super) fn assistant_label_style_for(streaming: bool, low_motion: bool) -> Style {
     let color = if streaming && !low_motion {
         let now_ms = std::time::SystemTime::now()

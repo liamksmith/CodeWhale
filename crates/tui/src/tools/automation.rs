@@ -1,4 +1,4 @@
-//! Model-visible automation tools over `AutomationManager`.
+//! 模型可见的 `AutomationManager` 上的自动化工具。
 
 use std::path::PathBuf;
 
@@ -347,8 +347,8 @@ impl ToolSpec for AutomationRunTool {
             .task_manager
             .as_ref()
             .ok_or_else(|| ToolError::not_available("TaskManager is not attached"))?;
-        // run_now_shared handles its own lock phases so the manager mutex is
-        // never held across the task-manager await.
+        // run_now_shared 处理自己的锁定阶段，因此 manager 互斥锁
+        // 永远不会在 task-manager 的 await 期间被持有。
         let run = run_now_shared(
             manager,
             required_str(&input, "automation_id")?,

@@ -1,18 +1,15 @@
-//! Shared workspace discovery filters for UI path pickers and mentions.
+//! UI 路径选择器和提及功能的共享工作区发现过滤器。
 
 use std::path::Path;
 
-/// Directories that must remain discoverable for `@`-mention completion and
-/// fuzzy file resolution even when excluded by `.gitignore`.
+/// 即使被 `.gitignore` 排除，`@` 提及补全和模糊文件解析也必须保持可发现的目录。
 pub(crate) const DISCOVERY_ALWAYS_DIRS: &[&str] = &[".deepseek", ".cursor", ".claude", ".agents"];
 
-/// Root-relative directories that are too large or generated to discover
-/// with gitignore disabled. Exact user-specified paths may still resolve.
+/// 相对于根目录的目录，这些目录太大或是生成产物，在禁用 gitignore 时不应发现。用户指定的精确路径仍可解析。
 const DISCOVERY_EXCLUDED_SUBDIRS: &[&str] =
     &[".deepseek/snapshots", ".worktrees", ".claude/worktrees"];
 
-/// Directory basenames that should not be traversed by fallback discovery
-/// walks that deliberately disable gitignore.
+/// 那些故意禁用 gitignore 的后备发现遍历不应进入的目录基本名称。
 const DISCOVERY_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".git",
     "target",
@@ -30,14 +27,14 @@ const DISCOVERY_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".ruff_cache",
 ];
 
-/// Check whether `path` is under a root-relative excluded discovery subtree.
+/// 检查 `path` 是否位于相对于根目录的排除发现子树下。
 pub(crate) fn path_is_excluded_from_discovery(walk_root: &Path, path: &Path) -> bool {
     DISCOVERY_EXCLUDED_SUBDIRS
         .iter()
         .any(|excluded| path.starts_with(walk_root.join(excluded)))
 }
 
-/// Filter for walks that turn off gitignore to surface explicit hidden paths.
+/// 用于关闭 gitignore 以暴露显式隐藏路径的遍历过滤器。
 pub(crate) fn should_skip_unignored_discovery_entry(walk_root: &Path, path: &Path) -> bool {
     if path == walk_root {
         return false;

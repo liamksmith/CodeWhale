@@ -1,4 +1,4 @@
-//! Onboarding flow rendering and helpers.
+//! 入门流程渲染和辅助函数。
 
 pub mod api_key;
 pub mod language;

@@ -64,11 +64,9 @@ pub(crate) fn handle_composer_history_arrow(
         return false;
     }
 
-    // When `composer_arrows_scroll` is enabled, plain Up/Down scroll the
-    // transcript for single-line drafts. Multiline drafts keep editor-like
-    // line navigation. If the user holds Up/Down at the first/last line, do
-    // not replace their current draft with prompt history unless they are
-    // already navigating history.
+    // 当启用 `composer_arrows_scroll` 时，纯上/下键滚动单行草稿的转录。
+    // 多行草稿保持类似编辑器的行导航。如果用户在首行/末行按住上/下键，
+    // 不要用提示历史替换他们的当前草稿，除非他们已经在导航历史。
     let scroll_transcript = app.composer_arrows_scroll && !app.input.contains('\n');
     let protect_multiline_draft = app.input.contains('\n') && app.history_index.is_none();
 
@@ -126,9 +124,8 @@ pub(crate) fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
 /// On all other platforms this is a no-op.
 #[cfg(target_os = "macos")]
 pub(crate) fn normalize_macos_modifiers(modifiers: KeyModifiers) -> KeyModifiers {
-    // Strip SUPER and add CONTROL so that exact modifier equality checks
-    // (e.g. `modifiers == KeyModifiers::CONTROL` in Ctrl+S stashing) work
-    // correctly after normalization.
+    // 移除 SUPER 并添加 CONTROL，以便在规范化后精确的修饰符相等性检查
+    // （例如 Ctrl+S 存储中的 `modifiers == KeyModifiers::CONTROL`）能正确工作。
     if modifiers.contains(KeyModifiers::SUPER) {
         (modifiers - KeyModifiers::SUPER) | KeyModifiers::CONTROL
     } else {
@@ -176,9 +173,9 @@ pub(crate) fn is_composer_newline_key(key: KeyEvent) -> bool {
 pub(crate) fn is_forced_submit_key(key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Enter => key.modifiers.contains(KeyModifiers::CONTROL),
-        // Several terminals encode Ctrl+Enter / Cmd+Enter as Ctrl+J. Keep
-        // Ctrl+J available as a newline while idle, but let the event loop use
-        // this helper to force a live steer when a turn is already running.
+        // 多个终端将 Ctrl+Enter / Cmd+Enter 编码为 Ctrl+J。空闲时保持
+        // Ctrl+J 可用作换行，但让事件循环在轮次已经在运行时使用此辅助函数
+        // 强制进行实时干预。
         KeyCode::Char('j') | KeyCode::Char('J') => {
             key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)

@@ -1,17 +1,13 @@
-//! Per-workspace trust list of external paths the agent may read/write
-//! without triggering a `PathEscape` error (#29).
+//! 每个工作区的外部路径信任列表，代理可在不触发 `PathEscape` 错误的情况下读写这些路径 (#29)。
 //!
-//! Storage: `~/.deepseek/workspace-trust.json`. The file is a JSON object
-//! mapping each workspace's canonical path to a sorted list of canonical
-//! paths the user has explicitly trusted from that workspace. Trust granted
-//! in workspace A does not apply when running from workspace B.
+//! 存储位置：`~/.deepseek/workspace-trust.json`。该文件是一个 JSON 对象，
+//! 将每个工作区的规范路径映射到该工作区用户显式信任的规范路径排序列表。
+//! 在工作区 A 中授予的信任在从工作区 B 运行时无效。
 //!
-//! Threat model: this is a deliberate user opt-in to a path the workspace
-//! sandbox would otherwise refuse. The only access the trust list grants is
-//! through CodeWhale's own file tools (`read_file`, `write_file`, etc.) —
-//! it does not loosen the OS sandbox profile (Seatbelt/Landlock) used for
-//! shell commands. Sandbox-profile expansion is tracked separately so a
-//! shell tool can opt into the same paths in a future release.
+//! 威胁模型：这是用户对工作区沙箱否则会拒绝的路径的主动选择加入。
+//! 信任列表授予的唯一访问权限是通过 CodeWhale 自身的文件工具（`read_file`、`write_file` 等）——
+//! 它不会放宽用于 shell 命令的 OS 沙箱配置文件（Seatbelt/Landlock）。
+//! 沙箱配置文件的扩展被单独跟踪，以便 Shell 工具在未来的版本中可以选择相同的路径。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,14 +21,13 @@ const TRUST_FILE_NAME: &str = "workspace-trust.json";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct TrustFile {
-    /// Map workspace canonical path → sorted unique trusted paths.
+    /// 工作区规范路径 → 排序的唯一信任路径映射。
     #[serde(default)]
     workspaces: BTreeMap<String, Vec<String>>,
 }
 
-/// In-memory trust list for a single workspace, snapshotted at load time.
-/// Tools consult this snapshot to decide whether an out-of-workspace path
-/// is permitted; the engine refreshes it after `/trust` mutations.
+/// 单个工作区的内存中信任列表，在加载时快照。
+/// 工具查阅此快照以决定工作区外的路径是否被允许；引擎在 `/trust` 变更后刷新它。
 #[derive(Debug, Default, Clone)]
 pub struct WorkspaceTrust {
     paths: Vec<PathBuf>,
@@ -45,9 +40,8 @@ impl WorkspaceTrust {
         Self { paths: Vec::new() }
     }
 
-    /// Load the trusted-paths snapshot for `workspace` from disk. Missing or
-    /// malformed files yield an empty list rather than an error so a corrupt
-    /// trust file never wedges the TUI; the next mutation rewrites it.
+    /// 从磁盘加载 `workspace` 的信任路径快照。缺失或格式错误的文件
+    /// 返回空列表而不是错误，这样损坏的信任文件不会阻塞 TUI；下次变更时会重写它。
     #[must_use]
     pub fn load_for(workspace: &Path) -> Self {
         match trust_file_path() {
@@ -70,15 +64,14 @@ impl WorkspaceTrust {
         Self { paths }
     }
 
-    /// Return the trusted paths in canonical form.
+    /// 返回规范形式的信任路径。
     #[must_use]
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
     }
 
-    /// Whether the candidate is trusted: the candidate (after canonical
-    /// normalization) starts with one of the trusted prefixes. Directory
-    /// trust grants access to anything under the directory.
+    /// 判断候选项是否被信任：候选项（在规范归一化后）以某个信任前缀开头。
+    /// 目录信任授予对该目录下任何内容的访问权限。
     #[must_use]
     #[allow(dead_code)]
     pub fn permits(&self, candidate: &Path) -> bool {
@@ -91,9 +84,8 @@ impl WorkspaceTrust {
     }
 }
 
-/// Add `path` to `workspace`'s trust list and persist. Returns the canonical
-/// trusted path that was actually stored, so callers can echo it back to the
-/// user.
+/// 向 `workspace` 的信任列表添加 `path` 并持久化。返回实际存储的规范信任路径，
+/// 以便调用者可以将其反馈给用户。
 pub fn add(workspace: &Path, path: &Path) -> Result<PathBuf> {
     let trust_path = trust_file_path()
         .context("home directory not available; cannot persist workspace trust list")?;
@@ -115,8 +107,7 @@ fn add_at(workspace: &Path, path: &Path, trust_path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// Remove `path` from `workspace`'s trust list. Returns true when an entry
-/// was actually removed.
+/// 从 `workspace` 的信任列表中移除 `path`。当条目实际被移除时返回 true。
 pub fn remove(workspace: &Path, path: &Path) -> Result<bool> {
     let Some(trust_path) = trust_file_path() else {
         return Ok(false);
@@ -186,10 +177,9 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Set up an isolated fake `~/.deepseek/workspace-trust.json` location.
-    /// Returns the tmpdir (kept alive for the test) plus the explicit trust
-    /// file path passed to the `*_at` helpers — avoids touching `$HOME` so
-    /// tests run safely in parallel.
+    /// 设置一个隔离的伪 `~/.deepseek/workspace-trust.json` 位置。
+    /// 返回 tmpdir（在测试期间保持存活）以及传递给 `*_at` 辅助函数的显式信任文件路径——
+    /// 避免触及 `$HOME`，以便测试安全地并行运行。
     fn isolated_trust_path() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
         let trust_path = tmp.path().join(".deepseek").join("workspace-trust.json");

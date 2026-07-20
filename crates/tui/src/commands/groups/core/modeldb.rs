@@ -1,10 +1,10 @@
-//! `/modeldb` command — browse the factual model reference database.
+//! `/modeldb` 命令——浏览事实模型参考数据库。
 //!
-//! Opens a read-only pager listing each catalog model's stated attributes:
-//! provider + kind, the model id verbatim, context window, max output,
-//! modality (text vs multimodal), and price. This is labels only — it never
-//! selects, routes, or tiers a model (#3205, #2300). Attributes the catalog
-//! does not state render as `unknown`, never guessed.
+//! 打开一个只读分页器，列出每个目录模型的声明属性：
+//! 供应商 + 类型、模型 ID（原样）、上下文窗口、最大输出、
+//! 模态（文本 vs 多模态）和价格。这仅显示标签——从不
+//! 选择、路由或分级模型（#3205, #2300）。目录中未声明的
+//! 属性显示为 `unknown`，绝不猜测。
 
 use codewhale_config::model_reference::ModelReferenceDatabase;
 use ratatui::style::{Modifier, Style};
@@ -34,7 +34,7 @@ impl RegisterCommand for ModelDbCmd {
     fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
         let db = ModelReferenceDatabase::bundled();
         let title = format!(
-            "Model Reference — {} offerings · {} providers",
+            "模型参考表——{} 款产品 · {} 家供应商",
             db.len(),
             db.providers().len()
         );
@@ -44,30 +44,29 @@ impl RegisterCommand for ModelDbCmd {
     }
 }
 
-/// Render the reference database as aligned, browsable pager lines.
+/// 将参考数据库渲染为对齐的、可浏览的分页器行。
 ///
-/// Cards are grouped under a provider/kind header (the database is already
-/// sorted by `(provider, model id)`), so each row only needs the model-scoped
-/// columns. Column widths are computed across the whole table for stable
-/// alignment.
+/// 卡片按供应商/类型标题分组（数据库已按
+/// `(provider, model id)` 排序），因此每行只需显示模型级别的
+/// 列。列宽在整个表格中计算，以保持对齐稳定。
 fn reference_lines(db: &ModelReferenceDatabase) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::styled(
-        "Bundled curated model reference catalog.".to_string(),
+        "打包的精选模型参考目录。".to_string(),
         bold,
     ));
     lines.push(Line::styled(
-        "Attributes are stated facts; \"unknown\" means the catalog did not state it (never guessed)."
+        "属性是声明的事实；\"unknown\"表示目录未声明（绝不猜测）。"
             .to_string(),
         dim,
     ));
     lines.push(Line::from(String::new()));
 
     if db.is_empty() {
-        lines.push(Line::from("(no models in catalog)".to_string()));
+        lines.push(Line::from("（目录中无模型）".to_string()));
         return lines;
     }
 
@@ -75,33 +74,33 @@ fn reference_lines(db: &ModelReferenceDatabase) -> Vec<Line<'static>> {
     let id_w = cards
         .iter()
         .map(|card| card.model_id.chars().count())
-        .chain(std::iter::once("MODEL ID".len()))
+        .chain(std::iter::once("模型 ID".len()))
         .max()
         .unwrap_or(8)
         .clamp(8, 46);
     let ctx_w = cards
         .iter()
         .map(|card| card.context_window_label().chars().count())
-        .chain(std::iter::once("CTX".len()))
+        .chain(std::iter::once("上下文".len()))
         .max()
         .unwrap_or(3);
     let out_w = cards
         .iter()
         .map(|card| card.max_output_label().chars().count())
-        .chain(std::iter::once("MAX OUT".len()))
+        .chain(std::iter::once("最大输出".len()))
         .max()
         .unwrap_or(7);
-    // "multimodal" (10) is the widest possible label and exceeds "MODALITY".
+    // "multimodal"（10）是最宽的可能的标签，超过"模态"。
     let mod_w = "multimodal".len();
 
     lines.push(Line::styled(
         format!(
             "  {}  {}  {}  {}  {}",
-            pad("MODEL ID", id_w),
-            pad("CTX", ctx_w),
-            pad("MAX OUT", out_w),
-            pad("MODALITY", mod_w),
-            "PRICE (USD/Mtok)"
+            pad("模型 ID", id_w),
+            pad("上下文", ctx_w),
+            pad("最大输出", out_w),
+            pad("模态", mod_w),
+            "价格（USD/Mtok）"
         ),
         bold,
     ));
@@ -112,7 +111,7 @@ fn reference_lines(db: &ModelReferenceDatabase) -> Vec<Line<'static>> {
             lines.push(Line::from(String::new()));
             lines.push(Line::styled(
                 format!(
-                    "{}   ·   kind: {}",
+                    "{}   ·   类型：{}",
                     card.provider,
                     card.provider_kind_label()
                 ),
@@ -133,7 +132,7 @@ fn reference_lines(db: &ModelReferenceDatabase) -> Vec<Line<'static>> {
     lines
 }
 
-/// Left-justify `s` to `width` display columns (counted by `char`).
+/// 将 `s` 左对齐到 `width` 显示列（按 `char` 计数）。
 fn pad(s: &str, width: usize) -> String {
     let len = s.chars().count();
     if len >= width {
@@ -143,7 +142,7 @@ fn pad(s: &str, width: usize) -> String {
     }
 }
 
-/// Truncate `s` to at most `width` chars, marking elision with `…`.
+/// 将 `s` 截断至最多 `width` 个字符，用 `…` 标记省略。
 fn truncate_to(s: &str, width: usize) -> String {
     let count = s.chars().count();
     if count <= width {
@@ -178,19 +177,19 @@ mod tests {
         let db = ModelReferenceDatabase::bundled();
         let text = rendered(&db).join("\n");
 
-        // Legend states the honesty contract.
+        // 图例说明了诚实性契约。
         assert!(text.contains("never guessed"));
-        // Column key present.
-        assert!(text.contains("MODEL ID"));
-        assert!(text.contains("MODALITY"));
-        assert!(text.contains("PRICE (USD/Mtok)"));
-        // A provider header and a verbatim model id row.
-        assert!(text.contains("kind: deepseek"));
+        // 列键存在。
+        assert!(text.contains("模型 ID"));
+        assert!(text.contains("模态"));
+        assert!(text.contains("价格（USD/Mtok）"));
+        // 一个供应商标题和一个原样的模型 ID 行。
+        assert!(text.contains("类型：deepseek"));
         assert!(text.contains("deepseek-v4-pro"));
-        // Stated modality and an honest unknown price both appear.
+        // 声明的模态和一个诚实的 unknown 价格都存在。
         assert!(text.contains("text"));
         assert!(text.contains("unknown"));
-        // A priced row surfaces a concrete rate.
+        // 一个有价格的行显示具体费率。
         assert!(text.contains("$0.30 / $1.20 per Mtok"));
     }
 
@@ -198,7 +197,7 @@ mod tests {
     fn empty_database_renders_placeholder_not_a_crash() {
         let db = ModelReferenceDatabase::from_offerings(&[]);
         let text = rendered(&db).join("\n");
-        assert!(text.contains("(no models in catalog)"));
+        assert!(text.contains("（目录中无模型）"));
     }
 
     #[test]

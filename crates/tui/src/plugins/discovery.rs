@@ -13,14 +13,13 @@ pub fn default_user_plugins_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/codewhale/plugins"))
 }
 
-/// Path of the JSON file that records `/plugin enable|disable` choices so they
-/// survive restarts.
+/// 记录 `/plugin enable|disable` 选择的 JSON 文件路径，以便在重启后仍然保留。
 pub fn default_overrides_path() -> PathBuf {
     default_user_plugins_dir().join(OVERRIDES_FILE)
 }
 
-/// Read the persisted enable/disable overrides. Missing or malformed files
-/// yield an empty map — the user simply gets the default enablement.
+/// 读取已持久化的启用/禁用覆盖记录。文件缺失或格式错误时返回空映射——
+/// 用户只需获得默认的启用状态。
 pub fn load_overrides(path: &Path) -> HashMap<String, bool> {
     std::fs::read_to_string(path)
         .ok()
@@ -28,8 +27,7 @@ pub fn load_overrides(path: &Path) -> HashMap<String, bool> {
         .unwrap_or_default()
 }
 
-/// Persist the enable/disable overrides, creating the parent directory if
-/// needed.
+/// 持久化启用/禁用覆盖记录，必要时创建父目录。
 pub fn save_overrides(path: &Path, overrides: &HashMap<String, bool>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -58,8 +56,8 @@ pub fn discover_all(builtin_dirs: &[&str]) -> PluginRegistry {
         discover_from_dir(&user_dir, &mut registry, false);
     }
 
-    // Discovery recomputes `enabled` from `!builtin`; re-apply the user's
-    // persisted choices so a prior enable/disable actually sticks (#3918).
+    // Discovery 从 `!builtin` 重新计算 `enabled`；
+    // 在此重新应用用户已持久化的选择，以便之前的 enable/disable 实际生效 (#3918)。
     registry.apply_overrides();
 
     registry

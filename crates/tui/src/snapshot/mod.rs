@@ -1,37 +1,27 @@
-//! Workspace snapshots — pre/post-turn safety net.
+//! 工作区快照 — 轮次前后的安全网。
 //!
-//! Each turn the engine takes a `pre-turn:<seq>` snapshot of the user's
-//! workspace into a side git repo at
-//! `~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git`, then a
-//! matching `post-turn:<seq>` snapshot when the turn finishes. Users
-//! can roll back via `/restore N` (slash command) or, when the model
-//! recognises an "undo my last edit" intent, the `revert_turn` tool.
+//! 每个轮次引擎将用户工作区的 `pre-turn:<seq>` 快照保存到侧边 git 仓库中，
+//! 路径为 `~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git`，
+//! 然后在轮次完成时保存对应的 `post-turn:<seq>` 快照。用户可以通过
+//! `/restore N`（斜杠命令）回滚，或者当模型识别到"撤销我的最后一次编辑"意图时，
+//! 使用 `revert_turn` 工具。
 //!
-//! ## Why a side repo?
+//! ## 为什么使用侧边仓库？
 //!
-//! - The user's own `.git` is never touched. `--git-dir` and
-//!   `--work-tree` are *always* set together when we shell out to git;
-//!   that single invariant is what keeps snapshots and the user's repo
-//!   completely independent.
-//! - Workspaces without git still get snapshots.
-//! - `git`'s own deduplication (object packfiles) keeps the disk
-//!   footprint tractable — typical 100 MB workspace × 12 turns ≈ 1.2 GB
-//!   uncompressed but git's content-addressed storage usually brings
-//!   that down 10-30×. We mitigate further with:
-//!     - 7-day default retention (`session_manager` prunes at session
-//!       start via [`prune::prune_older_than`]).
-//!     - `gc.auto = 0` on the side repo (we don't want background gcs
-//!       firing mid-turn) plus an explicit `git gc --prune=now` after
-//!       prune.
-//!     - Startup cleanup for stale `tmp_pack_*` files left by interrupted
-//!       git pack operations.
+//! - 用户的 `.git` 永远不会被触及。当调用 git 时，`--git-dir` 和
+//!   `--work-tree` *始终*一起设置；这一不变性确保快照和用户仓库完全独立。
+//! - 没有 git 的工作区仍然可以获得快照。
+//! - `git` 自身的去重（对象包文件）使磁盘占用保持在可控范围 — 典型 100 MB 工作区 × 12 轮次 ≈
+//!   1.2 GB 未压缩，但 git 的内容寻址存储通常能将此降低 10-30 倍。我们进一步通过以下方式缓解：
+//!     - 7 天默认保留期（`session_manager` 在会话启动时通过 [`prune::prune_older_than`] 清理）。
+//!     - 侧边仓库上设置 `gc.auto = 0`（我们不希望在轮次中途触发后台 gc）以及在清理后执行
+//!       显式的 `git gc --prune=now`。
+//!     - 启动时清理中断的 git 打包操作留下的过期 `tmp_pack_*` 文件。
 //!
-//! ## Failure model
+//! ## 失败模型
 //!
-//! Pre/post-turn snapshot calls are **non-fatal**. If `git` is missing,
-//! the disk is full, or the workspace is on a read-only filesystem, the
-//! turn proceeds and the engine logs a warning. The snapshot is a
-//! safety net, not a correctness gate.
+//! 轮次前后快照调用是 **非致命的**。如果 `git` 缺失、磁盘已满或工作区位于只读文件系统上，
+//! 轮次继续执行，引擎记录警告。快照是安全网，而非正确性门控。
 
 pub mod paths;
 pub mod prune;
@@ -41,8 +31,7 @@ pub mod repo;
 pub use paths::{snapshot_dir_for, snapshot_git_dir};
 pub use prune::{DEFAULT_MAX_AGE, prune_older_than};
 
-/// Maximum snapshots kept per workspace side-repo. Oldest are pruned
-/// after each new snapshot to cap disk usage (#1112).
+/// 每个工作区侧边仓库保留的最大快照数。每次新快照后清理最旧的快照以限制磁盘使用（#1112）。
 pub const DEFAULT_MAX_SNAPSHOTS: usize = 50;
 #[allow(unused_imports)]
 pub use repo::{

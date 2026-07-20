@@ -16,25 +16,18 @@ pub(super) fn with_default_mcp_http_headers(
     }
 }
 
-/// Predicate for the custom-header pass used by MCP HTTP transports.
+/// MCP HTTP 传输使用的自定义标头谓词。
 ///
-/// We accept whatever reqwest's `HeaderName::try_from` /
-/// `HeaderValue::try_from` would accept, but with three extra rules:
+/// 我们接受 reqwest 的 `HeaderName::try_from` / `HeaderValue::try_from` 所接受的任何内容，
+/// 但有三条额外规则：
 ///
-/// 1. Reject empty / whitespace-only keys - these would surface as a
-///    request-builder error mid-send and abort the whole connection.
-/// 2. Reject keys that duplicate the framing we already emit
-///    (`Accept`, `Content-Type`). The MCP Streamable HTTP transport
-///    relies on those exact values for protocol negotiation; a stray
-///    user override could silently break tool discovery.
-/// 3. Reject values containing ASCII CR or LF. reqwest already
-///    rejects those, but the explicit check makes the failure path
-///    visible (a `tracing::warn!` instead of an obscure
-///    builder error) and documents the response-splitting
-///    defense.
+/// 1. 拒绝空/仅空白字符的键 — 这些会在发送过程中导致请求构建器错误并中止整个连接。
+/// 2. 拒绝重复我们已发出框架的键（`Accept`、`Content-Type`）。MCP Streamable HTTP 传输
+///    依赖这些精确值进行协议协商；意外的用户覆盖可能静默破坏工具发现。
+/// 3. 拒绝包含 ASCII CR 或 LF 的值。reqwest 已经拒绝了这些，但显式检查使失败路径可见
+///   （`tracing::warn!` 而非晦涩的构建器错误），并记录了响应拆分防御。
 ///
-/// Returning `false` means "skip this header"; the rest of the
-/// request still goes out.
+/// 返回 `false` 表示"跳过此标头"；请求的其余部分仍会发出。
 pub(crate) fn is_safe_custom_header(key: &str, value: &str) -> bool {
     let trimmed = key.trim();
     if trimmed.is_empty() {

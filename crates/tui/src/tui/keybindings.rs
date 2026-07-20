@@ -1,25 +1,22 @@
-//! Documentation-only catalog of every user-facing keybinding.
+//! 每个面向用户的按键绑定的纯文档目录。
 //!
-//! This module is the *single source of truth* for what shortcuts the help
-//! overlay renders. The actual key handlers live in `tui/ui.rs` (and a few
-//! sibling modules); they read keys directly off the crossterm event stream
-//! and intentionally do **not** consult this catalog. The catalog exists so
-//! that:
+//! 此模块是帮助覆盖层渲染的快捷键的 *唯一事实来源*。
+//! 实际的按键处理器位于 `tui/ui.rs`（以及一些兄弟模块）中；
+//! 它们直接从 crossterm 事件流读取键，并且有意 **不** 查阅此目录。
+//! 目录的存在是为了：
 //!
-//! 1. The help overlay (`tui/views/help.rs`) does not have to maintain a
-//!    parallel list that silently rots when a handler is added or moved.
-//! 2. New contributors have one place to look when answering "which keys are
-//!    bound, and where do they go?"
+//! 1. 帮助覆盖层（`tui/views/help.rs`）不必维护一个在添加或移动处理器时
+//!    悄然腐烂的并行列表。
+//! 2. 新贡献者在回答"哪些键被绑定，它们去了哪里？"时有一个查看的地方。
 //!
-//! When you add or change a binding in `ui.rs`, **add or update the matching
-//! entry here**. The compile-only side-effect of forgetting is a stale help
-//! screen; there is no runtime crash, so the discipline lives in code review.
+//! 当你在 `ui.rs` 中添加或更改绑定时，**在此处添加或更新匹配的条目**。
+//! 忘记的编译唯一副作用是过期的帮助屏幕；没有运行时崩溃，
+//! 因此纪律存在于代码审查中。
 //!
-//! Entries are grouped by `KeybindingSection`. The `chord` field is a
-//! human-readable string formatted exactly the way it should appear in help —
-//! we avoid storing `KeyBinding` values directly because many shortcuts are
-//! pairs (`↑/↓`) or families (`1-8`) that don't map cleanly to a single
-//! chord.
+//! 条目按 `KeybindingSection` 分组。`chord` 字段是一个
+//! 人类可读的字符串，格式与帮助中应该显示的方式完全相同——
+//! 我们避免直接存储 `KeyBinding` 值，因为许多快捷键是
+//! 对（`↑/↓`）或族（`1-8`），它们不能干净地映射到单个和弦。
 
 use std::borrow::Cow;
 
@@ -49,8 +46,8 @@ impl KeybindingSection {
         tr(locale, id)
     }
 
-    /// Stable ordering for help rendering — matches the variant declaration
-    /// order; explicit so adding a section forces a deliberate placement.
+    /// 帮助渲染的稳定排序 —— 匹配变体声明顺序；
+    /// 显式指定，以便添加部分时强制审慎定位。
     pub fn rank(self) -> u8 {
         match self {
             Self::Navigation => 0,
@@ -71,15 +68,15 @@ pub struct KeybindingEntry {
     pub section: KeybindingSection,
 }
 
-/// Canonical list of keybindings shown in the help overlay.
+/// 帮助覆盖层中显示的键绑定的规范列表。
 ///
-/// Strings are written in the same notation the existing help screen uses so
-/// readers can cross-reference with documentation: `Ctrl+X`, `Alt+X`,
-/// `Shift+X`, `↑/↓`, `PgUp/PgDn`, etc. Help renderers may apply per-platform
-/// substitutions (e.g. `⌥` for Alt on macOS) at render time, but the catalog
-/// itself stores the portable form.
+/// 字符串使用现有帮助屏幕使用的相同表示法编写，以便
+/// 阅读者可以与文档交叉引用：`Ctrl+X`、`Alt+X`、
+/// `Shift+X`、`↑/↓`、`PgUp/PgDn` 等。帮助渲染器可能在渲染时应用
+/// 平台特定的替换（例如 macOS 上 Alt 的 `⌥`），但目录本身
+/// 存储可移植形式。
 pub const KEYBINDINGS: &[KeybindingEntry] = &[
-    // --- Navigation ---
+    // --- 导航 ---
     KeybindingEntry {
         chord: "↑ / ↓",
         description_id: crate::localization::MessageId::KbScrollTranscript,
@@ -120,7 +117,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbJumpToolBlocks,
         section: KeybindingSection::Navigation,
     },
-    // --- Editing ---
+    // --- 编辑 ---
     KeybindingEntry {
         chord: "← / →",
         description_id: crate::localization::MessageId::KbMoveCursor,
@@ -161,7 +158,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbInsertNewline,
         section: KeybindingSection::Editing,
     },
-    // --- Submission / actions ---
+    // --- 提交/操作 ---
     KeybindingEntry {
         chord: "Enter",
         description_id: crate::localization::MessageId::KbSendDraft,
@@ -237,7 +234,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbBacktrackMessage,
         section: KeybindingSection::Submission,
     },
-    // --- Modes ---
+    // --- 模式 ---
     KeybindingEntry {
         chord: "Tab",
         description_id: crate::localization::MessageId::KbCompleteCycleModes,
@@ -263,13 +260,13 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbFocusSidebar,
         section: KeybindingSection::Modes,
     },
-    // --- Sessions ---
+    // --- 会话 ---
     KeybindingEntry {
         chord: "Ctrl+R",
         description_id: crate::localization::MessageId::KbSessionPicker,
         section: KeybindingSection::Sessions,
     },
-    // --- Clipboard ---
+    // --- 剪贴板 ---
     KeybindingEntry {
         chord: "Ctrl+V",
         description_id: crate::localization::MessageId::KbPasteAttach,
@@ -290,7 +287,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbAttachPath,
         section: KeybindingSection::Clipboard,
     },
-    // --- Help ---
+    // --- 帮助 ---
     KeybindingEntry {
         chord: "?",
         description_id: crate::localization::MessageId::KbHelpOverlay,
@@ -315,8 +312,8 @@ mod tests {
     #[test]
     fn catalog_is_non_empty_and_sections_have_entries() {
         assert!(KEYBINDINGS.iter().any(|entry| !entry.chord.is_empty()));
-        // Every declared section should appear in the catalog at least once,
-        // otherwise the help overlay would render an empty heading.
+        // 每个声明的部分应至少在目录中出现一次，
+        // 否则帮助覆盖层将渲染空标题。
         let sections = [
             KeybindingSection::Navigation,
             KeybindingSection::Editing,
@@ -336,8 +333,8 @@ mod tests {
 
     #[test]
     fn help_section_documents_question_mark() {
-        // The whole point of #93 is that `?` opens this overlay; if the entry
-        // ever disappears the user-facing discoverability promise breaks.
+        // #93 的全部意义在于 `?` 打开此覆盖层；如果条目
+        // 曾经消失，用户面向的可发现性承诺就被打破了。
         assert!(
             KEYBINDINGS
                 .iter()
@@ -353,10 +350,10 @@ mod tests {
             .find(|entry| entry.chord == "Ctrl+O")
             .expect("Ctrl+O keybinding should be documented");
 
-        // Ctrl+O now opens the whole-turn Turn Inspector (#4104), not the
-        // single-cell Activity Detail. The message id is intentionally kept
-        // (`KbThinkingPager`) to avoid an existing-symbol rename; only the
-        // copy changes.
+        // Ctrl+O 现在打开整个回合的 Turn Inspector（#4104），而不是
+        // 单个单元格的 Activity Detail。消息 ID 有意保留
+        // （`KbThinkingPager`）以避免重命名现有符号；只有
+        // 文案改变。
         assert_eq!(
             ctrl_o.description_id,
             crate::localization::MessageId::KbThinkingPager

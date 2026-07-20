@@ -1,9 +1,9 @@
-//! Local-only release runtime QA through real pseudo-terminals.
+//! 仅限本地的发布运行时质量保证，通过真实的伪终端运行。
 //!
-//! These scenarios cover the live TUI checks that unit tests cannot prove:
-//! six-worker fanout liveness/cancellation, multi-terminal route isolation,
-//! and queued steering via Ctrl+S. Every provider is a loopback wiremock
-//! server and every process receives a sealed HOME.
+//! 这些场景覆盖了单元测试无法证明的实时 TUI 检查：
+//! 六工作扇出活性/取消、多终端路由隔离，
+//! 以及通过 Ctrl+S 实现的排队转向。每个提供者都是一个环回 wiremock
+//! 服务器，每个进程都会收到一个密封的 HOME。
 
 #![cfg(unix)]
 
@@ -259,8 +259,8 @@ async fn release_multi_terminal_muse_and_gpt_routes_stay_isolated() -> Result<()
     meta_tui.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
     openai_tui.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
 
-    // Change terminal B's model through the live command path while terminal A
-    // remains open on Meta. Both processes share one sealed settings file.
+    // 通过实时命令路径更改终端 B 的模型，同时终端 A 保持 Meta 打开。
+    // 两个进程共享一份密封的设置文件。
     type_and_submit(&mut openai_tui, "/model gpt-5.6-terra")?;
     openai_tui.wait_for(
         |frame| frame.row(0).contains(GPT_MODEL),
@@ -376,9 +376,9 @@ async fn release_six_worker_fanout_keeps_typing_render_and_esc_cancel_live() -> 
         "all six workers were not visible in the sidebar:\n{fanout_frame}"
     );
 
-    // The provider is deliberately holding every child open. Prove keyboard
-    // input and rendering remain live during the storm, then interrupt the
-    // still-live orchestration turn directly with Esc.
+    // 提供者故意保持每个子进程打开。证明在此风暴期间
+    // 键盘输入和渲染保持活跃，然后直接通过 Esc 中断
+    // 仍然活跃的编排轮次。
     tui.send(keys::key::text("fanout-live-marker"))?;
     tui.wait_for_text("fanout-live-marker", Duration::from_secs(3))?;
     let before_cancel = tui.debug_dump();
@@ -514,8 +514,8 @@ fn rss_kib(pid: u32) -> Option<u64> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// #4014 acceptance benchmark: 32 concurrent loopback workers must keep the
-/// TUI live. Ignored by default (heavy storm); run explicitly with
+/// #4014 验收基准：32 个并发环回工作程序必须保持 TUI 活跃。
+/// 默认忽略（重负载风暴）；通过以下命令显式运行：
 /// `cargo test -p codewhale-tui --test release_runtime_qa --locked -- \
 ///  --ignored bench_thirty_two --nocapture --test-threads=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -564,7 +564,7 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     let sidebar_visible = spawn_started.elapsed();
     let rss_storm = pid.and_then(rss_kib);
 
-    // Echo latency under storm: three samples.
+    // 风暴下的回显延迟：三个样本。
     let mut echo_samples = Vec::new();
     for i in 0..3 {
         let marker = format!("bench-live-marker-{i}");
@@ -572,7 +572,7 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
         tui.send(keys::key::text(&marker))?;
         tui.wait_for_text(&marker, Duration::from_secs(5))?;
         echo_samples.push(t.elapsed());
-        // Clear the composer for the next sample.
+        // 清除输入框，为下一个样本做准备。
         for _ in 0..marker.len() {
             tui.send(b"\x7f")?;
         }

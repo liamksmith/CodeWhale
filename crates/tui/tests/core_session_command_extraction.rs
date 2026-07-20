@@ -1,8 +1,7 @@
-//! Gherkin binary health and eval harness smoke test for command extraction.
+//! 命令提取的 Gherkin 二进制健康检查和评估框架冒烟测试。
 //!
-//! This runs the binary through `codewhale-tui eval` and verifies that the
-//! executable still loads and reports a successful JSON evaluation after the
-//! core/session command modules are extracted.
+//! 此测试通过 `codewhale-tui eval` 运行二进制文件，并验证在提取 core/session 命令模块后，
+//! 可执行文件仍能加载并报告成功的 JSON 评估结果。
 
 use std::path::PathBuf;
 use std::process::Command;

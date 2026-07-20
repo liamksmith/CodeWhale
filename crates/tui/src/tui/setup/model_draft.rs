@@ -1,23 +1,23 @@
-//! One-shot model drafting for the guided user constitution (#3404 follow-up).
+//! 引导式用户宪章的一次性模型起草（#3404 后续）。
 //!
-//! After the user has a working provider/model route and has tuned the six
-//! guided answers, the wizard can ask that first configured model to draft the
-//! constitution it will live under. This module owns the request and the
-//! ingestion of the reply; it never touches disk and never mutates runtime
-//! policy. The contract:
+//! 在用户有正常工作的提供商/模型路由并调整了六个
+//! 引导答案后，向导可以要求第一个配置的模型起草
+//! 其将遵循的宪章。此模块拥有请求和
+//! 回复的摄取；它从不触碰磁盘，也从不改变运行时策略。
+//! 约定：
 //!
-//! - **Minimal payload out.** The request carries exactly the six guided
-//!   answer labels, an optional bounded own-words note, and the UI language
-//!   tag — no config, env, repo contents, keys, or memory.
-//!   [`drafting_user_prompt`] is a pure function of those inputs, and tests
-//!   pin its full text so nothing can ride along.
-//! - **Untrusted payload in.** The reply is treated as untrusted data: only
-//!   `Text` blocks are read (thinking is ignored), and the result must pass
-//!   [`UserConstitution::from_untrusted_json`] — schema parse, sanitization,
-//!   bounding — before anyone previews it. Failure of any kind degrades to
-//!   the deterministic guided draft; it never blocks setup.
-//! - **Drafting is not ratifying.** The caller shows the rendered preview and
-//!   still requires the explicit ratify keypress before anything persists.
+//! - **极小负载输出。** 请求恰好携带六个引导答案标签、
+//!   一个可选的有界自有文字注释和 UI 语言标签
+//!   —— 没有配置、环境、仓库内容、密钥或记忆。
+//!   [`drafting_user_prompt`] 是这些输入的纯函数，测试
+//!   固定其完整文本，因此没有任何东西可以附带。
+//! - **不可信负载输入。** 回复被视为不可信数据：只读取
+//!   `Text` 块（思考被忽略），结果必须通过
+//!   [`UserConstitution::from_untrusted_json`] —— 模式解析、清洗、边界检查
+//!   —— 之后任何人都可以预览它。任何类型的失败都降级为
+//!   确定性的引导草案；它从不阻塞设置。
+//! - **起草不是批准。** 调用者显示渲染的预览，
+//!   并且仍然需要明确的批准按键才能持久化任何内容。
 
 use codewhale_config::{UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN};
 
@@ -27,14 +27,14 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
 use super::{GuidedConstitutionDraft, autonomy_label};
 
-/// Output budget for the one-shot draft. Roomy enough for a full constitution
-/// (bounds cap the persisted form far below this), small enough to be a real
-/// ceiling on a misbehaving provider.
+/// 一次性起草的输出预算。足够容纳完整宪章
+///（边界将持久化形式限制在此值以下），足够小以成为
+/// 行为异常的提供商的实际上限。
 pub(crate) const DRAFT_MAX_TOKENS: u32 = 1600;
 
-/// System prompt for the constitution drafter. English regardless of UI
-/// locale (the language tag directs the output language); deterministic so
-/// tests can pin the guardrails.
+/// 宪章起草人的系统提示词。无论 UI 区域设置如何，均为英文
+///（语言标签指示输出语言）；确定性的，以便
+/// 测试可以固定防护栏。
 fn drafting_system_prompt() -> String {
     concat!(
         "You are helping a new CodeWhale user draft their user constitution: durable, ",
@@ -89,9 +89,9 @@ fn bounded_own_words(note: &str) -> Option<String> {
     (!bounded.is_empty()).then_some(bounded)
 }
 
-/// User prompt: the six guided answers, optional own-words data, and the
-/// language tag, nothing else. Canonical English labels keep the request stable
-/// across UI locales; the language tag controls the output language.
+/// 用户提示词：六个引导答案、可选的自有文字数据和
+/// 语言标签，没有其他内容。规范英文标签保持请求在
+/// 不同 UI 区域设置间稳定；语言标签控制输出语言。
 fn drafting_user_prompt(
     draft: GuidedConstitutionDraft,
     freeform_note: Option<&str>,
@@ -116,7 +116,7 @@ fn drafting_user_prompt(
     prompt
 }
 
-/// Build the one-shot drafting request for `request_model`.
+/// 为 `request_model` 构建一次性起草请求。
 pub(crate) fn drafting_request(
     request_model: &str,
     draft: GuidedConstitutionDraft,
@@ -145,9 +145,9 @@ pub(crate) fn drafting_request(
     }
 }
 
-/// Join only `Text` blocks from the reply. Thinking blocks are deliberately
-/// ignored so a reasoning model cannot leak a half-formed JSON object from its
-/// scratchpad into the parse.
+/// 仅连接回复中的 `Text` 块。思考块被有意忽略，
+/// 以便推理模型不能从其暂存区泄漏半成品的 JSON 对象
+/// 到解析中。
 fn draft_response_text(content: &[ContentBlock]) -> String {
     let mut out = String::new();
     for block in content {
@@ -161,10 +161,10 @@ fn draft_response_text(content: &[ContentBlock]) -> String {
     out
 }
 
-/// Ask `client` (the user's first configured route) to draft the constitution
-/// from the guided answers. Returns the sanitized, bounded draft, or a short
-/// human-facing reason on any failure. The caller owns timeout, preview, and
-/// the ratify gate.
+/// 请求 `client`（用户的第一个配置路由）从引导答案
+/// 起草宪章。返回已清洗、有界的草案，或任何失败上的简短
+/// 人类可读原因。调用者拥有超时、预览和
+/// 批准门控。
 pub(crate) async fn draft_constitution_with_model<C: LlmClient>(
     client: &C,
     request_model: &str,
@@ -223,8 +223,8 @@ mod tests {
         assert_eq!(request.stream, Some(false));
         assert!(request.tools.is_none());
 
-        // The user payload is byte-exact: six answers plus the language tag.
-        // Anything else riding along (paths, env, config) fails this pin.
+        // 用户负载是字节精确的：六个答案加语言标签。
+        // 任何附带的内容（路径、环境、配置）会使此固定测试失败。
         let [message] = request.messages.as_slice() else {
             panic!("expected exactly one user message");
         };
@@ -275,7 +275,7 @@ mod tests {
         assert!(system.contains("advisory preference text only"));
         assert!(system.contains("never escalate"));
         assert!(system.contains("Return ONLY one JSON object"));
-        // Constitutional steering: rights, powers, limits, procedures, continuity.
+        // 宪章导向：权利、权力、限制、程序、连续性。
         assert!(system.contains("rights the user keeps"));
         assert!(system.contains("powers the agent"));
         assert!(system.contains("limits where it must stop"));
@@ -284,7 +284,7 @@ mod tests {
 
         let zh = drafting_user_prompt(GuidedConstitutionDraft::default(), None, Locale::ZhHans);
         assert!(zh.contains("Language tag: zh-Hans"));
-        // Canonical answer labels stay English; only the output language moves.
+        // 规范答案标签保持英文；只有输出语言改变。
         assert!(zh.contains("purpose: coding workbench"));
     }
 

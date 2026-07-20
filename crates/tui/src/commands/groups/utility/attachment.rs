@@ -1,4 +1,4 @@
-//! Local media attachment commands.
+//! 本地媒体附件命令。
 
 use std::path::{Path, PathBuf};
 

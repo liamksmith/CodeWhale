@@ -1,4 +1,4 @@
-//! Runtime status command.
+//! 运行时状态命令。
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -8,7 +8,7 @@ use crate::compaction::estimate_input_tokens_conservative;
 use crate::tui::app::{App, AppMode};
 use crate::utils::{display_path, estimate_message_chars};
 
-/// Show a compact runtime status report for the current TUI session.
+/// 显示当前 TUI 会话的紧凑运行时状态报告。
 pub fn status(app: &mut App) -> CommandResult {
     CommandResult::message(format_status(app))
 }

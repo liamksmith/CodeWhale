@@ -1,11 +1,9 @@
-//! Per-workspace git context shown in the composer header.
+//! 编辑器头部显示的每个工作区的 git 上下文。
 //!
-//! The TUI shows a "branch | clean/N modified/…" badge sourced from
-//! `git status` and `git rev-parse`. To avoid spawning git on every
-//! render, the result is cached and only refreshed every
-//! `REFRESH_SECS` seconds. The refresh prefers spawn-blocking on the
-//! current Tokio runtime; tests and non-async callers fall through to
-//! a synchronous call.
+//! TUI 显示一个来自 `git status` 和 `git rev-parse` 的"分支 | 干净/N 个已修改/…"徽章。
+//! 为了避免在每次渲染时启动 git，结果被缓存并且仅每 `REFRESH_SECS` 秒刷新一次。
+//! 刷新优先使用当前 Tokio 运行时的 spawn-blocking；
+//! 测试和非异步调用者回退到同步调用。
 
 use crate::dependencies::{ExternalTool, Git};
 use std::path::Path;
@@ -14,17 +12,17 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::App;
 
-/// How often (seconds) the workspace context badge is allowed to
-/// re-query git. Exposed for tests that exercise the TTL.
+/// 工作区上下文徽章允许重新查询 git 的频率（秒）。
+/// 对测试公开，以便它们可以测试 TTL。
 pub(crate) const REFRESH_SECS: u64 = 15;
 
-/// Pull a fresh workspace context from disk if the cached value is
-/// older than [`REFRESH_SECS`] and `allow_refresh` is true. Always
-/// drains any pending async result into `app.workspace_context` first
-/// so the render pass sees the latest value (#399 S1).
+/// 如果缓存值早于 [`REFRESH_SECS`] 且 `allow_refresh` 为 true，
+/// 则从磁盘拉取新的工作区上下文。始终
+/// 首先将任何待处理的异步结果排入 `app.workspace_context`，
+/// 以便渲染通道看到最新的值（#399 S1）。
 pub(super) fn refresh_if_needed(app: &mut App, now: Instant, allow_refresh: bool) {
-    // Drain the async cell result into the live field first, so the render
-    // path always reads the latest value (#399 S1).
+    // 首先将异步 cell 结果排入实时字段，以便渲染
+    // 路径始终读取最新的值（#399 S1）。
     if let Ok(mut cell) = app.workspace_context_cell.lock()
         && let Some(ctx) = cell.take()
     {
@@ -47,9 +45,8 @@ pub(super) fn refresh_if_needed(app: &mut App, now: Instant, allow_refresh: bool
         return;
     }
 
-    // Offload git query to a background thread when a Tokio runtime is
-    // available. Fall back to synchronous execution for tests and other
-    // non-async contexts (#399 S1).
+    // 当 Tokio 运行时可用时，将 git 查询卸载到后台线程。
+    // 对于测试和其他非异步上下文，回退到同步执行（#399 S1）。
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let ctx = app.workspace_context_cell.clone();
         let workspace = app.workspace.clone();
@@ -60,16 +57,15 @@ pub(super) fn refresh_if_needed(app: &mut App, now: Instant, allow_refresh: bool
             }
         });
     } else {
-        // No runtime — run synchronously so tests and one-shot callers
-        // still get a result immediately.
+        // 无运行时——同步运行，以便测试和一次性调用者
+        // 仍然立即获得结果。
         app.workspace_context = collect(&app.workspace);
     }
     app.workspace_context_refreshed_at = Some(now);
 }
 
-/// Force a workspace-context re-query on the next render tick, bypassing the
-/// normal TTL. Keeps the current value visible while the background git query
-/// is running.
+/// 强制在下一个渲染 tick 上重新查询工作区上下文，绕过正常的 TTL。
+/// 在后台 git 查询运行时保持当前值可见。
 pub(super) fn refresh_now(app: &mut App, now: Instant) {
     if let Ok(mut cell) = app.workspace_context_cell.lock() {
         *cell = None;
@@ -92,9 +88,9 @@ impl ChangeSummary {
     }
 }
 
-/// Build the human-readable workspace context string ("branch | status")
-/// from `git rev-parse` + `git status`. Returns `None` if the workspace
-/// is not a git repository or git itself is unavailable.
+/// 从 `git rev-parse` + `git status` 构建人类可读的工作区上下文字符串
+///（"分支 | 状态"）。如果工作区不是 git 仓库或
+/// git 本身不可用，则返回 `None`。
 pub(crate) fn collect(workspace: &Path) -> Option<String> {
     let branch = branch(workspace)?;
     let summary = change_summary(workspace)?;
@@ -127,14 +123,13 @@ pub(crate) fn branch_from_context(context: &str) -> Option<&str> {
     (!branch.is_empty()).then_some(branch)
 }
 
-/// Concise, factual workspace identity for the footer status chip (#3188).
+/// 用于底部状态芯片的简洁、事实性的工作区标识（#3188）。
 ///
-/// The identity is sourced from workspace/git detection only — never from
-/// model narration or config text. `name` is the workspace basename, `branch`
-/// is `Some` only when the workspace is a git repository (carrying the cached
-/// "detached:<hash>" form for detached HEAD), and `is_git` distinguishes a
-/// real repo from a plain directory so the footer can show an explicit
-/// non-repo state instead of an empty `Repo:` label.
+/// 标识仅来自工作区/git 检测——绝不来自模型叙述或配置文本。
+/// `name` 是工作区基本名称，`branch` 仅在工作区是 git 仓库时
+/// 为 `Some`（对分离 HEAD 携带 "detached:<hash>" 形式），
+/// `is_git` 区分真实仓库和普通目录，以便底部可以显示
+/// 明确的非仓库状态而不是空的 `Repo:` 标签。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceIdentity {
     pub name: String,
@@ -142,9 +137,9 @@ pub(crate) struct WorkspaceIdentity {
     pub is_git: bool,
 }
 
-/// Basename used as the workspace identity. Falls back to a stable sentinel
-/// when the path has no final component (filesystem root). Derived purely
-/// from the workspace path, so it never spawns git on the render path.
+/// 用作工作区标识的基本名称。当路径没有最终组件
+///（文件系统根目录）时，回退到稳定的哨兵值。
+/// 完全从工作区路径派生，因此它永远不会在渲染路径上启动 git。
 pub(crate) fn workspace_basename(workspace: &Path) -> String {
     workspace
         .file_name()
@@ -154,10 +149,9 @@ pub(crate) fn workspace_basename(workspace: &Path) -> String {
         .to_string()
 }
 
-/// Resolve the footer identity from the workspace path plus the cached
-/// "branch | status" context string. `context` is `None` when the workspace
-/// is not a git repository (or git is unavailable), which we surface as an
-/// explicit non-repo state rather than hiding the chip.
+/// 从工作区路径加上缓存的 "分支 | 状态" 上下文字符串解析底部标识。
+/// 当工作区不是 git 仓库（或 git 不可用）时 `context` 为 `None`，
+/// 我们将其显示为明确的非仓库状态而不是隐藏芯片。
 pub(crate) fn identity_from_context(workspace: &Path, context: Option<&str>) -> WorkspaceIdentity {
     let branch = context.and_then(branch_from_context).map(str::to_string);
     WorkspaceIdentity {
@@ -167,16 +161,16 @@ pub(crate) fn identity_from_context(workspace: &Path, context: Option<&str>) -> 
     }
 }
 
-/// Render the footer repo label, keeping the most useful identity when width
-/// is constrained (#3188 acceptance criteria). Layout priority, widest first:
+/// 渲染底部仓库标签，在宽度受限时保留最有用的标识
+///（#3188 验收标准）。布局优先级，从宽到窄：
 ///
-/// 1. `Repo: <name> @ <branch>` (git repo, room for both)
-/// 2. `Repo: <name>` (drop the branch before truncating the name)
-/// 3. `Repo: <truncated name…>` then the bare label when truly tiny
+/// 1. `Repo: <名称> @ <分支>`（git 仓库，两者都有空间）
+/// 2. `Repo: <名称>`（在截断名称之前丢弃分支）
+/// 3. `Repo: <截断名称…>` 然后在真正很小时仅保留裸标签
 ///
-/// Non-git workspaces render `Repo: <name> (no git)`, degrading to
-/// `Repo: <name>` and then truncation under width pressure. Returns an empty
-/// string only when `max_width` cannot fit even the `Repo:` prefix.
+/// 非 git 工作区渲染 `Repo: <名称> (no git)`，在宽度压力下退化为
+/// `Repo: <名称>` 然后截断。仅在 `max_width` 无法容纳
+/// 即使是 `Repo:` 前缀时返回空字符串。
 pub(crate) fn format_repo_identity(identity: &WorkspaceIdentity, max_width: usize) -> String {
     use crate::localization::truncate_to_width;
 
@@ -186,7 +180,7 @@ pub(crate) fn format_repo_identity(identity: &WorkspaceIdentity, max_width: usiz
         return String::new();
     }
 
-    // Candidates from richest to leanest; the first that fits wins.
+    // 从最丰富到最精简的候选项；第一个适合的获胜。
     let mut candidates: Vec<String> = Vec::new();
     match (&identity.branch, identity.is_git) {
         (Some(branch), _) => {
@@ -205,8 +199,8 @@ pub(crate) fn format_repo_identity(identity: &WorkspaceIdentity, max_width: usiz
         }
     }
 
-    // Even the lean form overflows: keep the prefix + a truncated name so the
-    // identity never collapses into a bare, useless `Repo:` label.
+    // 即使精简形式也溢出：保留前缀 + 截断的名称，以便
+    // 标识永远不会崩溃为裸露的、无用的 `Repo:` 标签。
     truncate_to_width(&format!("{PREFIX}{}", identity.name), max_width)
 }
 
@@ -289,7 +283,7 @@ mod tests {
         assert_eq!(id.name, "CodeWhale");
         assert_eq!(id.branch.as_deref(), Some("codex/v0.8.61"));
         assert!(id.is_git);
-        // Full-width render keeps both the repo identity and the branch.
+        // 全宽渲染保留仓库标识和分支两者。
         assert_eq!(
             format_repo_identity(&id, 80),
             "Repo: CodeWhale @ codex/v0.8.61"
@@ -298,8 +292,8 @@ mod tests {
 
     #[test]
     fn identity_outside_git_uses_cwd_basename_with_explicit_state() {
-        // `None` context == not a git repo / git unavailable. We must not show
-        // a stale repo, but we also must not collapse to an empty `Repo:`.
+        // `None` 上下文 == 不是 git 仓库 / git 不可用。我们不得显示
+        // 过时的仓库，但也不得崩溃为空白的 `Repo:`。
         let id = identity_from_context(&PathBuf::from("/tmp/scratch-dir"), None);
         assert_eq!(id.name, "scratch-dir");
         assert_eq!(id.branch, None);
@@ -309,8 +303,8 @@ mod tests {
 
     #[test]
     fn detached_head_branch_passes_through_to_label() {
-        // `branch()` encodes detached HEAD as "detached:<hash>"; the footer
-        // must surface that verbatim rather than dropping the identity.
+        // `branch()` 将分离 HEAD 编码为 "detached:<hash>"；底部
+        // 必须逐字显示该值而不是丢弃标识。
         let id = identity_from_context(
             &PathBuf::from("/work/CodeWhale"),
             Some("detached:ae101a1 | clean"),
@@ -329,27 +323,27 @@ mod tests {
             Some("codex/v0.8.61 | clean"),
         );
 
-        // Too narrow for "name @ branch" -> drop the branch, keep the name.
+        // 对于 "name @ branch" 太窄 -> 丢弃分支，保留名称。
         let dropped = format_repo_identity(&id, 20);
         assert_eq!(dropped, "Repo: CodeWhale");
         assert!(dropped.width() <= 20);
 
-        // Too narrow even for the name -> truncate but keep the prefix so the
-        // chip never becomes a bare, useless "Repo:" label.
+        // 即使名称也太窄 -> 截断但保留前缀，以便
+        // 芯片永远不会变成裸露的、无用的 "Repo:" 标签。
         let truncated = format_repo_identity(&id, 11);
         assert!(truncated.width() <= 11, "{truncated:?} must fit width 11");
         assert!(truncated.starts_with("Repo: "), "{truncated:?}");
         assert!(truncated.ends_with('…'), "{truncated:?}");
 
-        // Below the bare "Repo:" prefix -> render nothing so the footer hides
-        // the chip cleanly instead of printing garbage.
+        // 低于裸 "Repo:" 前缀 -> 不渲染任何内容，以便底部
+        // 干净地隐藏芯片而不是打印垃圾。
         assert_eq!(format_repo_identity(&id, 3), "");
     }
 
     #[test]
     fn non_git_identity_degrades_before_truncating() {
         let id = identity_from_context(&PathBuf::from("/tmp/scratch-dir"), None);
-        // No room for the "(no git)" suffix -> fall back to just the name.
+        // 没有 "(no git)" 后缀的空间 -> 回退到仅名称。
         assert_eq!(format_repo_identity(&id, 18), "Repo: scratch-dir");
     }
 
@@ -361,19 +355,19 @@ mod tests {
 
     #[test]
     fn collect_and_identity_agree_on_a_real_repo() {
-        // Real-git integration: in an actual worktree, `collect()` yields a
-        // "branch | status" string and `identity_from_context` must read a
-        // git identity back out of it. Skipped when git is unavailable
-        // (mirrors dependencies::external_tool_output_respects_cwd).
+        // 真实 git 集成测试：在实际工作树中，`collect()` 产生
+        // "分支 | 状态" 字符串，`identity_from_context` 必须从中读回
+        // git 标识。当 git 不可用时跳过
+        //（镜像 dependencies::external_tool_output_respects_cwd）。
         if !Git::available() {
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
-        // `git init` so the directory is a real repo with a HEAD.
+        // `git init` 使目录成为带有 HEAD 的真实仓库。
         let init = Git::output(&["init", "-q"], root);
         if init.is_err() || !init.unwrap().status.success() {
-            return; // hermetic CI without writable git config: skip.
+            return; // 没有可写 git 配置的隔离 CI：跳过。
         }
         let _ = Git::output(&["config", "user.email", "t@example.com"], root);
         let _ = Git::output(&["config", "user.name", "Test"], root);
@@ -387,8 +381,8 @@ mod tests {
                 assert!(label.starts_with("Repo: "), "{label:?}");
             }
             None => {
-                // Some sandboxes report no branch on an empty repo; the
-                // non-git fallback must still produce a usable label.
+                // 一些沙箱在空仓库上报告没有分支；
+                // 非 git 回退必须仍然产生可用的标签。
                 let id = identity_from_context(root, None);
                 assert!(!id.is_git);
                 assert!(format_repo_identity(&id, 80).starts_with("Repo: "));

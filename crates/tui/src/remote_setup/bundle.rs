@@ -1,12 +1,12 @@
-//! Bundle rendering for `codewhale remote-setup`.
+//! `codewhale remote-setup` 的捆绑包渲染。
 //!
-//! Renders a self-contained deploy bundle to `--out`:
-//! `runtime.env`, `<bridge>.env`, the runtime + bridge systemd units, and a
-//! `RUNBOOK.md` with the exact remaining manual steps and first-pairing flow.
+//! 将自包含的部署捆绑包渲染到 `--out`：
+//! `runtime.env`、`<bridge>.env`、运行时 + 桥接的 systemd 单元，以及
+//! 包含确切剩余手动步骤和首次配对流程的 `RUNBOOK.md`。
 //!
-//! Env files lead with `CODEWHALE_*` keys; `DEEPSEEK_*` are documented as legacy
-//! aliases. The provider lives entirely in `runtime.env` (the bridge is pure
-//! transport and never needs to know which provider is behind the runtime).
+//! Env 文件以 `CODEWHALE_*` 键开头；`DEEPSEEK_*` 被记录为旧版
+//! 别名。提供者完全位于 `runtime.env` 中（桥接是纯传输层，
+//! 永远不需要知道运行时的后端提供者是谁）。
 
 use std::path::{Path, PathBuf};
 
@@ -14,29 +14,28 @@ use anyhow::{Context, Result};
 
 use super::registry::{BridgeSpec, CloudTarget, DeployInputs, InstallMethod, SecretStore};
 
-/// Default runtime port the units and bundle use.
+/// 单元和捆绑包使用的默认运行时端口。
 pub const DEFAULT_PORT: u16 = 7878;
-/// Default worker count.
+/// 默认工作进程数。
 pub const DEFAULT_WORKERS: u32 = 2;
-/// Default runtime URL the bridge talks to (loopback only).
+/// 桥接连接的默认运行时 URL（仅限环回地址）。
 pub const DEFAULT_RUNTIME_URL: &str = "http://127.0.0.1:7878";
 
-/// Minimal provider facts the bundle needs, read from the existing
-/// `codewhale_config::provider` registry (the single source of truth).
+/// 捆绑包所需的最小提供者信息，从现有 `codewhale_config::provider` 注册表读取（单一真相来源）。
 #[derive(Debug, Clone)]
 pub struct ProviderInfo {
-    /// Canonical provider slug, e.g. `"deepseek"`.
+    /// 规范化提供者标识符，例如 `"deepseek"`。
     pub slug: String,
-    /// Human-readable display name, e.g. `"DeepSeek"`.
+    /// 人类可读的显示名称，例如 `"DeepSeek"`。
     pub display: String,
-    /// The provider's own API-key env var, e.g. `"DEEPSEEK_API_KEY"` (env_keys[0]).
+    /// 提供者自己的 API 密钥环境变量，例如 `"DEEPSEEK_API_KEY"`（env_keys[0]）。
     pub key_var: String,
-    /// Provider default model, used as a comment hint in the bundle.
+    /// 提供者默认模型，用作捆绑包中的注释提示。
     pub default_model: String,
 }
 
 impl ProviderInfo {
-    /// Resolve a [`ProviderInfo`] from a slug against the config provider registry.
+    /// 根据标识符从配置提供者注册表解析 [`ProviderInfo`]。
     #[must_use]
     pub fn from_slug(slug: &str) -> Option<Self> {
         let kind = codewhale_config::ProviderKind::parse(slug)?;
@@ -51,34 +50,33 @@ impl ProviderInfo {
     }
 }
 
-/// Everything needed to render a bundle. Constructed by the wizard (or directly
-/// in tests). Secret *values* are placeholders the RUNBOOK tells the user to
-/// replace; the only generated secret is the runtime token.
+/// 渲染捆绑包所需的一切。由向导（或直接在测试中）构建。
+/// 密钥*值*是占位符，RUNBOOK 会告诉用户替换；唯一生成的密钥是运行时令牌。
 #[derive(Debug, Clone)]
 pub struct BundleInputs {
     pub cloud: &'static CloudTarget,
     pub bridge: &'static BridgeSpec,
     pub provider: ProviderInfo,
-    /// Model id to write (default `"auto"`).
+    /// 要写入的模型 ID（默认 `"auto"`）。
     pub model: String,
-    /// Generated runtime token shared by runtime.env and <bridge>.env.
+    /// runtime.env 和 <bridge>.env 共享的生成运行时令牌。
     pub runtime_token: String,
-    /// Provider API-key value (placeholder unless the user supplied one).
+    /// 提供者 API 密钥值（占位符，除非用户提供了值）。
     pub provider_key_value: String,
-    /// Bridge secret values keyed by env var (placeholder unless supplied).
+    /// 按环境变量键名的桥接密钥值（占位符，除非提供）。
     pub bridge_secret_values: Vec<(String, String)>,
-    /// Allowlist string (comma-separated chat ids); may be empty for first pairing.
+    /// 白名单字符串（逗号分隔的聊天 ID）；首次配对时可能为空。
     pub allowlist: String,
-    /// Runtime port.
+    /// 运行时端口。
     pub port: u16,
-    /// Runtime worker count.
+    /// 运行时工作进程数。
     pub workers: u32,
-    /// Workspace path on the host.
+    /// 主机上的工作空间路径。
     pub workspace: String,
 }
 
 impl BundleInputs {
-    /// Build the [`DeployInputs`] the cloud `plan()` consumes.
+    /// 构建云 `plan()` 消费的 [`DeployInputs`]。
     #[must_use]
     pub fn deploy_inputs(&self) -> DeployInputs {
         DeployInputs {
@@ -91,15 +89,15 @@ impl BundleInputs {
     }
 }
 
-/// A single rendered file: relative path within the bundle + contents.
+/// 单个渲染文件：捆绑包内的相对路径 + 内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedFile {
     pub relative_path: String,
     pub contents: String,
 }
 
-/// Render every bundle file in memory (no filesystem writes). Pure function —
-/// used directly by tests so we never touch disk or run a command.
+/// 在内存中渲染每个捆绑包文件（不写入文件系统）。纯函数——
+/// 直接由测试使用，因此我们从不触及磁盘或运行命令。
 #[must_use]
 pub fn render_bundle(inputs: &BundleInputs) -> Vec<RenderedFile> {
     vec![
@@ -126,8 +124,7 @@ pub fn render_bundle(inputs: &BundleInputs) -> Vec<RenderedFile> {
     ]
 }
 
-/// Render the bundle to `out_dir`, creating it if needed. Returns the absolute
-/// paths written, in render order.
+/// 将捆绑包渲染到 `out_dir`，必要时创建。按渲染顺序返回写入的绝对路径。
 pub fn write_bundle(inputs: &BundleInputs, out_dir: &Path) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating bundle dir {}", out_dir.display()))?;
@@ -142,7 +139,7 @@ pub fn write_bundle(inputs: &BundleInputs, out_dir: &Path) -> Result<Vec<PathBuf
 }
 
 // ---------------------------------------------------------------------------
-// runtime.env — provider config lives here
+// runtime.env — 提供者配置在此
 // ---------------------------------------------------------------------------
 
 fn render_runtime_env(i: &BundleInputs) -> String {
@@ -185,7 +182,7 @@ fn render_runtime_env(i: &BundleInputs) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// <bridge>.env — transport only
+// <bridge>.env — 仅传输层
 // ---------------------------------------------------------------------------
 
 fn render_bridge_env(i: &BundleInputs) -> String {
@@ -246,8 +243,8 @@ fn render_bridge_env(i: &BundleInputs) -> String {
     out
 }
 
-/// The chat allowlist uses a bridge-prefixed var (TELEGRAM_/FEISHU_); the deploy
-/// examples key it per bridge, so mirror that.
+/// 聊天白名单使用桥接前缀变量（TELEGRAM_/FEISHU_）；部署示例
+/// 按桥接配置它，所以我们保持一致。
 fn allowlist_lines(i: &BundleInputs) -> String {
     let prefix = bridge_env_prefix(i.bridge);
     format!(
@@ -265,7 +262,7 @@ fn bridge_env_prefix(bridge: &BridgeSpec) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// systemd units
+// systemd 单元
 // ---------------------------------------------------------------------------
 
 fn render_runtime_unit(i: &BundleInputs) -> String {
@@ -499,7 +496,7 @@ mod tests {
             bridge,
             provider: provider.clone(),
             model: "auto".to_string(),
-            // Fixed, clearly-fake token for deterministic tests (never executed).
+            // 固定的、显式伪造的令牌用于确定性测试（永不执行）。
             runtime_token: "test-runtime-token-0000".to_string(),
             provider_key_value: format!("replace-{}", provider.key_var.to_ascii_lowercase()),
             bridge_secret_values,
@@ -517,7 +514,7 @@ mod tests {
         assert_eq!(ds.key_var, "DEEPSEEK_API_KEY");
         let oai = ProviderInfo::from_slug("openai").unwrap();
         assert_eq!(oai.key_var, "OPENAI_API_KEY");
-        // Provider-registry aliases resolve to the canonical slug.
+        // 提供者注册表别名解析为规范标识符。
         assert_eq!(
             ProviderInfo::from_slug("nvidia").unwrap().slug,
             "nvidia-nim"
@@ -570,9 +567,9 @@ mod tests {
         assert!(runtime.contains("CODEWHALE_PROVIDER=deepseek"));
         assert!(runtime.contains("CODEWHALE_RUNTIME_TOKEN="));
         assert!(runtime.contains("CODEWHALE_RUNTIME_PORT="));
-        // Provider key var present (DeepSeek doubles as canonical + legacy alias).
+        // 提供者密钥变量存在（DeepSeek 同时作为规范别名和旧版别名）。
         assert!(runtime.contains("DEEPSEEK_API_KEY="));
-        // Documents the legacy alias convention.
+        // 记录旧版别名约定。
         assert!(runtime.to_lowercase().contains("legacy alias"));
 
         let bridge = &files
@@ -586,7 +583,7 @@ mod tests {
 
     #[test]
     fn runbook_is_non_empty_and_lists_the_plan() {
-        // DigitalOcean specifically: the RUNBOOK should carry the doctl plan.
+        // 特别是 DigitalOcean：RUNBOOK 应包含 doctl 计划。
         let inputs = sample_inputs(&DIGITALOCEAN, &TELEGRAM, "deepseek");
         let files = render_bundle(&inputs);
         let runbook = &files
@@ -602,8 +599,8 @@ mod tests {
 
     #[test]
     fn every_cloud_bridge_provider_triple_renders() {
-        // Cover the matrix per the RFC §Tests; assert CODEWHALE_* + matching token
-        // + non-empty RUNBOOK. No command is ever executed.
+        // 根据 RFC §Tests 覆盖矩阵；断言 CODEWHALE_* + 匹配的令牌
+        // + 非空 RUNBOOK。永不执行任何命令。
         for cloud in &[LIGHTHOUSE, AZURE, DIGITALOCEAN] {
             for bridge in &[FEISHU, TELEGRAM] {
                 for provider_slug in &["deepseek", "openai", "moonshot"] {
@@ -649,7 +646,7 @@ mod tests {
             .contents;
         assert!(unit.contains("/etc/codewhale/runtime.env"));
         assert!(unit.contains("CODEWHALE_RUNTIME_TOKEN"));
-        // Legacy path still loaded first.
+        // 旧版路径仍然优先加载。
         assert!(unit.contains("/etc/deepseek/runtime.env"));
 
         let bridge_unit = &files

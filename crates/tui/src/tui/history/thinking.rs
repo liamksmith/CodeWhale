@@ -1,4 +1,4 @@
-//! Rendering for reasoning/thinking transcript cells.
+//! 推理/思考记录单元的渲染。
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,14 +7,14 @@ use crate::palette;
 use crate::tui::markdown_render;
 use crate::tui::ui_text::truncate_line_to_width;
 
-/// Reasoning header opener. Replaces the spinner glyph on thinking cells —
-/// reasoning is a slow exhale, not a tool spin.
+/// 推理头部打开标记。替换思考单元格上的旋转器字形 —
+/// 推理是缓慢的呼气，而不是工具旋转。
 pub(super) const REASONING_OPENER: &str = "\u{2026}"; // …
-/// Reasoning body left rail. Dashed (`╎`) instead of the solid `▏` block to
-/// visually separate reasoning from message body and tool output.
-pub(super) const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
-/// Trailing-line cursor on streaming reasoning. Anchored to the live colour
-/// so the user sees where new tokens land.
+/// 推理主体左侧导轨。使用虚线（`╎`）代替实心 `▏` 块，以
+/// 在视觉上将推理与消息主体和工具输出分开。
+pub(super) const REASONING_RAIL: &str = "\u{254E} "; // ╎ + 空格
+/// 流式推理的尾行光标。锚定到实时颜色，
+/// 以便用户看到新 token 落下的位置。
 pub(super) const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
@@ -28,7 +28,7 @@ enum ThinkingVisualState {
     Idle,
 }
 
-#[allow(dead_code)] // Kept for compatibility/tests; live view uses explicit summaries only.
+#[allow(dead_code)] // 为兼容性/测试保留；实时视图仅使用显式摘要。
 #[must_use]
 pub fn extract_reasoning_summary(text: &str) -> Option<String> {
     extract_explicit_reasoning_summary(text).or_else(|| {
@@ -76,12 +76,12 @@ fn extract_explicit_reasoning_summary(text: &str) -> Option<String> {
     None
 }
 
-/// Redact internal code identifiers from a collapsed reasoning preview so
-/// implementation details don't leak into the default transcript
-/// (#4146/#4148). Each `snake_case` token (e.g. `refresh_catalog_cache`,
-/// `agent_id`, `DEEPSEEK_API_KEY`) collapses to a single `…` so the
-/// surrounding prose still reads; the full, un-redacted body remains
-/// available on expand (Space / Ctrl+O) and in the pager/clipboard transcript.
+/// 从折叠的推理预览中编辑内部代码标识符，以便
+/// 实现细节不会泄漏到默认记录中
+/// (#4146/#4148). 每个 `snake_case` 标记（例如 `refresh_catalog_cache`、
+/// `agent_id`、`DEEPSEEK_API_KEY`）都会折叠为一个 `…`，以便
+/// 周围的散文仍然可读；完整的、未编辑的主体仍然
+/// 可在展开（Space / Ctrl+O）以及分页器/剪贴板记录中查看。
 fn redact_internal_identifiers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut token = String::new();
@@ -97,8 +97,8 @@ fn redact_internal_identifiers(text: &str) -> String {
     out
 }
 
-/// Flush a scanned word token into `out`, replacing it with `…` when it reads
-/// as an internal code identifier. No-op on an empty token.
+/// 将扫描的单词标记刷新到 `out` 中，当它读起来像内部代码标识符时
+/// 将其替换为 `…`。对空标记无操作。
 fn push_identifier_token(out: &mut String, token: &mut String) {
     if token.is_empty() {
         return;
@@ -111,9 +111,9 @@ fn push_identifier_token(out: &mut String, token: &mut String) {
     token.clear();
 }
 
-/// A token reads as an internal code identifier when it is a `snake_case`
-/// run: it contains an underscore, has at least one letter, and is otherwise
-/// only ASCII alphanumerics/underscores. Ordinary prose words never match.
+/// 当标记是 `snake_case` 运行时，它读起来像内部代码标识符：
+/// 它包含下划线，至少有一个字母，并且除此之外
+/// 仅由 ASCII 字母数字/下划线组成。普通散文单词从不匹配。
 fn looks_like_internal_identifier(token: &str) -> bool {
     token.contains('_')
         && token.chars().any(|ch| ch.is_ascii_alphabetic())
@@ -132,9 +132,9 @@ pub(super) fn render_thinking(
 ) -> Vec<Line<'static>> {
     let state = thinking_visual_state(streaming, duration_secs);
     let style = thinking_style();
-    // 12% reasoning surface tint over the app ink — the only deliberately
-    // warm element in the transcript. Dropped on Ansi-16 terminals where the
-    // tint would distort the named palette.
+    // 在应用墨水上的 12% 推理表面色调 — 记录中唯一有意的
+    // 暖色元素。在 Ansi-16 终端上放弃，因为
+    // 色调会扭曲命名调色板。
     let depth = cached_color_depth();
     let body_bg = palette::reasoning_surface_tint(depth);
     let body_style = match body_bg {
@@ -143,8 +143,8 @@ pub(super) fn render_thinking(
     };
     let mut lines = Vec::new();
 
-    // Header: `…` opener (replaces the spinner; reasoning isn't a tool, it's
-    // a slow exhale) followed by the reasoning label and live status.
+    // 头部：`…` 打开标记（替换旋转器；推理不是工具，而是
+    // 缓慢的呼气），后跟推理标签和实时状态。
     let mut header_spans = vec![
         Span::styled(
             format!("{REASONING_OPENER} "),
@@ -167,12 +167,12 @@ pub(super) fn render_thinking(
     let mut collapsed_without_explicit_summary = false;
     let body_text = if collapsed {
         if streaming {
-            // #861 RC4 / #1324: during streaming we don't yet have a
-            // completed reasoning block, so `extract_reasoning_summary`
-            // is meaningless. Show the raw content and let the
-            // truncation logic below keep the *last* `LIMIT` lines so
-            // the user sees the model's most recent thinking instead of
-            // staring at an empty placeholder.
+            // #861 RC4 / #1324：流式传输期间我们尚未获得
+            // 完整的推理块，因此 `extract_reasoning_summary`
+            // 没有意义。显示原始内容并让
+            // 下面的截断逻辑保留 *最后* `LIMIT` 行，以便
+            // 用户看到模型最新的思考，而不是
+            // 盯着空占位符。
             content.to_string()
         } else {
             match extract_explicit_reasoning_summary(content) {
@@ -186,14 +186,14 @@ pub(super) fn render_thinking(
     } else {
         content.to_string()
     };
-    // #4146/#4148: completed reasoning collapses to a quiet receipt in the
-    // default transcript — scrub internal code identifiers (function names
-    // like `refresh_catalog_cache`, raw agent ids) so implementation details
-    // don't leak. Streaming reasoning stays verbatim (the user is watching it
-    // think) and the expanded / pager / clipboard transcript keeps the full,
-    // un-redacted body. The redaction changes `body_text`, which trips the
-    // affordance below so the user still sees the "expand for full reasoning"
-    // hint.
+    // #4146/#4148：完成的推理在默认记录中折叠为安静的收据 —
+    // 擦除内部代码标识符（函数名如 `refresh_catalog_cache`、
+    // 原始 agent id），以便实现细节
+    // 不会泄漏。流式推理保持原样（用户正在观看
+    // 思考过程），展开/分页器/剪贴板记录保留完整的、
+    // 未编辑的主体。编辑会更改 `body_text`，进而触发
+    // 下面的提示，以便用户仍然看到
+    // "展开查看完整推理"的提示。
     let body_text = if collapsed && !streaming {
         redact_internal_identifiers(&body_text)
     } else {
@@ -214,8 +214,8 @@ pub(super) fn render_thinking(
     };
     if collapsed && rendered.len() > line_limit {
         if streaming {
-            // Drop the *head* during streaming so the visible window
-            // tracks the live cursor at the bottom.
+            // 流式传输期间丢弃 *头部*，以便可见窗口
+            // 跟踪底部的实时光标。
             let drop = rendered.len() - line_limit;
             rendered.drain(0..drop);
         } else {
@@ -240,8 +240,8 @@ pub(super) fn render_thinking(
     for (idx, line) in rendered.into_iter().enumerate() {
         let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
         spans.extend(line.spans);
-        // Trailing cursor on the very last body line while streaming —
-        // signals "still generating" without churning every line.
+        // 流式传输时在最后一行主体上放置尾行光标 —
+        // 表示"仍在生成"而不刷新每一行。
         if streaming && !low_motion && idx == last_idx {
             spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
@@ -250,18 +250,18 @@ pub(super) fn render_thinking(
 
     let needs_affordance = collapsed
         && if streaming {
-            // #861 RC4 / #1324: during streaming, surface the affordance
-            // whenever any head lines have been clipped so the user
-            // knows there's more above and how to reach it.
+            // #861 RC4 / #1324：流式传输期间，只要有任何
+            // 头部行被裁剪，就显示提示，以便用户
+            // 知道上方还有更多内容以及如何访问它。
             truncated
         } else {
             truncated || body_text.trim() != content.trim()
         };
     if needs_affordance {
         let label = if streaming {
-            "More reasoning in Ctrl+O"
+            "更多推理内容在 Ctrl+O 中"
         } else {
-            "Space to expand · Full reasoning in Ctrl+O"
+            "Space 展开 · 完整推理在 Ctrl+O 中"
         };
         lines.push(Line::from(vec![
             Span::styled(REASONING_RAIL.to_string(), rail_style),
@@ -297,7 +297,7 @@ pub(super) fn render_hidden_thinking_activity(
     }
 
     let mut body =
-        truncate_line_to_width("reasoning hidden; model is still working", content_width);
+        truncate_line_to_width("推理已隐藏；模型仍在工作", content_width);
     if !low_motion {
         body.push(' ');
         body.push_str(REASONING_CURSOR);
@@ -360,8 +360,8 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
     }
 }
 
-/// Once-initialised colour depth for the terminal session. Avoids re-reading
-/// `COLORTERM` / `TERM` env vars on every frame.
+/// 终端会话的一次初始化颜色深度。避免在每一帧都重新读取
+/// `COLORTERM` / `TERM` 环境变量。
 static COLOR_DEPTH: std::sync::OnceLock<palette::ColorDepth> = std::sync::OnceLock::new();
 
 fn cached_color_depth() -> palette::ColorDepth {

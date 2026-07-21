@@ -1,12 +1,10 @@
-//! Sub-agent spawning system.
+//! 子代理（Sub-agent）生成系统。
 //!
-//! Provides tools to spawn background sub-agents, query their status,
-//! and retrieve results. Sub-agents run with a filtered toolset and
-//! inherit the workspace configuration from the main session.
+//! 提供用于生成后台子代理、查询其状态以及获取结果的工具。
+//! 子代理使用经过筛选的工具集运行，并继承主会话的工作区配置。
 //!
-//! The model-facing surface is the single `agent` tool. Older lifecycle
-//! structs and manager helpers remain executable for persisted records and
-//! internal recovery while the durable runtime is reused by the new surface.
+//! 面向模型的接口是单一的 `agent` 工具。旧的生命周期结构体和管理器辅助函数
+//! 仍然可执行，用于持久化记录和内部恢复，而持久化运行时则被新接口复用。
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -52,17 +50,17 @@ pub mod mailbox;
 #[allow(unused_imports)]
 pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
 
-// === Constants ===
+// === 常量 ===
 
-/// Global ownership table for cache-aware resident file sub-agents (#529).
-/// Maps file path → agent id. Agents hold a lease on a file while running;
-/// the lease is released when the agent reaches a terminal state.
+/// 缓存感知常驻文件子代理的全局所有权表（#529）。
+/// 映射文件路径 → 代理 ID。代理在运行时持有文件的租约；
+/// 当代理进入终止状态时，租约被释放。
 static RESIDENT_LEASES: std::sync::OnceLock<
     parking_lot::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::OnceLock::new();
 
-/// Release all resident file leases held by `agent_id`. Called when an
-/// agent transitions to a terminal state (completed, failed, cancelled).
+/// 释放 `agent_id` 持有的所有常驻文件租约。当代理
+/// 进入终止状态（已完成、失败、已取消）时调用。
 fn release_resident_leases_for(agent_id: &str) {
     if let Some(lock) = RESIDENT_LEASES.get() {
         let mut guard = lock.lock();
@@ -70,26 +68,24 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-/// Default maximum steps for sub-agent loops. Set to `u32::MAX` to remove the
-/// arbitrary fixed cap (#2034). Sub-agents run until they produce a final text
-/// response (no tool calls), are cancelled by the parent, or hit a configured
-/// explicit budget. Callers that want a hard bound can override `max_steps` on
-/// the `SubAgentManager`.
+/// 子代理循环的默认最大步数。设置为 `u32::MAX` 以移除
+/// 任意的固定上限（#2034）。子代理会一直运行，直到生成最终的文本
+/// 响应（无工具调用）、被父级取消或达到配置的显式预算。
+/// 想要硬性限制的调用方可以覆盖 `SubAgentManager` 上的 `max_steps`。
 const DEFAULT_MAX_STEPS: u32 = u32::MAX;
-/// Default wall-clock budget for a single sub-agent tool execution. The active
-/// value travels on `SubAgentRuntime::tool_timeout` so a long-but-legitimate
-/// tool (a large build, a slow shell command, a deep search) is not killed
-/// mid-flight. Kept non-zero so `timeout(Duration::ZERO, ...)` can never fire
-/// immediately. The per-step API timeout, streaming watchdogs, and heartbeat
-/// floors remain the independent stall detectors.
+/// 单次子代理工具执行的默认挂钟预算。实际值
+/// 通过 `SubAgentRuntime::tool_timeout` 传递，以便一个耗时但合法的
+/// 工具（大型构建、慢速 shell 命令、深度搜索）不会在执行中途被杀死。
+/// 保持非零值，以便 `timeout(Duration::ZERO, ...)` 永远不会立即触发。
+/// 每步 API 超时、流式看门狗和心跳下限仍然是独立的停滞检测器。
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 const MIN_SUBAGENT_SPAWN_TOKEN_RESERVE: u64 = 1;
 const MIN_EVENT_CHANNEL_HEADROOM_FOR_ROUTINE_PROGRESS: usize = 32;
 
-/// Format a step counter for sub-agent progress messages.
+/// 格式化子代理进度消息的步数计数器。
 ///
-/// When `max_steps == u32::MAX` (the default), the denominator is a sentinel
-/// meaning "unbounded" — render just `step N` instead of `step N/4294967295`.
+/// 当 `max_steps == u32::MAX`（默认值）时，分母是一个表示"无限制"的标记——
+/// 仅渲染 `step N`，而不是 `step N/4294967295`。
 fn format_step_counter(steps: u32, max_steps: u32) -> String {
     if max_steps == u32::MAX {
         format!("step {steps}")
@@ -97,39 +93,33 @@ fn format_step_counter(steps: u32, max_steps: u32) -> String {
         format!("step {steps}/{max_steps}")
     }
 }
-// Non-streaming sub-agents need enough response budget to carry large tool-call
-// arguments, especially write_file content. The API bills generated tokens, not
-// the requested ceiling.
+// 非流式子代理需要足够的响应预算来承载大型工具调用
+// 参数，尤其是 write_file 内容。API 按生成的 token 计费，而非请求的上限。
 const SUBAGENT_RESPONSE_MAX_TOKENS: u32 = 16_384;
 const MAX_CONSECUTIVE_TRUNCATED_SUBAGENT_RESPONSES: u32 = 5;
 const SUBAGENT_TRANSIENT_PROVIDER_MAX_RETRIES: u32 = 2;
 const SUBAGENT_TRANSIENT_PROVIDER_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
-/// Per-step LLM API call timeout. Each `create_message` request must complete
-/// within this window or the step is treated as timed out. Prevents a single
-/// stuck API call from blocking the sub-agent indefinitely.
-/// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
-/// now travels on `SubAgentRuntime::step_api_timeout` so users can override
-/// it via `[subagents] api_timeout_secs` in `~/.deepseek/config.toml`. The
-/// constant only exists for tests/stub runtimes that need a hard-coded
-/// default; production runtimes set the field explicitly (#1806, #1808).
+/// 每步 LLM API 调用超时。每个 `create_message` 请求必须在此窗口内完成，
+/// 否则该步将被视为超时。防止单个卡住的 API 调用无限期阻塞子代理。
+/// 每步 DeepSeek API 超时的旧有回退值。当前超时值通过
+/// `SubAgentRuntime::step_api_timeout` 传递，以便用户可以通过
+/// `[subagents] api_timeout_secs` 在配置中覆盖它。
+/// 该常量仅存在于需要硬编码默认值的测试/桩运行时；
+/// 生产运行时显式设置该字段（#1806, #1808）。
 const DEFAULT_STEP_API_TIMEOUT: Duration =
     Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS);
 const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
 const MAX_AGENT_WORKER_RECORDS: usize = 256;
 const MAX_AGENT_WORKER_EVENTS_PER_RECORD: usize = 128;
-/// Byte budget for the message tail retained in a [`SubAgentCheckpoint`]
-/// (#3882). Checkpoints fire on every step of every worker and are cloned
-/// into snapshots, projections, and `subagents.v1.json`; an unbounded
-/// `messages` clone turns one large tool output into many resident copies
-/// under Fleet fanout. The checkpoint keeps the most recent messages within
-/// this budget (always at least the last one, so continuability is
-/// preserved) and records how many older messages were omitted. Full tool
-/// outputs remain recoverable from the spillover files on disk.
+/// [`SubAgentCheckpoint`] 中保留的消息尾部的字节预算(#3882)。
+/// 检查点在每个工作者的每一步触发，并被克隆到快照、投影和 `subagents.v1.json` 中；
+/// 无界的 `messages` 克隆会将一个大型工具输出在 Fleet 扇出下变成多个常驻副本。
+/// 检查点在此预算内保留最近的消息（始终至少保留最后一条，因此可持续性得以保留），
+/// 并记录跳过了多少条旧消息。完整的工具输出仍然可以从磁盘上的溢出文件中恢复。
 const SUBAGENT_CHECKPOINT_MESSAGE_BUDGET_BYTES: usize = 256 * 1024;
-/// Byte budget for the message tail embedded in a `subagent_full_transcript`
-/// handle (#3882). One handle is retained in memory per agent; the payload
-/// keeps a bounded tail plus the true `message_count` so inspection stays
-/// useful without pinning a whole unbounded transcript in RAM.
+/// 嵌入在 `subagent_full_transcript` 句柄中的消息尾部的字节预算(#3882)。
+/// 每个代理在内存中保留一个句柄；有效载荷保留有界的尾部加上真实的 `message_count`，
+/// 这样检查仍然有用，而无需在 RAM 中固定整个无界转录。
 const SUBAGENT_TRANSCRIPT_MESSAGE_BUDGET_BYTES: usize = 1024 * 1024;
 const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
 const SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
@@ -137,25 +127,21 @@ const SUBAGENT_WORKTREE_ROOT_DIR: &str = ".codewhale-worktrees";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 const SUBAGENT_QUEUED_LAUNCH_REASON: &str = "queued: waiting for a sub-agent launch slot";
 const SUBAGENT_MODEL_WAIT_REASON: &str = "waiting for model response";
-/// #freeze: minimum spacing between hot-path (per-step checkpoint) state
-/// persists. `update_checkpoint` fires on every step of every agent; at high
-/// fanout an unconditional full-fleet rewrite under the manager write lock
-/// wedges the UI. Hot-path writes coalesce to at most one per this interval;
-/// terminal/structural changes still persist immediately, and any terminal
-/// write flushes the full in-memory fleet (including other agents' pending
-/// checkpoints) to disk.
+/// #freeze: 热路径（每步检查点）状态持久化的最小间隔。
+/// `update_checkpoint` 在每个代理的每一步触发；在高扇出时，
+/// 在管理器写锁下无条件地全舰队重写会导致 UI 卡死。
+/// 热路径写入在此间隔内最多合并为一次；终止/结构性变更仍然立即持久化，
+/// 任何终止写入都会将完整的在内存舰队（包括其他代理的待处理检查点）刷新到磁盘。
 const SUBAGENT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(1500);
 
-/// #3803: minimum interval between write-locked `cleanup` runs triggered by the
-/// sidebar refresh (`Op::ListSubAgents`). Cleanup auto-cancels stale agents
-/// (heartbeat timeout, default 300s) and drops old finished records, so a 2s
-/// floor keeps it responsive while preventing per-refresh write-lock contention
-/// during a high-fanout burst.
+/// #3803: 由侧边栏刷新（`Op::ListSubAgents`）触发的写锁定 `cleanup` 运行之间的最小间隔。
+/// Cleanup 自动取消过时的代理（心跳超时，默认 300 秒）并丢弃旧的已完成记录，
+/// 因此 2 秒的下限使其保持响应性，同时防止在高扇出爆发期间每次刷新都发生写锁争用。
 pub const SUBAGENT_LIST_CLEANUP_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
-/// #freeze: lightweight perf counters for the sub-agent persist hot path,
-/// gated behind `CODEWHALE_SUBAGENT_PERF_TRACE=1`. The atomic increments are
-/// always cheap; only the structured `subagent_perf` log line is gated.
+/// #freeze: 子代理持久化热路径的轻量级性能计数器，
+/// 由 `CODEWHALE_SUBAGENT_PERF_TRACE=1` 控制开启。原子递增总是廉价的；
+/// 只有结构化的 `subagent_perf` 日志行才被门控。
 static SUBAGENT_PERSIST_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SUBAGENT_PERSIST_SKIPPED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -173,9 +159,8 @@ const VALID_SUBAGENT_TYPES: &str = "general (aliases: general-purpose, general_p
      explore (aliases: exploration, explorer), plan (aliases: planning, planner, awaiter), \
      review (aliases: code-review, code_review, reviewer), implementer (aliases: implement, implementation, builder), \
      verifier (aliases: verify, verification, validator, tester), custom";
-/// Role aliases accepted by `normalize_role_alias`. Kept in sync with the
-/// match arms below so every input that `SubAgentType::from_str` accepts also
-/// resolves to a canonical role (avoids the dual-validation rejection in #2649).
+/// `normalize_role_alias` 接受的角色别名。与下面的匹配分支保持同步，
+/// 以便 `SubAgentType::from_str` 接受的每个输入也能解析为规范角色（避免 #2649 中的双重验证拒绝）。
 const VALID_ROLE_ALIASES: &str = "default; worker (aliases: general, general-purpose, general_purpose); \
      explorer (aliases: explore, exploration); awaiter (aliases: plan, planning, planner); \
      reviewer (aliases: review, code-review, code_review); implementer (aliases: implement, implementation, builder); \
@@ -184,17 +169,16 @@ const SUBAGENT_TYPE_DESCRIPTION: &str = "Sub-agent type. Accepted vocabulary: ge
      explore (aliases: exploration, explorer), plan (aliases: planning, planner, awaiter), \
      review (aliases: code-review, code_review, reviewer), implementer (aliases: implement, implementation, builder), \
      verifier (aliases: verify, verification, validator, tester), custom.";
-/// Whale species used as friendly names for sub-agents in the UI. The full
-/// Cetacea infraorder — baleen whales (Mysticeti), toothed whales
-/// (Odontoceti), plus select dolphin species (family Delphinidae) that
-/// don't conflate with existing agent type labels. Porpoises (Phocoenidae)
-/// are excluded because their name doesn't carry well as a friendly label.
+/// UI 中用作子代理友好名称的鲸类物种。完整的鲸目下目——
+/// 须鲸（Mysticeti）、齿鲸（Odontoceti），加上选定的海豚科物种，
+/// 这些物种不会与现有的代理类型标签混淆。鼠海豚科（Phocoenidae）
+/// 被排除，因为其名称不太适合作为友好标签。
 ///
-/// English and Simplified-Chinese names are interleaved so any newly spawned
-/// agent has a roughly even chance of either — the goal is friendly variety,
-/// not a strict locale match.
+/// 英文和简体中文名称交替排列，以便任何新生成的代理
+/// 有大致相等的机会获得其中一种——目标是友好的多样性，
+/// 而非严格的语言环境匹配。
 ///
-/// Taxonomy source: Society for Marine Mammalogy (2025).
+/// 分类来源：海洋哺乳动物学会（2025）。
 pub const WHALE_NICKNAMES: &[&str] = &[
     "Blue",
     "蓝鲸",
@@ -300,9 +284,8 @@ pub const WHALE_NICKNAMES: &[&str] = &[
     "拉河豚",
 ];
 
-/// Return a deterministic whale name for a given agent ID using a hash of
-/// the ID string. The same ID always gets the same name — stable across
-/// session restarts for persisted agents.
+/// 使用 ID 字符串的哈希为给定的代理 ID 返回确定性的鲸鱼名称。
+/// 相同的 ID 始终获得相同的名称——对于持久化代理，跨会话重启保持稳定。
 #[must_use]
 pub fn whale_name_for_id(id: &str) -> String {
     use std::hash::{Hash, Hasher};
@@ -312,9 +295,8 @@ pub fn whale_name_for_id(id: &str) -> String {
     WHALE_NICKNAMES[idx].to_string()
 }
 
-/// Assign a unique whale name for an agent ID, avoiding collisions with
-/// names already in `active_names`. If the deterministic name is taken,
-/// appends a numeric suffix (e.g. "Orca (2)").
+/// 为代理 ID 分配唯一的鲸鱼名称，避免与 `active_names` 中已有的名称冲突。
+/// 如果确定性名称已被占用，则附加数字后缀（例如 "Orca (2)"）。
 #[must_use]
 pub fn assign_unique_whale_name(
     id: &str,
@@ -324,7 +306,7 @@ pub fn assign_unique_whale_name(
     if !active_names.contains(&base) {
         return base;
     }
-    // Deterministic suffix from the same hash to keep it stable
+    // 使用相同哈希的确定性后缀以保持稳定
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     id.hash(&mut hasher);
@@ -334,20 +316,20 @@ pub fn assign_unique_whale_name(
         if !active_names.contains(&candidate) {
             return candidate;
         }
-        // Vary the probe using the seed
+        // 使用种子变化探测值
         let probe = (suffix_seed.wrapping_add(i as u64)) % 100;
         let candidate2 = format!("{base} ({probe})");
         if !active_names.contains(&candidate2) {
             return candidate2;
         }
     }
-    // Fallback (should never reach here)
+    // 回退（理论上不应到达此处）
     format!("{base} ({})", id.get(..4).unwrap_or("?"))
 }
 
-// === Types ===
+// === 类型 ===
 
-/// Assignment metadata for sub-agent orchestration.
+/// 子代理编排的分配元数据。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubAgentAssignment {
     pub objective: String,
@@ -361,35 +343,32 @@ impl SubAgentAssignment {
     }
 }
 
-/// Sub-agent execution types with specialized behavior and tool access.
+/// 具有专业化行为和工具访问权限的子代理执行类型。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentType {
-    /// General purpose - full tool access for multi-step tasks.
+    /// 通用目的——对多步骤任务具有完整工具访问权限。
     #[default]
     General,
-    /// Fast exploration - read-only tools for codebase search.
+    /// 快速探索——用于代码库搜索的只读工具。
     Explore,
-    /// Planning - analysis tools only for architectural planning.
+    /// 规划——仅用于架构规划的分析工具。
     Plan,
-    /// Code review - read + analysis tools.
+    /// 代码审查——读取 + 分析工具。
     Review,
-    /// Implementation — focused on writing / patching code to satisfy
-    /// a specific change. Distinct from `General` in that the prompt
-    /// posture pushes hard on landing the change cleanly with the
-    /// minimum surrounding edit (#404).
+    /// 实现——专注于编写/修补代码以满足特定的变更。
+    /// 与 `General` 的不同之处在于，提示词姿态强调以最小的附带编辑干净地落地变更（#404）。
     Implementer,
-    /// Verification — focused on running the test suite or other
-    /// validation gates and reporting pass/fail with evidence.
-    /// Distinct from `Review` in that Review reads code and grades it;
-    /// Verifier *runs* tests and reports the outcome (#404).
+    /// 验证——专注于运行测试套件或其他验证门控，并报告通过/失败及证据。
+    /// 与 `Review` 的不同之处在于，Review 读取代码并评分；
+    /// Verifier *运行*测试并报告结果（#404）。
     Verifier,
-    /// Custom tool access defined at spawn time.
+    /// 在生成时定义的自定义工具访问权限。
     Custom,
 }
 
 impl SubAgentType {
-    /// Parse a sub-agent type from user input.
+    /// 从用户输入解析子代理类型。
     #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -419,7 +398,7 @@ impl SubAgentType {
         }
     }
 
-    /// Get the system prompt for this agent type.
+    /// 获取此代理类型的系统提示词。
     #[must_use]
     pub fn system_prompt(&self) -> String {
         let role_intro = match self {
@@ -435,7 +414,7 @@ impl SubAgentType {
     }
 }
 
-/// Status of a sub-agent execution.
+/// 子代理执行的状态。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SubAgentStatus {
     Running,
@@ -443,24 +422,22 @@ pub enum SubAgentStatus {
     Interrupted(String),
     Failed(String),
     Cancelled,
-    /// Worker stopped because it exceeded its own per-worker token budget.
-    /// Distinct from the scope-level admission gate (#3319): this caps a
-    /// single runaway worker mid-run, while the scope gate bounds total
-    /// fan-out across a root run and its descendants.
+    /// 工作者因超过自身的每工作者 token 预算而停止。
+    /// 与作用域级别的准入门控不同（#3319）：此限制针对单个失控工作者，
+    /// 而作用域门控限制整个根运行及其后代的扇出总量。
     BudgetExhausted,
 }
 
-/// Structured reason a non-running sub-agent needs parent action.
+/// 非运行中的子代理需要父级操作的结构化原因。
 ///
-/// This is intentionally separate from `SubAgentStatus`: legacy surfaces keep
-/// seeing `Interrupted`, while parent-visible projections get a concrete
-/// question/action instead of a parked child task.
+/// 这是有意与 `SubAgentStatus` 分开的：旧有接口继续看到 `Interrupted`，
+/// 而父级可见的投影获得具体的问题/操作，而非一个停滞的子任务。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubAgentNeedsInput {
     pub question: String,
 }
 
-/// Snapshot of sub-agent state for tool results.
+/// 用于工具结果的子代理状态快照。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentResult {
     pub name: String,
@@ -491,19 +468,17 @@ pub struct SubAgentResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_input: Option<SubAgentNeedsInput>,
     pub duration_ms: u64,
-    /// `true` when this agent was loaded from a prior-session persisted
-    /// state file rather than spawned in the current session (#405).
-    /// Lets listings filter out historical noise by default while
-    /// keeping the records reachable via `include_archived=true`.
+    /// `true` 表示此代理是从先前会话的持久化状态文件加载的，
+    /// 而非在当前会话中生成的（#405）。
+    /// 允许列表默认过滤掉历史噪音，同时通过 `include_archived=true` 保持记录可访问。
     #[serde(default, skip_serializing_if = "is_false")]
     pub from_prior_session: bool,
 }
 
-/// Headless worker lifecycle states for sub-agent execution.
+/// 子代理执行的无头工作者生命周期状态。
 ///
-/// This is the TUI-independent state machine that future CLI/API/workflow
-/// surfaces should consume. The legacy `SubAgentStatus` remains the
-/// compatibility projection returned by sub-agent runs.
+/// 这是独立于 TUI 的状态机，未来的 CLI/API/工作流接口应使用此状态机。
+/// 旧有的 `SubAgentStatus` 仍然是子代理运行返回的兼容性投影。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkerStatus {
@@ -520,7 +495,7 @@ pub enum AgentWorkerStatus {
 }
 
 impl AgentWorkerStatus {
-    /// Terminal worker statuses may be age-evicted from the run ledger (#4217).
+    /// 终止状态的工作者可能会按时间从运行分类账中逐出（#4217）。
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(
@@ -530,17 +505,17 @@ impl AgentWorkerStatus {
     }
 }
 
-/// Tool capability profile requested for a headless worker.
+/// 为无头工作者请求的工具能力配置文件。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkerToolProfile {
-    /// Inherit the parent runtime registry for compatibility.
+    /// 继承父运行时的注册表以保持兼容性。
     Inherited,
-    /// Use the listed tools only.
+    /// 仅使用列出的工具。
     Explicit(Vec<String>),
 }
 
-/// Declarative headless worker request derived from `agent`.
+/// 从 `agent` 派生的声明式无头工作者请求。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentWorkerSpec {
     pub worker_id: String,
@@ -651,7 +626,7 @@ pub struct AgentRunRecommendedAction {
     pub reason: String,
 }
 
-/// Structured headless worker event.
+/// 结构化的无头工作者事件。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentWorkerEvent {
     pub seq: u64,
@@ -666,7 +641,7 @@ pub struct AgentWorkerEvent {
     pub tool_name: Option<String>,
 }
 
-/// Canonical headless worker record retained by `SubAgentManager`.
+/// `SubAgentManager` 保留的规范无头工作者记录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentWorkerRecord {
     pub spec: AgentWorkerSpec,
@@ -1089,8 +1064,8 @@ pub(crate) struct WorkflowTaskSpawnResult {
     pub metadata: WorkflowTaskSpawnMetadata,
 }
 
-/// Workflow identity stamped onto children launched via `spawn_workflow_task`
-/// (#4119). Lets panel/history render without parsing the child prompt.
+/// 通过 `spawn_workflow_task`（#4119）启动的子级被标记的工作流身份。
+/// 让面板/历史渲染无需解析子级提示词。
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowTaskSpawnIdentity {
     pub workflow_run_id: String,
@@ -1104,19 +1079,19 @@ pub(crate) struct WorkflowTaskSpawnMetadata {
     pub resolved_provider: String,
     pub resolved_model: String,
     pub route_source: String,
-    /// Fleet role resolved for this spawn, if any (#4177).
+    /// 为此生成解析的舰队角色（如有，#4177）。
     pub resolved_role: Option<String>,
-    /// AgentProfile id resolved for this spawn, if any (#4177).
+    /// 为此生成解析的 AgentProfile id（如有，#4177）。
     pub resolved_profile: Option<String>,
     pub parent_task_id: Option<String>,
     pub depth: u32,
-    /// Workflow run that launched this child (`None` for direct `agent` spawns).
+    /// 启动此子级的工作流运行（直接 `agent` 生成为 `None`）。
     pub workflow_run_id: Option<String>,
-    /// Active phase title/id when the child was admitted (`None` outside workflows).
+    /// 子级被准入时的活跃阶段标题/id（工作流外部为 `None`）。
     pub workflow_phase_id: Option<String>,
-    /// Human label from the Workflow `task({ label })` option.
+    /// Workflow `task({ label })` 选项中的人类可读标签。
     pub workflow_task_label: Option<String>,
-    /// 0-based admission order among children of this workflow run.
+    /// 此工作流运行中各子级的准入顺序（从 0 开始）。
     pub workflow_child_index: Option<u32>,
 }
 
@@ -1184,51 +1159,43 @@ struct SpawnRequest {
     session_name: Option<String>,
     prompt: String,
     agent_type: SubAgentType,
-    /// True when the caller supplied `type`/`agent_type` or `role` explicitly
-    /// (vs the `General` default). A fleet `profile` only sets the agent type
-    /// when the caller did not, and conflicts are rejected only for explicit
-    /// values.
+    /// 当调用方显式提供了 `type`/`agent_type` 或 `role` 时为 `true`
+    /// （相对于 `General` 默认值）。舰队 `profile` 仅在调用方未提供时设置代理类型，
+    /// 且仅在显式值时才拒绝冲突。
     agent_type_explicit: bool,
-    /// Optional Fleet roster member id (trimmed, lowercased). Resolved at
-    /// spawn time against the runtime roster — parsing has no runtime access.
+    /// 可选的舰队名册成员 id（已修剪、小写）。在生成时根据运行时名册解析——解析时无运行时访问权限。
     profile: Option<String>,
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
     model: Option<String>,
     model_strength: SubAgentModelStrength,
-    /// True when the caller supplied `model_strength` explicitly. An explicit
-    /// strength outranks a fleet profile's model pin/loadout; the parse-time
-    /// default does not.
+    /// 当调用方显式提供了 `model_strength` 时为 `true`。显式的强度
+    /// 优先级高于舰队配置文件的模型固定/装载；解析时的默认值则不。
     model_strength_explicit: bool,
     thinking: SubAgentThinking,
-    /// Optional working directory for the child. Must canonicalize to a path
-    /// inside the parent's workspace. For first-class git worktree isolation,
-    /// use `worktree` instead of pre-creating a cwd by hand.
+    /// 子级的可选工作目录。必须规范化为父级工作区内的路径。
+    /// 对于一流的 git worktree 隔离，请使用 `worktree` 而非手动预创建 cwd。
     cwd: Option<PathBuf>,
-    /// Optional first-class git worktree isolation. When set, CodeWhale
-    /// creates a sibling worktree/branch and runs the child from that checkout.
+    /// 可选的一流 git worktree 隔离。设置时，CodeWhale
+    /// 创建一个同级的 worktree/分支并从该检出运行子级。
     worktree: Option<SubAgentWorktreeRequest>,
-    /// Optional file path for cache-aware resident mode (#529). When set,
-    /// the child's prompt is prefixed with the file contents for prefix-cache
-    /// locality. A global ownership table prevents two agents from holding
-    /// a resident lease on the same file simultaneously.
+    /// 缓存感知常驻模式的可选文件路径（#529）。设置时，
+    /// 子级的提示词会前缀文件内容，以实现前缀缓存局部性。
+    /// 全局所有权表防止两个代理同时持有同一文件的常驻租约。
     resident_file: Option<String>,
-    /// When true, seed the child with the parent's system prompt and message
-    /// prefix before appending the child task.
+    /// 为 true 时，在附加子级任务之前，使用父级的系统提示词和消息前缀种子化子级。
     fork_context: bool,
-    /// Legacy recursion budget for descendants. The model-facing child tool
-    /// surface is leaf-only; this remains for persisted/internal records.
+    /// 后代的遗留递归预算。面向模型的子级工具接口仅为叶子节点；
+    /// 此字段为持久化/内部记录保留。
     max_depth: Option<u32>,
-    /// Optional aggregate token budget for this child and its descendants.
-    /// When unset, the child inherits the parent's budget pool or the
-    /// configured root default.
+    /// 此子级及其后代的可选聚合 token 预算。
+    /// 未设置时，子级继承父级的预算池或配置的根默认值。
     token_budget: Option<u64>,
-    /// Extra tool deny-list from the caller, unioned with the parent runtime's
-    /// inherited deny-list. Deny always wins over allow (#4042).
+    /// 来自调用方的额外工具拒绝列表，与父运行时的继承拒绝列表合并。
+    /// 拒绝始终优先于允许（#4042）。
     disallowed_tools: Option<Vec<String>>,
-    /// When true (default), the child inherits the parent runtime's
-    /// `disallowed_tools`. Set `false` to start the child with a clean slate
-    /// (only the explicit `disallowed_tools` above, if any, then apply).
+    /// 为 true（默认）时，子级继承父运行时的 `disallowed_tools`。
+    /// 设置为 `false` 以让子级从干净的状态开始（仅应用上面显式的 `disallowed_tools`，如有）。
     inherit_disallowed_tools: bool,
 }
 
@@ -1247,14 +1214,13 @@ struct AgentUsageBudgetScope {
     remaining: u64,
 }
 
-/// Durable recovery point for an interrupted sub-agent session.
+/// 中断子代理会话的持久恢复点。
 ///
-/// `messages` is a byte-bounded tail (#3882), not the full history:
-/// checkpoints fire per step and are cloned into snapshots/persistence, so an
-/// unbounded clone multiplies large tool outputs under Fleet fanout.
-/// `message_count` records the true total and `omitted_messages` how many of
-/// the oldest were dropped from this snapshot; spilled tool outputs remain on
-/// disk under the spillover directory.
+/// `messages` 是字节有界的尾部（#3882），而非完整历史：
+/// 检查点每步触发并克隆到快照/持久化中，因此无界克隆
+/// 会在 Fleet 扇出下放大大型工具输出。
+/// `message_count` 记录真实总数，`omitted_messages` 记录此快照中丢弃了多少条最旧消息；
+/// 溢出的工具输出保留在磁盘上的溢出目录中。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubAgentCheckpoint {
     pub checkpoint_id: String,
@@ -1267,8 +1233,8 @@ pub struct SubAgentCheckpoint {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Message>,
-    /// Oldest messages omitted from `messages` to honor the checkpoint byte
-    /// budget. `0` for records written before v0.8.67 (serde default).
+    /// 为遵守检查点字节预算，从 `messages` 中省略的最旧消息数。
+    /// 在 v0.8.67 之前写入的记录为 `0`（serde 默认值）。
     #[serde(default, skip_serializing_if = "is_zero")]
     pub omitted_messages: usize,
 }
@@ -1304,12 +1270,11 @@ struct PersistedSubAgent {
     duration_ms: u64,
     allowed_tools: Vec<String>,
     updated_at_ms: u64,
-    /// Stable id of the manager / process boot that spawned this agent
-    /// (#405). Lets a fresh manager filter out agents that were
-    /// persisted by a prior session. Optional with `#[serde(default)]`
-    /// for backward compatibility — older records lack the field and
-    /// load with an empty string, which the manager treats as
-    /// "from_prior_session" because it can't match any current id.
+    /// 生成此代理的管理器/进程启动的稳定 id（#405）。
+    /// 让新的管理器过滤出由先前会话持久化的代理。
+    /// 使用 `#[serde(default)]` 可选，以保证向后兼容性——旧记录缺少此字段，
+    /// 加载时为空字符串，管理器将其视为 "from_prior_session"，
+    /// 因为它无法匹配任何当前 id。
     #[serde(default)]
     session_boot_id: String,
 }
@@ -1332,51 +1297,43 @@ impl Default for PersistedSubAgentState {
     }
 }
 
-/// Default cap on sub-agent recursion depth. Override via
-/// `[subagents] max_depth = N` in config.
+/// 子代理递归深度的默认上限。通过配置中的 `[subagents] max_depth = N` 覆盖。
 ///
-/// Sourced from [`codewhale_config::DEFAULT_SPAWN_DEPTH`] so standalone
-/// sub-agents and fleet workers share ONE recursion axis (no "two moving
-/// targets"). Configured/requested depths clamp to
-/// [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`].
+/// 来源于 [`codewhale_config::DEFAULT_SPAWN_DEPTH`]，以使独立子代理和舰队工作者共享一个递归轴（无"两个移动
+/// 目标"）。配置/请求的深度限制在 [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`] 内。
 pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = codewhale_config::DEFAULT_SPAWN_DEPTH;
 
-/// Resolve a child runtime's `max_spawn_depth` from its (already-incremented)
-/// `spawn_depth` and the model-supplied per-call `max_depth`, clamped to the
-/// absolute [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`].
+/// 从（已递增的）`spawn_depth` 和模型提供的每次调用 `max_depth` 解析子运行时的 `max_spawn_depth`，
+/// 限制到绝对的 [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`]。
 ///
-/// Without the absolute clamp, `max_spawn_depth = spawn_depth + max_depth`
-/// makes the recursion gate (`spawn_depth + 1 > max_spawn_depth`) reduce to
-/// `1 > max_depth` at every level — always false when the model re-supplies
-/// `max_depth >= 1` per spawn — so ring depth would grow to the global
-/// admission cap instead of the intended 8-ring ceiling.
+/// 没有绝对限制时，`max_spawn_depth = spawn_depth + max_depth`
+/// 会使递归门控（`spawn_depth + 1 > max_spawn_depth`）在每一层简化为
+/// `1 > max_depth`——当模型每次生成都重新提供 `max_depth >= 1` 时总是 false——
+/// 因此环深度会增长到全局准入上限，而非预期的 8 环上限。
 fn clamp_child_max_spawn_depth(child_spawn_depth: u32, requested_max_depth: u32) -> u32 {
     child_spawn_depth
         .saturating_add(requested_max_depth)
         .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING)
 }
 
-/// Terminal-state notification emitted to the immediate parent's completion
-/// inbox when one of its children finishes (issue #756). For root-spawned
-/// agents that inbox is the engine turn loop; for nested agents it is a
-/// parent-local receiver inside `run_subagent`. Carries the already-rendered
-/// `<codewhale:subagent.done>` sentinel that the model expects in the
-/// transcript per `prompts/constitution.md`.
+/// 当一个子级完成时，向直接父级的完成收件箱发出的终止状态通知（issue #756）。
+/// 对于根生成的代理，该收件箱是引擎轮次循环；对于嵌套代理，
+/// 它是 `run_subagent` 内部的父级本地接收器。
+/// 携带已经渲染的 `<codewhale:subagent.done>` 哨兵，
+/// 模型按 `prompts/constitution.md` 期望在转录中收到该哨兵。
 #[derive(Debug, Clone)]
 pub struct SubAgentCompletion {
-    /// The completing child's agent id. Held for routing/logging — the
-    /// engine's turn loop does not currently key on it (it just injects
-    /// the payload), but downstream tooling and tests need the field.
+    /// 完成子级的代理 id。用于路由/日志记录——引擎的轮次循环目前并不以此作为键（它只注入有效载荷），
+    /// 但下游工具和测试需要此字段。
     #[allow(dead_code)]
     pub agent_id: String,
-    /// Human summary on line 1, sentinel on line 2. Same payload shape as
-    /// `Event::AgentComplete::result`.
+    /// 第 1 行为人类可读摘要，第 2 行为哨兵。与 `Event::AgentComplete::result` 相同的有效载荷形状。
     pub payload: String,
 }
 
-/// Parent transcript snapshot available to sub-agents that opt into context
-/// forking. The system prompt and leading messages are kept byte-identical to
-/// the parent request so DeepSeek's prefix cache can reuse the warmed prefix.
+/// 可供选择上下文分叉的子代理使用的父级转录快照。
+/// 系统提示词和前置消息与父级请求保持字节一致，
+/// 以便 DeepSeek 的前缀缓存可以复用已预热的前缀。
 #[derive(Clone, Debug)]
 pub struct SubAgentForkContext {
     pub system: Option<SystemPrompt>,
@@ -1384,117 +1341,95 @@ pub struct SubAgentForkContext {
     pub structured_state_block: Option<String>,
 }
 
-/// Runtime configuration for spawning sub-agents.
+/// 生成子代理的运行时配置。
 ///
-/// Carries everything a child needs to (a) build its own tool registry —
-/// including the manager so grandchildren can spawn — and (b) cooperate with
-/// lifecycle cancellation and depth caps. `child_runtime()` links cancellation
-/// tokens, while `background_runtime()` deliberately detaches long-running
-/// `agent` sessions from the caller's turn token.
+/// 携带子级所需的一切：(a) 构建自己的工具注册表——包括管理器以便孙级可以生成——
+/// 以及 (b) 与生命周期取消和深度上限协同。`child_runtime()` 链接取消令牌，
+/// 而 `background_runtime()` 有意将长期运行的 `agent` 会话与调用方的轮次令牌分离。
 #[derive(Clone)]
 pub struct SubAgentRuntime {
     pub client: DeepSeekClient,
-    /// Session `Config` snapshot, used to build a *fresh* LLM client bound to a
-    /// different provider when a fleet roster member's profile pins one (#4193,
-    /// the interactive-TUI twin of the headless `codewhale exec --provider`
-    /// route from #4181). The engine threads it in via
-    /// [`SubAgentRuntime::with_api_config`]; `child_runtime`/`background_runtime`
-    /// clone the `Arc` so every descendant can re-derive a provider-B client.
+    /// 会话 `Config` 快照，用于在舰队名册成员的配置文件固定了不同提供商时，
+    /// 构建一个绑定到该提供商的*全新* LLM 客户端（#4193，#4181 中无头 `codewhale exec --provider`
+    /// 路由的交互式 TUI 孪生版本）。引擎通过 [`SubAgentRuntime::with_api_config`] 传入它；
+    /// `child_runtime`/`background_runtime` 克隆 `Arc`，以便每个后代都可以重新派生提供商 B 的客户端。
     ///
-    /// `None` for legacy/test runtimes that never threaded a config. When a
-    /// profile pins a provider different from the session's and this is `None`
-    /// (or the pinned provider's credentials cannot be resolved), the spawn
-    /// FAILS rather than silently reusing the session client — a silent reuse
-    /// would send model B's id to provider A's endpoint, the exact #4093 defect.
+    /// 从未传入配置的遗留/测试运行时为 `None`。
+    /// 当配置文件固定了与会话不同的提供商且此为 `None`
+    /// （或固定提供商的凭据无法解析）时，生成失败而非静默复用会话客户端——
+    /// 静默复用会将模型 B 的 id 发送到提供商 A 的端点，这正是 #4093 缺陷。
     pub api_config: Option<std::sync::Arc<crate::config::Config>>,
     pub model: String,
     pub auto_model: bool,
     pub reasoning_effort: Option<String>,
     pub reasoning_effort_auto: bool,
     pub role_models: HashMap<String, String>,
-    /// Shared fleet roster of named agent roles (#fleet-roster cutover
-    /// (v0.8.67)). Built-ins only by default; the engine installs the merged
-    /// built-in/config/workspace roster so model-spawned sub-agents and fleet
-    /// dispatch resolve the same party. Cloned into child runtimes.
+    /// 命名代理角色的共享舰队名册（#fleet-roster 切换 (v0.8.67)）。
+    /// 默认仅内置；引擎安装合并的内置/配置/工作区名册，
+    /// 以便模型生成的子代理和舰队调度解析同一方。克隆到子运行时。
     pub fleet_roster: std::sync::Arc<crate::fleet::roster::FleetRoster>,
     pub context: ToolContext,
     pub allow_shell: bool,
-    /// When true, Suggest-level file writes auto-accept for write-capable roles
-    /// without full parent auto-approve. Shell/network/MCP still gated.
-    /// Set for Workflow-spawned children.
+    /// 为 true 时，对于可写角色，Suggest 级别的文件写入自动接受，无需完整的父级自动批准。
+    /// Shell/网络/MCP 仍然门控。为 Workflow 生成的子级设置。
     pub accept_edits: bool,
-    /// Native Agent-mode tool surface inherited from the parent turn. Carries
-    /// feature/config-dependent families such as web search, patch, memory,
-    /// vision, notify, and FIM so child catalogs stay in parity with the parent.
+    /// 从父级轮次继承的原生 Agent 模式工具表面。携带依赖于特性/配置的工具族，
+    /// 如 web 搜索、patch、memory、vision、notify 和 FIM，以使子级目录与父级保持对等。
     pub agent_tool_surface_options: AgentToolSurfaceOptions,
-    /// Capability contract inherited by descendants. `agent` derives a
-    /// child profile from this before registering the worker record so parent,
-    /// sub-agent, and fleet projections share one worker contract.
+    /// 由后代继承的能力合约。`agent` 在注册工作者记录之前从此派生子级配置文件，
+    /// 以便父级、子代理和舰队投影共享一个工作者合约。
     pub worker_profile: WorkerRuntimeProfile,
     pub event_tx: Option<mpsc::Sender<Event>>,
-    /// Manager handle so children can recurse via `agent`. All agents
-    /// at every depth share the same manager.
+    /// 管理器句柄，以便子级可以通过 `agent` 递归。所有深度的所有代理共享同一个管理器。
     pub manager: SharedSubAgentManager,
-    /// Depth in the spawn tree. 0 = top-level user turn; 1 = direct child;
-    /// etc. Children clone the parent runtime and increment this on spawn.
+    /// 生成树中的深度。0 = 顶级用户轮次；1 = 直接子级；依次类推。
+    /// 子级克隆父运行时并在生成时递增此值。
     pub spawn_depth: u32,
-    /// Agent id that should be recorded as parent for any child spawned
-    /// through this runtime's model-visible `agent` tool. `None` for the
-    /// root engine; set to the running sub-agent id for nested spawns so UI
-    /// surfaces can render the tree.
+    /// 应记录为通过此运行时的模型可见 `agent` 工具生成的任何子级的父级代理 id。
+    /// 对于根引擎为 `None`；对于嵌套生成设置为正在运行的子代理 id，以便 UI 表面可以渲染树。
     pub parent_agent_id: Option<String>,
-    /// Hard cap on recursion depth. A child whose `spawn_depth + 1` would
-    /// exceed this is rejected at the spawn entry. Use `>` (strictly
-    /// greater than) so equality is allowed — matches codex's pattern.
+    /// 递归深度的硬上限。`spawn_depth + 1` 将超过此值的子级在生成入口处被拒绝。
+    /// 使用 `>`（严格大于），以便相等是允许的——与 codex 的模式匹配。
     pub max_spawn_depth: u32,
-    /// Cooperative cancellation token. Direct `child_runtime()` callers derive
-    /// a child token from the parent; model-visible `agent` uses
-    /// `background_runtime()` to replace that token with a detached one.
+    /// 协作取消令牌。直接调用 `child_runtime()` 的调用方从父级派生子令牌；
+    /// 模型可见的 `agent` 使用 `background_runtime()` 将该令牌替换为分离的令牌。
     pub cancel_token: CancellationToken,
-    /// Structured progress / lifecycle stream. Cloned across children so the
-    /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
-    /// `None` only when no consumer is wired (legacy entry points / tests).
+    /// 结构化进度/生命周期流。在子级间克隆，以便整个生成树发布到同一个有序、可扇出的邮箱中。
+    /// 仅当没有消费者连接时（遗留入口点/测试）为 `None`。
     pub mailbox: Option<Mailbox>,
-    /// Wakeup channel for this runtime's immediate parent (issue #756). For
-    /// the engine's direct children this points at the engine turn loop. While
-    /// a sub-agent is running, its tool registry swaps this for a local inbox
-    /// so nested children report to their orchestrating sub-agent instead of
-    /// flooding the root parent. `None` when no consumer is wired (tests /
-    /// legacy paths).
+    /// 此运行时直接父级的唤醒通道（issue #756）。对于引擎的直接子级，
+    /// 这指向引擎轮次循环。当子代理运行时，其工具注册表将此替换为本地收件箱，
+    /// 以便嵌套子级向它们的编排子代理报告，而不是淹没根父级。
+    /// 当没有消费者连接时（测试/遗留路径）为 `None`。
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
-    /// Snapshot of the request prefix visible to an opt-in forked child.
+    /// 可选分叉子级可见的请求前缀快照。
     pub fork_context: Option<SubAgentForkContext>,
-    /// The parent's MCP pool if available.
+    /// 父级的 MCP 池（如有）。
     pub mcp_pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
-    /// Per-step DeepSeek API timeout for the child's `create_message` call.
-    /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800) at
-    /// engine construction so a slow but legitimate model turn does not
-    /// false-timeout the child mid-thinking. `child_runtime()` and
-    /// `background_runtime()` preserve the parent's value (#1806, #1808).
+    /// 子级 `create_message` 调用的每步 DeepSeek API 超时。
+    /// 在引擎构建时从 `[subagents] api_timeout_secs`（限制在 1..=1800）解析，
+    /// 以便缓慢但合法的模型轮次不会在子级思考过程中错误超时。
+    /// `child_runtime()` 和 `background_runtime()` 保留父级的值（#1806, #1808）。
     pub step_api_timeout: Duration,
-    /// Wall-clock budget for a single tool execution within a sub-agent step.
-    /// Defaults to `DEFAULT_TOOL_TIMEOUT`; the engine may override it so a long
-    /// but legitimate tool run is not killed mid-flight. `child_runtime()`
-    /// preserves the parent's value.
+    /// 子代理步骤中单次工具执行的挂钟预算。
+    /// 默认为 `DEFAULT_TOOL_TIMEOUT`；引擎可以覆盖它，以便长时间但合法
+    /// 的工具运行不会在执行中途被杀死。`child_runtime()` 保留父级的值。
     pub tool_timeout: Duration,
-    /// Default directory for Xiaomi MiMo speech/TTS tool outputs inherited by
-    /// child registries. Keeps parent and sub-agent `speech` / `tts` tools on
-    /// the same `[speech].output_dir` / env override.
+    /// 子注册表继承的小米 MiMo 语音/TTS 工具输出的默认目录。
+    /// 使父级和子代理的 `speech` / `tts` 工具共享相同的 `[speech].output_dir` / 环境变量覆盖。
     pub speech_output_dir: Option<PathBuf>,
-    /// Shared todo list — the parent's `SharedTodoList`, cloned into each
-    /// child so sub-agent `checklist_update` calls are visible in the
-    /// Work sidebar live. Without this, each child gets a fresh isolated
-    /// list and the parent never sees child progress until completion.
+    /// 共享待办列表——父级的 `SharedTodoList`，克隆到每个子级中，
+    /// 以使子代理的 `checklist_update` 调用在 Work 侧边栏中实时可见。
+    /// 没有这个，每个子级会获得一个全新的隔离列表，父级直到完成才能看到子级进度。
     pub todos: SharedTodoList,
-    /// Session mode of the orchestrating parent at spawn time (Wave 7 M4/M5).
+    /// 生成时编排父级的会话模式（Wave 7 M4/M5）。
     pub parent_mode: AppMode,
 }
 
 impl SubAgentRuntime {
-    /// Create a top-level runtime configuration for sub-agent execution.
-    /// Use this from the engine when constructing the runtime that the
-    /// parent's tool registry passes through. Children should derive their
-    /// runtime via `Self::child_runtime` instead.
+    /// 创建子代理执行的顶级运行时配置。
+    /// 在引擎构建父级工具注册表将通过的运行时中使用此方法。
+    /// 子级应通过 `Self::child_runtime` 派生其运行时。
     #[must_use]
     pub fn new(
         client: DeepSeekClient,
@@ -1538,23 +1473,22 @@ impl SubAgentRuntime {
         }
     }
 
-    /// Preserve the parent session mode for spawn-policy decisions.
+    /// 保留父级会话模式，用于生成策略决策。
     #[must_use]
     pub fn with_parent_mode(mut self, mode: AppMode) -> Self {
         self.parent_mode = mode;
         self
     }
 
-    /// Attach the parent's shared todo list so sub-agent `checklist_update`
-    /// calls are visible in the Work sidebar live. Without this, children
-    /// get a fresh isolated list.
+    /// 附加父级的共享待办列表，以便子代理的 `checklist_update` 调用在 Work 侧边栏中实时可见。
+    /// 没有这个，子级会获得全新的隔离列表。
     #[must_use]
     pub fn with_todos(mut self, todos: SharedTodoList) -> Self {
         self.todos = todos;
         self
     }
 
-    /// Preserve the parent Agent-mode native tool surface for child registries.
+    /// 保留父级 Agent 模式的原生工具表面，用于子级注册表。
     #[must_use]
     pub fn with_agent_tool_surface_options(mut self, options: AgentToolSurfaceOptions) -> Self {
         self.speech_output_dir = options.speech_output_dir.clone();
@@ -1562,7 +1496,7 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach an MCP pool so the subagent can execute MCP tools.
+    /// 附加 MCP 池，以便子代理可以执行 MCP 工具。
     #[must_use]
     pub fn with_mcp_pool(
         mut self,
@@ -1572,17 +1506,16 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Override the per-step DeepSeek API timeout (default
-    /// `DEFAULT_STEP_API_TIMEOUT`). Called by the engine after reading
-    /// `[subagents] api_timeout_secs`. Tests may use this to fail fast
-    /// without waiting the legacy 120 seconds (#1806, #1808).
+    /// 覆盖每步 DeepSeek API 超时（默认 `DEFAULT_STEP_API_TIMEOUT`）。
+    /// 由引擎在读取 `[subagents] api_timeout_secs` 后调用。
+    /// 测试可以使用此方法快速失败，无需等待遗留的 120 秒（#1806, #1808）。
     #[must_use]
     pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
         self.step_api_timeout = timeout;
         self
     }
 
-    /// Preserve the configured speech output directory for sub-agent tools.
+    /// 保留为子代理工具配置的语音输出目录。
     #[must_use]
     pub fn with_speech_output_dir(mut self, output_dir: Option<PathBuf>) -> Self {
         self.speech_output_dir = output_dir.clone();
@@ -1590,10 +1523,9 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach the wakeup channel for this runtime's immediate parent. The
-    /// engine uses this for direct children; running sub-agents replace it in
-    /// the runtime handed to their nested `agent` tool so child completions are
-    /// routed back to the sub-agent that spawned them.
+    /// 附加此运行时直接父级的唤醒通道。引擎将此用于直接子级；
+    /// 正在运行的子代理在传递给其嵌套 `agent` 工具的运行时中替换它，
+    /// 以便子级完成事件路由回生成它们的子代理。
     #[must_use]
     pub fn with_parent_completion_tx(
         mut self,
@@ -1603,17 +1535,16 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach the current parent request prefix for `fork_context` spawns.
+    /// 附加当前父级请求前缀，用于 `fork_context` 生成。
     #[must_use]
     pub fn with_fork_context(mut self, context: SubAgentForkContext) -> Self {
         self.fork_context = Some(context);
         self
     }
 
-    /// Attach a `Mailbox` so this runtime and its derived children publish
-    /// structured `MailboxMessage` envelopes alongside the legacy `Event`
-    /// stream. Pair with [`Self::with_cancel_token`] when the mailbox close
-    /// token should match this runtime's cancellation token.
+    /// 附加一个 `Mailbox`，以便此运行时及其派生子级发布结构化的 `MailboxMessage` 信封，
+    /// 与遗留的 `Event` 流并行。当邮箱关闭令牌应与此运行时的取消令牌匹配时，
+    /// 与 [`Self::with_cancel_token`] 配对使用。
     #[must_use]
     #[allow(dead_code)] // wired by #128 (in-transcript cards) when it lands.
     pub fn with_mailbox(mut self, mailbox: Mailbox) -> Self {
@@ -1621,8 +1552,7 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Replace the cancellation token (e.g. when the engine constructs the
-    /// runtime alongside a mailbox bound to the same token).
+    /// 替换取消令牌（例如，当引擎构建运行时，同时有一个绑定到相同令牌的邮箱时）。
     #[must_use]
     #[allow(dead_code)] // wired by #128 alongside `with_mailbox`.
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
@@ -1630,8 +1560,8 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Override the maximum spawn depth (default `DEFAULT_MAX_SPAWN_DEPTH`).
-    /// Used by config wiring (`[subagents] max_depth = N`) and tests.
+    /// 覆盖最大生成深度（默认 `DEFAULT_MAX_SPAWN_DEPTH`）。
+    /// 由配置连接（`[subagents] max_depth = N`）和测试使用。
     #[must_use]
     #[allow(dead_code)]
     pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
@@ -1639,38 +1569,33 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach raw role/type model overrides. Values are intentionally
-    /// validated at spawn time so bad config fails before a partial spawn.
+    /// 附加原始角色/类型模型覆盖。值有意在生成时验证，以便错误配置在部分生成之前失败。
     #[must_use]
     pub fn with_role_models(mut self, role_models: HashMap<String, String>) -> Self {
         self.role_models = role_models;
         self
     }
 
-    /// Attach the session `Config` so a spawn can build a fresh LLM client for a
-    /// fleet profile's pinned provider (#4193). Without it, cross-provider
-    /// in-process spawns fail closed rather than misrouting (see the
-    /// [`api_config`](Self::api_config) field docs). Engine-only wiring; test
-    /// and legacy runtimes may leave it unset.
+    /// 附加会话 `Config`，以便生成可以为舰队配置文件的固定提供商构建全新的 LLM 客户端（#4193）。
+    /// 没有它，跨提供商的进程内生成将静默失败而非错误路由
+    /// （参见 [`api_config`](Self::api_config) 字段文档）。仅引擎连接；
+    /// 测试和遗留运行时可以保持未设置。
     #[must_use]
     pub fn with_api_config(mut self, config: crate::config::Config) -> Self {
         self.api_config = Some(std::sync::Arc::new(config));
         self
     }
 
-    /// Build an LLM client bound to `provider_id` from the threaded session
-    /// `Config` (#4193). Mirrors the proven per-provider client factory used by
-    /// per-turn auto-routing (`model_routing`) and the engine's provider switch:
-    /// clone the session config, override only its `provider`, and let
-    /// [`DeepSeekClient::new`] re-resolve that provider's base URL + credentials
-    /// from config/env. `provider_id` may be a built-in provider id or a
-    /// user-named `[providers.<id>] kind="openai-compatible"` custom provider
-    /// such as `lm-studio` (#3965).
+    /// 从传入的会话 `Config`（#4193）构建绑定到 `provider_id` 的 LLM 客户端。
+    /// 镜像了经过验证的每提供商客户端工厂，该工厂被每轮自动路由（`model_routing`）
+    /// 和引擎的提供商切换使用：克隆会话配置，仅覆盖其 `provider`，
+    /// 让 [`DeepSeekClient::new`] 从配置/环境变量中重新解析该提供商的 base URL + 凭据。
+    /// `provider_id` 可以是内置提供商 id 或用户命名的 `[providers.<id>] kind="openai-compatible"`
+    /// 自定义提供商，如 `lm-studio`（#3965）。
     ///
-    /// Returns `Err` when no config was threaded in, or when the provider's
-    /// credentials/base URL cannot be resolved. Callers MUST surface that error
-    /// rather than fall back to the session client: a silent fallback would send
-    /// the pinned model id to the session provider's endpoint (#4093).
+    /// 当没有传入配置时，或当提供商的凭据/base URL 无法解析时返回 `Err`。
+    /// 调用方必须暴露该错误，而不是回退到会话客户端：静默回退会将固定的模型 id
+    /// 发送到会话提供商的端点（#4093）。
     fn client_for_provider_id(&self, provider_id: &str) -> Result<DeepSeekClient, String> {
         let Some(api_config) = self.api_config.as_ref() else {
             return Err(
@@ -1697,11 +1622,9 @@ impl SubAgentRuntime {
             ));
         }
         let mut provider_config = (**api_config).clone();
-        // EPIC #2608: the provider is taken verbatim from the profile pin
-        // (built-in id or configured custom id), never inferred from the model
-        // id. Overriding only `provider` makes `Config::api_provider`,
-        // `deepseek_base_url`, and `deepseek_api_key` all re-resolve for the
-        // pinned provider.
+        // EPIC #2608:提供商从配置文件固定中原样获取（内置 id 或已配置的自定义 id），
+        // 从不从模型 id 推断。仅覆盖 `provider` 使 `Config::api_provider`、
+        // `deepseek_base_url` 和 `deepseek_api_key` 全部为固定的提供商重新解析。
         provider_config.provider = Some(
             built_in
                 .map(|provider| provider.as_str().to_string())
@@ -1710,8 +1633,8 @@ impl SubAgentRuntime {
         DeepSeekClient::new(&provider_config).map_err(|err| err.to_string())
     }
 
-    /// Install the merged fleet roster (#fleet-roster cutover (v0.8.67)).
-    /// The engine builds it once per session config; children inherit it.
+    /// 安装合并的舰队名册（#fleet-roster 切换 (v0.8.67)）。
+    /// 引擎为每个会话配置构建一次；子级继承它。
     #[must_use]
     pub fn with_fleet_roster(
         mut self,
@@ -1721,15 +1644,15 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Preserve whether the parent session is using per-turn model routing.
+    /// 保留父级会话是否使用每轮模型路由。
     #[must_use]
     pub fn with_auto_model(mut self, auto_model: bool) -> Self {
         self.auto_model = auto_model;
         self
     }
 
-    /// Preserve the parent's thinking configuration. Child model strength is
-    /// explicit on the `agent` call; this only controls reasoning effort.
+    /// 保留父级的思考配置。子级模型强度在 `agent` 调用上是显式的；
+    /// 此字段仅控制推理努力。
     #[must_use]
     pub fn with_reasoning_effort(
         mut self,
@@ -1741,10 +1664,9 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Return a child runtime that is deliberately detached from the parent
-    /// turn cancellation token. Background sub-agents should keep running when
-    /// the parent turn is cancelled; explicit agent cancellation still
-    /// aborts their task handles through the manager.
+    /// 返回一个有意与父级轮次取消令牌分离的子运行时。
+    /// 后台子代理应在父级轮次被取消时继续运行；
+    /// 显式的代理取消仍然通过管理器中止它们的任务句柄。
     #[must_use]
     pub fn background_runtime(&self) -> Self {
         let mut runtime = self.child_runtime();
@@ -1754,14 +1676,11 @@ impl SubAgentRuntime {
         runtime
     }
 
-    /// Build a child runtime cloning this one, incrementing `spawn_depth`,
-    /// and deriving a child cancellation token. Used at spawn entry to
-    /// construct the runtime the new sub-agent will see.
+    /// 构建一个子运行时，克隆当前运行时，递增 `spawn_depth`，
+    /// 并派生子取消令牌。在生成入口处用于构建新子代理将看到的运行时。
     ///
-    /// Children inherit the parent's approval state. A non-auto parent can
-    /// still delegate read-only investigation, but approval-gated child tools
-    /// are blocked by the sub-agent registry instead of being silently run
-    /// without a prompt.
+    /// 子级继承父级的批准状态。非自动批准的父级仍然可以委托只读调查，
+    /// 但需要批准的子级工具会被子代理注册表阻止，而不是在无提示的情况下静默运行。
     #[must_use]
     pub fn child_runtime(&self) -> Self {
         let mut child_context = self.context.clone();
@@ -1798,14 +1717,14 @@ impl SubAgentRuntime {
         }
     }
 
-    /// Whether the next spawn would exceed the depth cap.
+    /// 下一次生成是否会超出深度上限。
     #[must_use]
     pub fn would_exceed_depth(&self) -> bool {
         self.spawn_depth + 1 > self.max_spawn_depth
     }
 }
 
-/// A running sub-agent instance.
+/// 一个正在运行的子代理实例。
 pub struct SubAgent {
     pub id: String,
     pub session_name: String,
@@ -1822,13 +1741,11 @@ pub struct SubAgent {
     pub needs_input: Option<SubAgentNeedsInput>,
     pub started_at: Instant,
     pub last_activity_at: Instant,
-    /// `None` = full registry inheritance, with approval-gated tools still
-    /// blocked unless the parent runtime is auto-approved.
-    /// `Some(list)` = explicit narrow allowlist (Custom agents, legacy).
+    /// `None` = 完整注册表继承，需要批准的工具仍被阻止，除非父运行时是自动批准的。
+    /// `Some(list)` = 显式窄化允许列表（自定义代理，遗留）。
     pub allowed_tools: Option<Vec<String>>,
-    /// Stable id of the manager that spawned this agent (#405). Compared
-    /// against the manager's `current_session_boot_id` to classify the
-    /// agent as in-session vs prior-session at list time.
+    /// 生成此代理的管理器的稳定 id（#405）。与管理器的 `current_session_boot_id` 比较，
+    /// 以在列出时将代理分类为当前会话与先前会话。
     pub session_boot_id: String,
     pub workspace: PathBuf,
     input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
@@ -1836,8 +1753,7 @@ pub struct SubAgent {
 }
 
 impl SubAgent {
-    /// Create a new sub-agent. The `id` is generated by the caller so that
-    /// deterministic whale-naming can hash the ID before construction.
+    /// 创建一个新的子代理。`id` 由调用方生成，以便确定性鲸鱼命名可以在构造前哈希 ID。
     #[allow(clippy::too_many_arguments)]
     fn new(
         id: String,
@@ -1878,7 +1794,7 @@ impl SubAgent {
         }
     }
 
-    /// Get a snapshot of the current state.
+    /// 获取当前状态的快照。
     #[must_use]
     pub fn snapshot(&self) -> SubAgentResult {
         SubAgentResult {
@@ -1901,21 +1817,19 @@ impl SubAgent {
             checkpoint: self.checkpoint.clone(),
             needs_input: self.needs_input.clone(),
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            // Snapshots from the agent itself don't know the manager's
-            // current boot id, so default to false. The manager fills
-            // this in when it produces a snapshot via its own
-            // `snapshot_for_listing` helper (#405).
+            // 来自代理自身的快照不知道管理器的当前启动 id，因此默认为 false。
+            // 管理器在通过自己的 `snapshot_for_listing` 辅助函数生成快照时填充此值（#405）。
             from_prior_session: false,
         }
     }
 }
 
-/// Manager for active sub-agents.
+/// 活跃子代理的管理器。
 pub struct SubAgentManager {
     agents: HashMap<String, SubAgent>,
     worker_records: HashMap<String, AgentWorkerRecord>,
     worker_event_seq: u64,
-    #[allow(dead_code)] // Stored for future workspace-scoped operations
+    #[allow(dead_code)] // 为未来的工作区范围操作而存储
     workspace: PathBuf,
     state_path: Option<PathBuf>,
     max_steps: u32,
@@ -1923,36 +1837,30 @@ pub struct SubAgentManager {
     max_admitted_agents: usize,
     default_token_budget: Option<u64>,
     running_heartbeat_timeout: Duration,
-    /// Stable id assigned at manager construction (#405). Stamped on
-    /// every agent the manager spawns; agents loaded from the
-    /// persisted state file carry whatever id the prior session
-    /// stamped (or empty for pre-#405 records). The manager classifies
-    /// agents whose `session_boot_id` doesn't match this value as
-    /// "from prior session" so listings can hide them by default.
+    /// 管理器构造时分配的稳定 id（#405）。印在管理器生成的每个代理上；
+    /// 从持久化状态文件加载的代理携带先前会话印制的任何 id
+    /// （或 pre-#405 记录为空）。管理器将 `session_boot_id` 与此值不匹配的代理
+    /// 分类为"来自先前会话"，以便列表可以默认隐藏它们。
     current_session_boot_id: String,
-    /// Launch gate for direct (depth-1) sub-agent launches (#3095). Each
-    /// permit is one actively executing direct child; further direct
-    /// children spawn immediately but queue for a permit before starting,
-    /// publishing a visible "queued" reason instead of bursting. Deeper
-    /// descendants bypass the gate so a permit-holding parent waiting on
-    /// its own children cannot deadlock the tree.
+    /// 直接（深度为 1）子代理启动的启动门控（#3095）。每个许可对应一个正在执行
+    /// 的直接子级；后续的直接子级立即生成，但在启动前排队等待许可，
+    /// 发布可见的"已排队"原因而非爆发式启动。更深的后代绕过门控，
+    /// 以便持有许可且正在等待其自己子级的父级不会死锁树。
     launch_gate: Arc<Semaphore>,
-    /// #freeze: hot-path persist debounce bookkeeping (see
-    /// `SUBAGENT_PERSIST_DEBOUNCE`). `last_persist_at` is the last time any
-    /// state persist ran; `persist_pending` records that a hot-path write was
-    /// coalesced away so a later flush (terminal write or shutdown) can
-    /// capture the most recent checkpoint.
+    /// #freeze: 热路径持久化防抖记账（参见 `SUBAGENT_PERSIST_DEBOUNCE`）。
+    /// `last_persist_at` 是任何状态持久化上次运行的时间；
+    /// `persist_pending` 记录一个热路径写入被合并掉了，
+    /// 以便后续的刷新（终止写入或关闭）可以捕获最新的检查点。
     last_persist_at: Option<Instant>,
     persist_pending: bool,
-    /// #3803: last time `cleanup` ran. The sidebar refresh (`Op::ListSubAgents`)
-    /// renders from a read-only `list()` snapshot and only runs the
-    /// write-locked `cleanup` on a bounded cadence, so a UI refresh storm during
-    /// a sub-agent fanout no longer contends for the write lock on every request.
+    /// #3803: `cleanup` 上次运行的时间。侧边栏刷新（`Op::ListSubAgents`）从只读的 `list()` 快照渲染，
+    /// 并且仅在有限节奏下运行写锁定的 `cleanup`，
+    /// 因此子代理扇出期间的 UI 刷新风暴不再在每次请求时争夺写锁。
     last_cleanup_at: Option<Instant>,
 }
 
 impl SubAgentManager {
-    /// Create a new manager for sub-agents.
+    /// 为子代理创建一个新管理器。
     #[must_use]
     pub fn new(workspace: PathBuf, max_agents: usize) -> Self {
         Self {
@@ -1968,11 +1876,9 @@ impl SubAgentManager {
             running_heartbeat_timeout: Duration::from_secs(
                 crate::config::DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
             ),
-            // Fresh boot id per manager. Used by #405 to classify
-            // re-loaded persisted agents as "prior session".
+            // 每个管理器的新启动 id。由 #405 用于将重新加载的持久化代理分类为"先前会话"。
             current_session_boot_id: format!("boot_{}", &Uuid::new_v4().to_string()[..12]),
-            // Default launch concurrency = the full agent cap; the gate only
-            // throttles when a lower `launch_concurrency` is configured.
+            // 默认启动并发度 = 完整代理上限；门控仅在配置了较低的 `launch_concurrency` 时才会限流。
             launch_gate: Arc::new(Semaphore::new(max_agents.max(1))),
             last_persist_at: None,
             persist_pending: false,
@@ -1980,16 +1886,16 @@ impl SubAgentManager {
         }
     }
 
-    /// Set the number of direct children that may execute concurrently
-    /// before further launches queue (#3095). Clamped to `1..=max_agents`.
+    /// 设置可以并发执行的直接子级数量，超过此数量后进一步的启动将排队（#3095）。
+    /// 限制在 `1..=max_agents`。
     #[must_use]
     pub fn with_launch_concurrency(mut self, limit: usize) -> Self {
         self.launch_gate = Arc::new(Semaphore::new(limit.clamp(1, self.max_agents)));
         self
     }
 
-    /// Set the total queued + running admission ceiling for this manager.
-    /// The value is always at least the instantaneous concurrency cap.
+    /// 设置此管理器的总排队 + 运行准入上限。
+    /// 该值始终至少为瞬时并发上限。
     #[must_use]
     pub fn with_admission_limit(mut self, max_admitted: usize) -> Self {
         self.max_admitted_agents =
@@ -1997,25 +1903,24 @@ impl SubAgentManager {
         self
     }
 
-    /// Set the default aggregate token budget for root sub-agent runs.
-    /// `None` and `Some(0)` both preserve unlimited legacy behavior.
+    /// 设置根子代理运行的默认聚合 token 预算。
+    /// `None` 和 `Some(0)` 都保留无限制的遗留行为。
     #[must_use]
     pub fn with_default_token_budget(mut self, budget: Option<u64>) -> Self {
         self.default_token_budget = positive_token_budget(budget);
         self
     }
 
-    /// Return the boot id this manager stamps on agents it spawns.
-    /// Exposed for tests; internal callers use the field directly.
+    /// 返回此管理器在其生成的代理上印制的启动 id。
+    /// 对测试公开；内部调用方直接使用该字段。
     #[cfg(test)]
     pub fn session_boot_id(&self) -> &str {
         &self.current_session_boot_id
     }
 
-    /// Classify an agent by its `session_boot_id`: `true` when the
-    /// agent was either (a) loaded from disk with no id, or (b) carries
-    /// a different id than the manager's current boot. Filters
-    /// listing output by default (#405).
+    /// 根据 `session_boot_id` 对代理进行分类：当代理 (a) 从磁盘加载且无 id，
+    /// 或 (b) 携带与管理器当前启动不同的 id 时返回 `true`。
+    /// 默认过滤列表输出（#405）。
     fn is_from_prior_session(&self, agent: &SubAgent) -> bool {
         agent.session_boot_id.is_empty() || agent.session_boot_id != self.current_session_boot_id
     }
@@ -2036,9 +1941,8 @@ impl SubAgentManager {
         self
     }
 
-    /// Apply live runtime limits. The launch semaphore is replaced only when
-    /// no sub-agent is currently running, because active tasks may still hold
-    /// permits from the previous semaphore.
+    /// 应用实时运行时限制。仅当当前没有子代理运行时，启动信号量才会被替换，
+    /// 因为活跃任务可能仍持有来自先前信号量的许可。
     pub fn update_runtime_limits(
         &mut self,
         max_agents: usize,
@@ -2065,11 +1969,10 @@ impl SubAgentManager {
         }
     }
 
-    /// Build the [`PersistedSubAgentState`] snapshot from the current fleet.
-    ///
-    /// This is a cheap clone operation that runs under the caller's lock.
-    /// The returned payload is fully owned and safe to move to a background
-    /// thread for disk I/O.
+/// 从当前舰队构建 [`PersistedSubAgentState`] 快照。
+///
+/// 这是一个在调用方锁下运行的廉价克隆操作。
+/// 返回的有效载荷完全拥有所有权，可以安全地移动到后台线程进行磁盘 I/O。
     fn build_persist_payload(&self) -> Result<Option<(PathBuf, PersistedSubAgentState)>> {
         let Some(path) = self.state_path.as_ref() else {
             return Ok(None);
@@ -2095,8 +1998,8 @@ impl SubAgentManager {
                 needs_input: agent.needs_input.clone(),
                 duration_ms: u64::try_from(agent.started_at.elapsed().as_millis())
                     .unwrap_or(u64::MAX),
-                // Backward-compat: Vec on disk. None → empty vec; Some(list) → list.
-                // Reload converts empty vec back to None (full inheritance).
+                // 向后兼容：磁盘上为 Vec。None → 空 vec；Some(list) → 列表。
+                // 重新加载将空 vec 转换回 None（完整继承）。
                 allowed_tools: agent.allowed_tools.clone().unwrap_or_default(),
                 updated_at_ms: now_ms,
                 session_boot_id: agent.session_boot_id.clone(),
@@ -2112,24 +2015,21 @@ impl SubAgentManager {
         Ok(Some((path, payload)))
     }
 
-    /// Persist the current fleet state to disk.
+    /// 将当前舰队状态持久化到磁盘。
     ///
-    /// #freeze: JSON serialization runs cheaply under the caller's lock; the
-    /// expensive disk I/O (`write_json_atomic`) is spawned onto a background
-    /// thread so the caller's write lock is released before touching the
-    /// filesystem.
+    /// #freeze: JSON 序列化在调用方锁下廉价运行；昂贵的磁盘 I/O（`write_json_atomic`）
+    /// 被生成到一个后台线程，以便调用方的写锁在接触文件系统之前被释放。
     ///
-    /// Returns a [`std::thread::JoinHandle`] that resolves when the disk write
-    /// completes.  Callers may `.join()` for synchronous semantics or drop it
-    /// for fire-and-forget.
+    /// 返回一个 [`std::thread::JoinHandle`]，在磁盘写入完成时解析。
+    /// 调用方可以对它使用 `.join()` 获得同步语义，或丢弃它以执行即发即弃。
     fn persist_state(&self) -> Result<std::thread::JoinHandle<()>> {
         let Some((path, payload)) = self.build_persist_payload()? else {
-            // Nothing to persist — return a no-op handle.
+            // 没有需要持久化的内容——返回一个空操作句柄。
             return Ok(std::thread::spawn(|| {}));
         };
         let workspace = self.workspace.clone();
-        // Spawn disk I/O off the write-lock hot path.  `payload` is fully
-        // owned (cloned from `self.agents`) so it is `Send` and safe to move.
+        // 将磁盘 I/O 生成为写锁热路径之外的任务。`payload` 完全拥有所有权
+        // （从 `self.agents` 克隆），因此它是 `Send` 且可以安全移动。
         let handle = std::thread::spawn(move || {
             if let Err(err) = write_json_atomic(&workspace, &path, &payload) {
                 tracing::warn!(target: "subagent", ?err, "failed to persist sub-agent state");
@@ -2138,23 +2038,20 @@ impl SubAgentManager {
         Ok(handle)
     }
 
-    /// Fire-and-forget persist — logs errors, drops the join handle.
+    /// 即发即弃的持久化——记录错误，丢弃 join 句柄。
     fn persist_state_best_effort(&self) {
         if let Err(err) = self.persist_state() {
-            // Must not be `eprintln!` — raw stderr inside the alt-screen
-            // leaks into the buffer and produces the scroll-demon
-            // regression (#1085). Routed through tracing so the
-            // file-backed subscriber in `runtime_log` captures it.
+            // 不能使用 `eprintln!`——alt-screen 内的原始 stderr 会泄漏到缓冲区中，
+            // 产生滚动恶魔回归（#1085）。通过 tracing 路由，以便 `runtime_log` 中的文件订阅者捕获它。
             tracing::warn!(target: "subagent", ?err, "failed to persist sub-agent state");
         } else {
-            // Join handle is dropped here — disk I/O proceeds in background.
+            // Join 句柄在此处丢弃——磁盘 I/O 在后台继续。
         }
     }
 
-    /// #freeze: persist on the hot per-step checkpoint path, coalesced to at
-    /// most one disk write per `SUBAGENT_PERSIST_DEBOUNCE`. A skipped write
-    /// sets `persist_pending` so the next terminal persist (which always
-    /// rewrites the full fleet) or `flush_pending_persist` captures it.
+    /// #freeze: 在热路径的每步检查点上持久化，每个 `SUBAGENT_PERSIST_DEBOUNCE` 间隔内
+    /// 最多合并为一次磁盘写入。跳过的写入设置 `persist_pending`，
+    /// 以便下一次终止持久化（总是重写整个舰队）或 `flush_pending_persist` 捕获它。
     fn persist_state_debounced(&mut self) {
         let now = Instant::now();
         let due = match self.last_persist_at {
@@ -2183,18 +2080,16 @@ impl SubAgentManager {
         }
     }
 
-    /// #freeze: force a persist if a hot-path write was previously coalesced
-    /// away. Call on graceful shutdown / session teardown so the most recent
-    /// intermediate checkpoint is not lost.
+    /// #freeze: 如果热路径写入先前被合并掉，则强制持久化。
+    /// 在优雅关闭/会话拆卸时调用，以便最新的中间检查点不会丢失。
     ///
-    /// Unlike [`persist_state`], this performs disk I/O **synchronously** to
-    /// guarantee data is flushed before the process exits.
+    /// 与 [`persist_state`] 不同，此方法**同步**执行磁盘 I/O，
+    /// 以保证数据在进程退出前被刷新。
     pub fn flush_pending_persist(&mut self) {
         if self.persist_pending {
             self.last_persist_at = Some(Instant::now());
             self.persist_pending = false;
-            // Synchronous disk I/O — safe because we are shutting down and no
-            // callers depend on releasing the write lock quickly.
+            // 同步磁盘 I/O——安全，因为我们正在关闭，没有调用方依赖于快速释放写锁。
             if let Ok(Some((path, payload))) = self.build_persist_payload()
                 && let Err(err) = write_json_atomic(&self.workspace, &path, &payload)
             {
@@ -2209,8 +2104,8 @@ impl SubAgentManager {
         };
         let path = checked_subagent_state_path(&self.workspace, path)?;
 
-        // If canonical path doesn't exist, try legacy .deepseek/ path for one-time
-        // migration. The next persist will write to the canonical .codewhale/ path.
+        // 如果规范路径不存在，尝试遗留的 .deepseek/ 路径进行一次性迁移。
+        // 下一次持久化将写入规范的 .codewhale/ 路径。
         let path = if path.exists() {
             path
         } else {
@@ -2250,8 +2145,8 @@ impl SubAgentManager {
             }
 
             let started_at = instant_from_duration(Duration::from_millis(persisted.duration_ms));
-            // Empty vec on disk → None (full inheritance, v0.6.6 default).
-            // Non-empty vec → Some(list) (preserves narrow scope from older sessions).
+            // 磁盘上的空 vec → None（完整继承，v0.6.6 默认值）。
+            // 非空 vec → Some(list)（保留来自旧会话的窄范围）。
             let allowed_tools = if persisted.allowed_tools.is_empty() {
                 None
             } else {
@@ -2284,9 +2179,8 @@ impl SubAgentManager {
                 started_at,
                 last_activity_at: started_at,
                 allowed_tools,
-                // Empty string when loading pre-#405 records; the
-                // manager treats that the same as a non-matching id —
-                // i.e. agent classified as prior-session.
+                // 加载 pre-#405 记录时为空字符串；管理器将其视为不匹配的 id——
+                // 即代理被分类为先前会话。
                 session_boot_id: persisted.session_boot_id,
                 input_tx: None,
                 task_handle: None,
@@ -2425,12 +2319,12 @@ impl SubAgentManager {
         self.refresh_budget_scope(&scope.scope_id);
     }
 
-    /// Aggregate token spend for a shared workflow budget scope.
+    /// 聚合共享工作流预算范围的 token 支出。
     pub(crate) fn budget_spent_for_scope(&self, scope_id: &str) -> u64 {
         self.aggregate_budget_spent(scope_id)
     }
 
-    /// Attach a workflow child to the run-level shared budget pool.
+    /// 将工作流子级附加到运行级别共享预算池。
     pub(crate) fn attach_shared_budget_scope(
         &mut self,
         worker_id: &str,
@@ -2648,34 +2542,32 @@ impl SubAgentManager {
         Ok(snapshot)
     }
 
-    /// Count running agents.
+    /// 计数正在运行的代理。
     pub fn running_count(&self) -> usize {
         self.admitted_count()
     }
 
-    /// Count live sub-agents that have been admitted, including queued
-    /// workers waiting on the launch gate.
+    /// 计数已被准入的活跃子代理，包括在启动门控上等待的排队工作者。
     pub fn admitted_count(&self) -> usize {
         self.agents
             .values()
             .filter(|agent| {
-                // Exclude non-running statuses
+                // 排除非运行状态
                 if agent.status != SubAgentStatus::Running {
                     return false;
                 }
-                // Exclude persisted agents with no task_handle (they're not actually running)
+                // 排除没有 task_handle 的持久化代理（它们实际上并未运行）
                 if agent.task_handle.is_none() {
                     return false;
                 }
-                // Keep recently finished handles counted until the terminal
-                // status update has reconciled. Otherwise a fanout burst can
-                // refill the cap before the UI/state catches up (#2211).
+                // 保持最近完成的句柄被计数，直到终止状态更新已协调。
+                // 否则扇出爆发可能会在 UI/状态跟上之前重新填满上限（#2211）。
                 !self.running_heartbeat_timed_out(agent)
             })
             .count()
     }
 
-    /// Count admitted workers that are currently waiting for the launch gate.
+    /// 计数当前正在等待启动门控的已准入工作者。
     pub fn queued_count(&self) -> usize {
         self.agents
             .values()
@@ -2691,7 +2583,7 @@ impl SubAgentManager {
             .count()
     }
 
-    /// Count admitted workers not currently in the queued launch state.
+    /// 计数当前不在排队启动状态的已准入工作者。
     pub fn active_count(&self) -> usize {
         self.admitted_count().saturating_sub(self.queued_count())
     }
@@ -2727,7 +2619,7 @@ impl SubAgentManager {
         true
     }
 
-    /// Spawn a new background sub-agent.
+    /// 生成一个新的后台子代理。
     pub fn spawn_background(
         &mut self,
         manager_handle: SharedSubAgentManager,
@@ -2746,7 +2638,7 @@ impl SubAgentManager {
         )
     }
 
-    /// Spawn a new background sub-agent with explicit assignment metadata.
+    /// 使用显式的分配元数据生成一个新的后台子代理。
     pub fn spawn_background_with_assignment(
         &mut self,
         manager_handle: SharedSubAgentManager,
@@ -2767,8 +2659,7 @@ impl SubAgentManager {
         )
     }
 
-    /// Spawn a new background sub-agent with explicit assignment and display
-    /// metadata.
+    /// 使用显式的分配和显示元数据生成一个新的后台子代理。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_background_with_assignment_options(
         &mut self,
@@ -2827,8 +2718,7 @@ impl SubAgentManager {
                 .values()
                 .find(|existing| existing.session_name == name)
             {
-                // #3020: Include elapsed time so the parent can distinguish a
-                // live worker from a stale/failed earlier spawn (#2656).
+                // #3020: 包含经过时间，以便父级可以区分活跃工作者与陈旧/失败的早期生成（#2656）。
                 let elapsed = existing.started_at.elapsed();
                 let since = if elapsed.as_secs() < 120 {
                     format!("{}s ago", elapsed.as_secs())
@@ -2937,7 +2827,7 @@ impl SubAgentManager {
             .snapshot())
     }
 
-    /// Get the current snapshot for an agent.
+    /// 获取代理的当前快照。
     pub fn get_result(&self, agent_id: &str) -> Result<SubAgentResult> {
         let agent = self
             .agents
@@ -2972,7 +2862,7 @@ impl SubAgentManager {
         results
     }
 
-    /// Resolve either a durable agent id or a model-facing session name.
+    /// 解析持久化的代理 id 或面向模型的会话名称。
     fn resolve_agent_ref(&self, agent_ref: &str) -> Result<String> {
         let agent_ref = agent_ref.trim();
         if self.agents.contains_key(agent_ref) {
@@ -2995,12 +2885,11 @@ impl SubAgentManager {
         }
     }
 
-    /// List all agents and their status.
+    /// 列出所有代理及其状态。
     #[must_use]
-    /// Snapshot a single agent and tag it with the manager's
-    /// classification. The bare `SubAgent::snapshot` defaults
-    /// `from_prior_session` to `false`; only the manager knows the
-    /// matching boot id, so listing goes through here.
+    /// 快照单个代理并用管理器的分类标记它。裸的 `SubAgent::snapshot`
+    /// 将 `from_prior_session` 默认为 `false`；只有管理器知道匹配的启动 id，
+    /// 因此列表通过此方法处理。
     fn snapshot_for_listing(&self, agent: &SubAgent) -> SubAgentResult {
         let mut snap = agent.snapshot();
         snap.from_prior_session = self.is_from_prior_session(agent);
@@ -3015,9 +2904,9 @@ impl SubAgentManager {
         snap
     }
 
-    /// List all agents currently held by the manager, regardless of
-    /// session origin. Use [`Self::list_filtered`] in user-facing tool
-    /// paths so prior-session agents stay hidden by default (#405).
+    /// 列出管理器当前持有的所有代理，无论会话来源如何。
+    /// 在面向用户的工具路径中使用 [`Self::list_filtered`]，
+    /// 以便先前会话的代理默认保持隐藏（#405）。
     pub fn list(&self) -> Vec<SubAgentResult> {
         self.agents
             .values()
@@ -3025,16 +2914,14 @@ impl SubAgentManager {
             .collect()
     }
 
-    /// List agents respecting the session-boundary filter (#405).
+    /// 列表代理时遵守会话边界过滤器（#405）。
     ///
-    /// `include_archived = false` drops
-    /// any prior-session agent that is no longer running. Prior-session
-    /// agents that are still `Running` (e.g. interrupted by a process
-    /// restart) stay visible — they may matter for ongoing recovery.
+    /// `include_archived = false` 丢弃任何不再运行的先前会话代理。
+    /// 仍然为 `Running` 的先前会话代理（例如，被进程重启中断的）保持可见——
+    /// 它们可能对正在进行的恢复很重要。
     ///
-    /// `include_archived = true` returns everything, with the
-    /// `from_prior_session` flag on each `SubAgentResult` so the model
-    /// can tell active and archived apart at a glance.
+    /// `include_archived = true` 返回所有内容，每个 `SubAgentResult` 上带有
+    /// `from_prior_session` 标志，以便模型可以一眼区分活跃和归档代理。
     pub fn list_filtered(&self, include_archived: bool) -> Vec<SubAgentResult> {
         self.agents
             .values()
@@ -3051,9 +2938,8 @@ impl SubAgentManager {
             .collect()
     }
 
-    /// Clean up stale running agents and completed agents older than the
-    /// given duration. Returns the number of running agents auto-cancelled
-    /// during this pass.
+    /// 清理过时的正在运行的代理和超过给定持续时间的已完成代理。
+    /// 返回在此过程中自动取消的正在运行的代理数量。
     pub fn cleanup(&mut self, max_age: Duration) -> usize {
         let before = self.agents.len();
         let before_workers = self.worker_records.len();
@@ -3105,10 +2991,9 @@ impl SubAgentManager {
                 agent.started_at.elapsed() < max_age
             }
         });
-        // #4217: age-evict terminal worker ledger entries. Agents already drop
-        // after `max_age`, but worker_records previously only had an LRU cap of
-        // 256 — long-lived sessions rewrote multi-MB subagents.v1.json forever.
-        // Running / starting / waiting records are always preserved.
+        // #4217: 按时间逐出终止工作者的分类账条目。代理已经在 `max_age` 后被丢弃，
+        // 但 worker_records 之前只有 256 的 LRU 上限——长期会话会永远重写多 MB 的 subagents.v1.json。
+        // 运行中/启动中/等待中的记录始终保留。
         let now_ms = epoch_millis_now();
         let max_age_ms = max_age.as_millis() as u64;
         self.worker_records.retain(|_, record| {
@@ -3128,10 +3013,8 @@ impl SubAgentManager {
         auto_cancelled
     }
 
-    /// #3803: whether enough time has elapsed since the last `cleanup` that the
-    /// next sidebar refresh should run the write-locked cleanup again. Every
-    /// other refresh renders from the read-only `list()` snapshot, so a UI
-    /// refresh storm during a fanout does not take the write lock per request.
+    /// #3803: 自上次 `cleanup` 以来是否已经过足够时间，以至于下一次侧边栏刷新应再次运行写锁定的清理。
+    /// 每隔一次刷新从只读的 `list()` 快照渲染，因此扇出期间的 UI 刷新风暴不会每次请求都获取写锁。
     #[must_use]
     pub fn cleanup_due(&self, min_interval: Duration) -> bool {
         self.last_cleanup_at
@@ -3181,9 +3064,8 @@ impl SubAgentManager {
         agent.steps_taken = checkpoint.steps_taken;
         agent.checkpoint = Some(checkpoint);
         agent.last_activity_at = Instant::now();
-        // #freeze: hot per-step path — coalesce the full-fleet persist so 20
-        // agents stepping concurrently do not serialize the whole fleet (with
-        // full transcripts) to disk under the write lock on every step.
+        // #freeze: 热路径的每步路径——合并全舰队持久化，以便 20 个代理同时步进时，
+        // 不会在每个步骤的写锁下将整个舰队（含完整转录）序列化到磁盘。
         self.persist_state_debounced();
         true
     }
@@ -3221,7 +3103,7 @@ impl SubAgentManager {
     }
 }
 
-/// Thread-safe wrapper for `SubAgentManager`.
+/// `SubAgentManager` 的线程安全包装器。
 pub type SharedSubAgentManager = Arc<RwLock<SubAgentManager>>;
 
 pub fn load_persisted_agent_worker_records(workspace: &Path) -> Result<Vec<AgentWorkerRecord>> {
@@ -3231,7 +3113,7 @@ pub fn load_persisted_agent_worker_records(workspace: &Path) -> Result<Vec<Agent
     Ok(manager.list_worker_records())
 }
 
-/// Model-facing session projection returned by the v0.8.33 sub-agent API.
+/// v0.8.33 子代理 API 返回的面向模型的会话投影。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentSessionProjection {
     pub name: String,
@@ -3386,14 +3268,11 @@ async fn subagent_session_projection(
         .as_ref()
         .map(|record| record.verification.clone())
         .unwrap_or_else(default_agent_run_verification);
-    // Status must stay coherent with the continuation flags below. An
-    // Interrupted snapshot that carries a continuable checkpoint
-    // (`continuable`/`needs_continuation` true, `terminal` true) means the
-    // worker is parked waiting for the parent to act, so it must project as
-    // `waiting_for_user` rather than a bare `interrupted`. When a worker
-    // record exists its status was already derived via
-    // `worker_status_from_subagent_result`; mirror that derivation when there
-    // is no record so both paths agree on the "needs parent action" signal.
+    // 状态必须与下面的继续标志保持一致。一个携带可继续检查点的
+    // Interrupted 快照（`continuable`/`needs_continuation` 为 true，`terminal` 为 true）
+    // 意味着工作者已停放等待父级操作，因此它必须投影为 `waiting_for_user` 而非裸的 `interrupted`。
+    // 当工作者记录存在时，其状态已经通过 `worker_status_from_subagent_result` 推导；
+    // 当没有记录时镜像该推导，以便两条路径在"需要父级操作"信号上保持一致。
     let status = worker_record
         .as_ref()
         .map(|record| agent_worker_status_name(record.status))
@@ -3428,9 +3307,8 @@ async fn subagent_session_projection(
 
 fn default_state_path(workspace: &Path) -> Result<PathBuf> {
     let workspace = normalize_subagent_workspace(workspace);
-    // Canonical post-rebrand state path. On first run the file won't exist yet;
-    // write_json_atomic creates parent directories. Legacy .deepseek/state/ data
-    // is migrated on load (see load_state).
+    // 品牌重塑后的规范状态路径。首次运行时文件尚不存在；
+    // write_json_atomic 创建父目录。遗留的 .deepseek/state/ 数据在加载时迁移（参见 load_state）。
     checked_subagent_state_path(
         &workspace,
         &Path::new(".codewhale")
@@ -3571,12 +3449,10 @@ fn instant_from_duration(duration: Duration) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
-/// Per-write sequence so each `write_json_atomic` uses a distinct temp file.
-/// `persist_state_best_effort` fires a fresh thread per call, so multiple
-/// persists of the same `state.json` can be in flight at once; keying the temp
-/// name only on the pid (as before) made every thread write the *same*
-/// `state.<pid>.tmp` and a rename could publish a half-written file — corrupt
-/// state that fails to parse on reload.
+/// 每次写入的序列号，以便每个 `write_json_atomic` 使用不同的临时文件。
+/// `persist_state_best_effort` 每次调用启动一个新线程，因此同一 `state.json` 的多个持久化
+/// 可能同时进行；仅以 pid 作为临时文件名（像以前一样）会导致每个线程写入*同一个*
+/// `state.<pid>.tmp`，并且重命名可能发布一个半写入的文件——损坏的状态在重新加载时无法解析。
 static WRITE_JSON_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn write_json_atomic<T: Serialize>(workspace: &Path, path: &Path, value: &T) -> Result<()> {
@@ -3591,14 +3467,14 @@ fn write_json_atomic<T: Serialize>(workspace: &Path, path: &Path, value: &T) -> 
     reject_workspace_relative_symlinks(&workspace, &tmp_path)?;
     fs::write(&tmp_path, payload)?;
     if let Err(err) = fs::rename(&tmp_path, path) {
-        // Don't leave a stray temp behind if the publish failed.
+        // 如果发布失败，不要留下残留的临时文件。
         let _ = fs::remove_file(&tmp_path);
         return Err(err.into());
     }
     Ok(())
 }
 
-/// Create a shared sub-agent manager with a configurable limit.
+/// 创建一个具有可配置限制的共享子代理管理器。
 #[cfg(test)]
 #[must_use]
 pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> SharedSubAgentManager {
@@ -3612,8 +3488,7 @@ pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> Sha
     )
 }
 
-/// Create a shared sub-agent manager with configurable concurrency and stale
-/// running-agent heartbeat timeout.
+/// 创建一个具有可配置并发度和陈旧运行代理心跳超时的共享子代理管理器。
 #[must_use]
 pub fn new_shared_subagent_manager_with_timeout(
     workspace: PathBuf,
@@ -3640,26 +3515,24 @@ pub fn new_shared_subagent_manager_with_timeout(
         manager = manager.with_state_path(state_path);
     }
     if let Err(err) = manager.load_state() {
-        // Routed through tracing instead of stderr — see comment in
-        // `persist_state_best_effort` above.
+        // 通过 tracing 而非 stderr 路由——参见上面 `persist_state_best_effort` 中的注释。
         tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state");
     }
     Arc::new(RwLock::new(manager))
 }
 
-// === Tool Implementations ===
+// === 工具实现 ===
 
-/// Start a child agent task through a single simplified model-facing surface.
+/// 通过一个简化的面向模型接口启动子代理任务。
 pub struct AgentTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
-    /// Last projection fingerprint per agent, used to throttle repeat
-    /// peek/status calls that observe no change (#4097). Std mutex: locked
-    /// only for brief map reads/writes, never across an await.
+    /// 每个代理的上次投影指纹，用于限制观察到无变化的重复 peek/status 调用（#4097）。
+    /// 标准互斥锁：仅用于短暂的 map 读取/写入，从不在 await 期间持有。
     inspect_memo: Arc<std::sync::Mutex<HashMap<String, PeekMemo>>>,
 }
 
-/// Fingerprint of the last peek/status response for one agent (#4097).
+/// 一个代理的上次 peek/status 响应的指纹（#4097）。
 #[derive(Debug, Clone, Copy)]
 struct PeekMemo {
     fingerprint: u64,
@@ -3830,8 +3703,8 @@ impl ToolSpec for AgentTool {
         ApprovalRequirement::Required
     }
 
-    /// #3801: status and peek are read-only queries — no approval needed.
-    /// #4097: wait passively observes children — also read-only.
+    /// #3801: status 和 peek 是只读查询——无需批准。
+    /// #4097: wait 被动观察子级——也是只读的。
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
         match parse_agent_tool_action(input) {
             Ok(AgentToolAction::Status | AgentToolAction::Peek | AgentToolAction::Wait) => {
@@ -3841,17 +3714,15 @@ impl ToolSpec for AgentTool {
         }
     }
 
-    /// #3801: `action=start` launches a background agent and returns immediately —
-    /// it is a detached start that should not hold the global tool-exec write
-    /// lock while the child spins up.  In auto-approved modes (YOLO) this lets
-    /// multiple independent `agent start` calls join a single parallel batch
-    /// instead of being serialized N ways.
+    /// #3801: `action=start` 启动一个后台代理并立即返回——
+    /// 这是一个分离的启动，不应在子级启动时持有全局工具执行写锁。
+    /// 在自动批准模式（YOLO）下，这允许多个独立的 `agent start` 调用加入一个并行批次，
+    /// 而不是 N 路串行化。
     fn starts_detached_for(&self, input: &Value) -> bool {
         matches!(parse_agent_tool_action(input), Ok(AgentToolAction::Start))
     }
 
-    /// #3801: Read-only `agent` actions (status, peek) can safely run in
-    /// parallel batches.
+    /// #3801: 只读的 `agent` 操作（status, peek）可以安全地并行运行。
     fn supports_parallel_for(&self, input: &Value) -> bool {
         matches!(
             parse_agent_tool_action(input),
@@ -3859,8 +3730,8 @@ impl ToolSpec for AgentTool {
         )
     }
 
-    /// #3801: status/peek actions are read-only queries of manager state.
-    /// #4097: wait only observes child lifecycle — read-only as well.
+    /// #3801: status/peek 操作是管理器状态的只读查询。
+    /// #4097: wait 仅观察子级生命周期——也是只读的。
     fn is_read_only_for(&self, input: &Value) -> bool {
         matches!(
             parse_agent_tool_action(input),
@@ -3912,13 +3783,12 @@ impl ToolSpec for AgentTool {
     }
 }
 
-/// Repeat peek/status calls on an unchanged running child inside this window
-/// return a compact "no change" nudge instead of a full projection (#4097).
+/// 在此窗口内对未变化的运行中子级重复进行 peek/status 调用时，
+/// 返回一个紧凑的"无变化"提示，而非完整的投影（#4097）。
 const PEEK_UNCHANGED_THROTTLE_WINDOW: Duration = Duration::from_secs(30);
 
-/// Stable change fingerprint for a running child's model-visible state.
-/// Volatile fields (durations, timestamps) are deliberately excluded so an
-/// idle child fingerprints identically across back-to-back peeks.
+/// 运行中子级的模型可见状态的稳定变化指纹。
+/// 易变字段（持续时间、时间戳）被有意排除，以便空闲子级在连续 peek 中指纹相同。
 fn inspect_fingerprint(snapshot: &SubAgentResult) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -3951,10 +3821,9 @@ async fn inspect_agent_from_input(
             (snapshot, worker_record)
         };
 
-        // #4097: a running child whose model-visible state hasn't changed
-        // since the last peek gets a compact nudge, not another full
-        // projection. Terminal/parked children always return in full — the
-        // model may legitimately be fetching results.
+        // #4097: 自上次 peek 以来模型可见状态未变化的运行中子级
+        // 会收到一个紧凑提示，而非另一个完整投影。
+        // 终止/停放子级始终返回完整信息——模型可能正在合法地获取结果。
         if snapshot.status == SubAgentStatus::Running
             && let Some(memo_map) = inspect_memo
         {
@@ -4069,31 +3938,25 @@ async fn cancel_agent_from_input(
     Ok(tool_result)
 }
 
-/// Bounds for `agent(action="wait")` (#4097). The default keeps one wait call
-/// well under provider/tool timeouts while covering typical child runtimes;
-/// on expiry the model gets a still-running snapshot and can wait again.
+/// `agent(action="wait")` 的边界（#4097）。默认值使一次 wait 调用
+/// 远低于提供商/工具超时，同时覆盖典型的子级运行时间；
+/// 到期时模型会得到一个仍在运行的快照，可以再次等待。
 const SUBAGENT_WAIT_DEFAULT_TIMEOUT_SECS: u64 = 300;
-/// Runtime floor is 1s (schema advertises 5) so tests can exercise the
-/// timeout path without multi-second sleeps.
+/// 运行时下限为 1 秒（schema 声明为 5），以便测试无需多秒休眠即可演练超时路径。
 const SUBAGENT_WAIT_MIN_TIMEOUT_SECS: u64 = 1;
 const SUBAGENT_WAIT_MAX_TIMEOUT_SECS: u64 = 1800;
-/// Internal state-check cadence while blocked. Invisible to the model — the
-/// #4097 anti-pattern is model-visible polling that burns turns and tokens,
-/// not a cheap in-process timer.
+/// 阻塞时的内部状态检查节奏。对模型不可见——#4097 反模式是模型可见的轮询，
+/// 会消耗轮次和 token，而非廉价的进程内定时器。
 const SUBAGENT_WAIT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
-/// `agent(action="wait")`: block until a running child settles (leaves
-/// `Running` — completed, failed, cancelled, interrupted/needs-input, or
-/// budget-exhausted), then return a compact summary. Full child results are
-/// still delivered as `<codewhale:subagent.done>` sentinels by the runtime;
-/// this call only provides the legitimate "join" the model previously faked
-/// with peek→sleep loops (#4097).
+/// `agent(action="wait")`: 阻塞直到运行中的子级稳定下来（离开 `Running` 状态——
+/// 完成、失败、取消、中断/需要输入或预算耗尽），然后返回一个紧凑摘要。
+/// 完整的子级结果仍由运行时作为 `<codewhale:subagent.done>` 哨兵传递；
+/// 此调用仅提供模型以前通过 peek→sleep 循环伪造的合法"join"（#4097）。
 ///
-/// With `agent_id`, waits for that child specifically. Without it, waits for
-/// the next child to settle (returning every child that settled while
-/// blocked). Returns immediately when nothing is running. Cancel-safe: the
-/// engine turn's cancel token interrupts the block, and no lock is held
-/// across an await.
+/// 提供 `agent_id` 时，专门等待该子级。不提供时，等待下一个子级稳定下来
+/// （返回所有在阻塞期间稳定下来的子级）。没有运行中的子级时立即返回。
+/// 可安全取消：引擎轮次的取消令牌中断阻塞，且不会在 await 期间持有任何锁。
 async fn wait_for_subagents_from_input(
     input: &Value,
     manager: SharedSubAgentManager,
@@ -4111,8 +3974,7 @@ async fn wait_for_subagents_from_input(
     let timeout = Duration::from_secs(timeout_secs);
     let agent_ref = parse_agent_ref(input);
 
-    // Resolve the watch set up front so a bad reference fails immediately
-    // instead of blocking for the full timeout.
+    // 预先解析监视集，以便错误引用立即失败，而不是阻塞整个超时时间。
     let watched: Vec<String> = {
         let manager = manager.read().await;
         if let Some(agent_ref) = &agent_ref {
@@ -4190,9 +4052,9 @@ async fn wait_for_subagents_from_input(
     }
 }
 
-/// Compact `action=wait` result. Deliberately not a full projection: the
-/// runtime's completion sentinels (and a follow-up peek on a settled child)
-/// carry the full payload; duplicating it here would double token cost.
+/// 紧凑的 `action=wait` 结果。有意不提供完整投影：
+/// 运行时的完成哨兵（和对已稳定子级的后续 peek）携带完整有效载荷；
+/// 在此处复制它会加倍 token 成本。
 async fn wait_result_payload(
     settled: &[SubAgentResult],
     running: usize,
@@ -4250,22 +4112,18 @@ fn provider_pin_matches_session(runtime: &SubAgentRuntime, provider_id: &str) ->
             .is_some_and(|active| active == provider_id)
 }
 
-/// Resolve the LLM client a freshly spawned in-process child should run on,
-/// honoring a fleet roster member's explicit provider pin (#4193).
+/// 解析一个新生成的进程内子级应在哪个 LLM 客户端上运行，
+/// 遵循舰队名册成员的显式提供商固定（#4193）。
 ///
-/// - No member, a member pinning no provider (profile-less / `inherit`), or a
-///   member pinning the session's own provider: reuse the parent/session client
-///   unchanged. Preserves pre-#4193 behavior — no regression.
-/// - A member pinning a provider DIFFERENT from the session: build a fresh
-///   client for that provider (its base URL + credentials). This is the
-///   substantive fix; the `provider` metadata tag alone is inert while the
-///   client is shared, so without this the request still hits the session
-///   provider's endpoint with model B's id (#4093).
+/// - 无成员、成员未固定提供商（无配置文件 / `inherit`），或成员固定了会话自己的提供商：
+///   不变地复用父级/会话客户端。保留 pre-#4193 行为——无回归。
+/// - 成员固定了与会话**不同**的提供商：为该提供商构建一个新客户端（其 base URL + 凭据）。
+///   这是实质性修复；仅 `provider` 元数据标签在客户端共享时是无效的，
+///   因此没有这个修复，请求仍会以模型 B 的 id 命中会话提供商的端点（#4093）。
 ///
-/// A pinned-but-unbuildable provider is a hard error — never a silent fallback
-/// to the session client (that silent fallback IS the #4093 misroute). The
-/// provider comes only from the explicit pin ([`explicit_fleet_provider`]),
-/// never inferred from the model id (EPIC #2608).
+/// 固定但无法构建的提供商是硬错误——永远不回退到会话客户端
+/// （该静默回退正是 #4093 路由错误）。提供商仅来自显式固定
+/// （[`explicit_fleet_provider`]），从不从模型 id 推断（EPIC #2608）。
 fn child_client_for_member(
     runtime: &SubAgentRuntime,
     member: Option<&crate::fleet::profile::AgentProfile>,
@@ -4321,13 +4179,11 @@ async fn spawn_subagent_from_input(
     let child_workspace = prepare_child_workspace(&runtime.context.workspace, &spawn_request)?;
 
     let mut child_runtime = runtime.background_runtime();
-    // #4193 seam 3 (the substantive fix): if the resolved roster member's
-    // profile pins a provider different from the session's, rebind the child to
-    // a fresh client for that provider BEFORE any model normalization/routing.
-    // Every downstream model decision below derives its provider from
-    // `child_runtime.client.api_provider()`, so swapping the client here is what
-    // actually routes the request to provider B's endpoint with B's creds —
-    // rather than tagging `provider = B` on a client still pointed at A (#4093).
+    // #4193 seam 3（实质性修复）：如果已解析的名册成员的配置文件固定了与会话不同的提供商，
+    // 则在任何模型标准化/路由**之前**，将子级重新绑定到该提供商的新客户端。
+    // 下面每个下游模型决策都从 `child_runtime.client.api_provider()` 获取其提供商，
+    // 因此在此处交换客户端才是实际将请求路由到提供商 B 的端点并使用 B 的凭据——
+    // 而不是在仍指向 A 的客户端上标记 `provider = B`（#4093）。
     child_runtime.client = child_client_for_member(&runtime, profile_member.as_ref())?;
     child_runtime.max_spawn_depth = child_max_spawn_depth_for_spawn(
         child_runtime.max_spawn_depth,
@@ -4340,12 +4196,11 @@ async fn spawn_subagent_from_input(
     if let Some(workspace) = child_workspace {
         child_runtime.context.workspace = workspace;
     }
-    // #4042: merge the parent runtime's inherited deny-list with the caller's
-    // explicit `disallowed_tools`. `background_runtime()` already cloned the
-    // parent's `worker_profile.denied_tools` (the session `--disallowed-tools`),
-    // so by default the child inherits it. `inherit_disallowed_tools: false`
-    // drops *only* the inherited list; an explicit caller `disallowed_tools`
-    // always applies (union, deny never relaxes).
+    // #4042: 合并父运行时的继承拒绝列表与调用方的显式 `disallowed_tools`。
+    // `background_runtime()` 已经克隆了父级的 `worker_profile.denied_tools`
+    // （会话的 `--disallowed-tools`），因此默认情况下子级继承它。
+    // `inherit_disallowed_tools: false` *仅*丢弃继承的列表；
+    // 调用方的显式 `disallowed_tools` 始终应用（并集，拒绝不会放宽）。
     if !spawn_request.inherit_disallowed_tools {
         child_runtime.worker_profile.denied_tools.clear();
     }
@@ -4361,10 +4216,9 @@ async fn spawn_subagent_from_input(
             }
         }
     }
-    // #4193 seam 2: normalize/validate the requested model against the CHILD's
-    // (pinned) provider, not the session provider. `child_runtime` carries the
-    // provider-B client set above, so a profile-less/`inherit` member still
-    // sees the session provider here (no regression).
+    // #4193 seam 2: 针对子级的（固定）提供商而非会话提供商对请求的模型进行标准化/验证。
+    // `child_runtime` 携带上面设置的提供商 B 客户端，因此无配置文件/`inherit` 成员
+    // 在此处仍然看到会话提供商（无回归）。
     let configured_model = match spawn_request.model.clone() {
         Some(model) => Some(normalize_requested_subagent_model(
             &model,
@@ -4377,7 +4231,7 @@ async fn spawn_subagent_from_input(
             &spawn_request.agent_type,
         )?,
     };
-    // Resolved before the prompt is moved out of the request below.
+    // 在提示词被移出下面的请求之前解析。
     let requested_model_route = spawn_model_route(&spawn_request, profile_member.as_ref());
     let (effective_prompt, _resident_conflict) = if let Some(ref file_path) =
         spawn_request.resident_file
@@ -4410,11 +4264,10 @@ async fn spawn_subagent_from_input(
         (spawn_request.prompt, None)
     };
 
-    // #4193 seam 2 (cont.): strength/inherit/faster routing and the final
-    // provider-namespace guard both read the provider from the runtime's client,
-    // so route them through `child_runtime` (pinned provider) instead of the
-    // session `runtime`. Router candidates, reasoning-effort defaults, and the
-    // fixed-model validation then all resolve against provider B.
+    // #4193 seam 2（续）：强度/继承/更快路由和最终的提供商命名空间守卫
+    // 都从运行时的客户端读取提供商，因此通过 `child_runtime`（固定提供商）
+    // 而非会话 `runtime` 路由它们。路由器候选、推理努力默认值和固定模型验证
+    // 然后都针对提供商 B 解析。
     let route = resolve_subagent_assignment_route(
         &child_runtime,
         configured_model,
@@ -4488,7 +4341,7 @@ async fn spawn_subagent_from_input(
     Ok((result, spawn_policy_note, spawn_metadata))
 }
 
-/// Mode-aware spawn defaults for the root orchestrator (Wave 7 M4/M5).
+/// 根编排器的模式感知生成默认值（Wave 7 M4/M5）。
 fn apply_session_spawn_policy(
     runtime: &SubAgentRuntime,
     request: &mut SpawnRequest,
@@ -4510,20 +4363,18 @@ fn apply_session_spawn_policy(
     }
 }
 
-/// Spawn one Workflow `task(...)` through the same path as the public `agent`
-/// tool. Keeping this adapter inside the sub-agent module prevents the
-/// Workflow driver from copying Fleet roster/profile/depth/budget semantics.
+/// 通过公共 `agent` 工具的相同路径生成一个 Workflow `task(...)`。
+/// 将此适配器保留在子代理模块内，防止 Workflow 驱动复制舰队名册/配置文件/深度/预算语义。
 ///
-/// `identity` is stamped onto the returned spawn metadata so panel/history
-/// consumers can render workflow children without parsing prompt text (#4119).
+/// `identity` 被标记到返回的生成元数据上，以便面板/历史消费者无需解析提示词文本
+/// 即可渲染工作流子级（#4119）。
 pub(crate) async fn spawn_workflow_task(
     request: codewhale_workflow_js::TaskRequest,
     manager: SharedSubAgentManager,
     mut runtime: SubAgentRuntime,
     identity: WorkflowTaskSpawnIdentity,
 ) -> Result<WorkflowTaskSpawnResult, ToolError> {
-    // Capture identity fallbacks before consuming `request` fields into the
-    // agent-tool input JSON.
+    // 在将 `request` 字段消费到 agent-tool 输入 JSON 之前捕获身份回退。
     let request_label = request
         .label
         .as_ref()
@@ -4567,12 +4418,11 @@ pub(crate) async fn spawn_workflow_task(
     if let Some(value) = request.token_budget {
         input["token_budget"] = json!(value);
     }
-    // Workflow children inherit the parent tool surface and auto-accept
-    // Suggest-level file edits for write-capable roles. Shell / network / MCP
-    // still require parent auto-approve (or fail closed).
+    // Workflow 子级继承父级工具表面，并对可写角色自动接受 Suggest 级别的文件编辑。
+    // Shell/网络/MCP 仍然需要父级自动批准（或静默失败）。
     runtime.accept_edits = true;
     let (result, _, mut metadata) = spawn_subagent_from_input(input, manager, runtime).await?;
-    // Prefer the identity values the driver stamped; fall back to task options.
+    // 优先使用驱动程序标记的身份值；回退到任务选项。
     let workflow_task_label = identity
         .workflow_task_label
         .filter(|label| !label.trim().is_empty())
@@ -4588,17 +4438,16 @@ pub(crate) async fn spawn_workflow_task(
     Ok(WorkflowTaskSpawnResult { result, metadata })
 }
 
-// === Sub-agent Execution ===
+// === 子代理执行 ===
 
-/// Build the system prompt for a sub-agent.
+/// 构建子代理的系统提示词。
 ///
-/// Starts with the per-type prompt (`SubAgentType::system_prompt`) and
-/// appends a one-line role overlay when `assignment.role` is set. The
-/// full role library — TOML overlays from `~/.deepseek/roles/`, the
-/// `/roles` slash command, model overrides per role — lands in 0.6.7.
-/// For 0.6.6 we just don't drop the role on the floor: the model sees
-/// "You are operating in the role of `{name}`." as a final line so its
-/// behavior reflects the user's choice.
+/// 以每个类型的提示词（`SubAgentType::system_prompt`）开始，
+/// 并在 `assignment.role` 设置时附加一行角色覆盖。
+/// 完整的角色库——来自 `~/.deepseek/roles/` 的 TOML 覆盖、`/roles` 斜杠命令、
+/// 每个角色的模型覆盖——在 0.6.7 中落地。
+/// 对于 0.6.6，我们只是不丢弃角色：模型看到"You are operating in the role of `{name}`."
+/// 作为最后一行，以便其行为反映用户的选择。
 fn build_subagent_system_prompt(
     agent_type: &SubAgentType,
     assignment: &SubAgentAssignment,
@@ -4613,8 +4462,7 @@ fn build_subagent_system_prompt(
         }
         _ => base,
     };
-    // Sub-agents are background workers: the orchestrating agent is their only
-    // caller. They never talk to the end user.
+    // 子代理是后台工作者：编排代理是它们唯一的调用方。它们从不与最终用户通信。
     prompt.push_str(
         "\n\nYou are a background sub-agent: every instruction comes from the orchestrating agent, not a human. Never address the end user or ask them questions — do the assigned work and report results back to the orchestrator.",
     );
@@ -4686,33 +4534,29 @@ struct SubAgentTask {
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
-    /// `None` = full registry inheritance. `Some(list)` = explicit narrow.
-    /// Approval-gated tools still require an auto-approved parent runtime.
+    /// `None` = 完整注册表继承。`Some(list)` = 显式窄化。
+    /// 需要批准的工具仍然需要自动批准的父运行时。
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
     started_at: Instant,
     max_steps: u32,
-    /// Per-worker token cap sourced from the spawn request's `token_budget`
-    /// (the explicit `max_tokens`/`tokenBudget` override). `None` means no
-    /// per-worker limit; the worker still obeys the scope admission gate.
-    /// When set, the worker stops with `BudgetExhausted` once its accumulated
-    /// model tokens exceed this value. Independent of the scope budget (#3319).
+    /// 来自生成请求 `token_budget`（显式的 `max_tokens`/`tokenBudget` 覆盖）的每工作者 token 上限。
+    /// `None` 表示无每工作者限制；工作者仍然遵守作用域准入门控。
+    /// 设置时，一旦累积的模型 token 超过此值，工作者将以 `BudgetExhausted` 停止。
+    /// 独立于作用域预算（#3319）。
     token_budget: Option<u64>,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
-    /// Interactive launch gate (#3095). `Some` only for direct (depth-1)
-    /// children: the task acquires a permit before its first model step and
-    /// holds it until completion, so a fanout burst beyond the limit queues
-    /// with a visible reason instead of executing all at once.
+    /// 交互式启动门控（#3095）。仅对直接（深度为 1）子级为 `Some`：
+    /// 任务在其第一个模型步骤之前获取许可并持有直到完成，
+    /// 因此超出限制的扇出爆发会以可见原因排队，而非一次性全部执行。
     launch_gate: Option<Arc<Semaphore>>,
 }
 
 #[allow(clippy::too_many_lines)]
 async fn run_subagent_task(task: SubAgentTask) {
-    // Interactive launch gate (#3095): direct children acquire a permit
-    // before their first model step so a fanout burst beyond the limit
-    // queues visibly instead of executing all at once. The permit is held
-    // for the lifetime of the task. Cancellation while queued is handled by
-    // `run_subagent`'s own first-step cancel check.
+    // 交互式启动门控（#3095）：直接子级在其第一个模型步骤之前获取许可，
+    // 以便超出限制的扇出爆发可见地排队，而非一次性全部执行。
+    // 许可在任务的生命周期内持有。排队时的取消由 `run_subagent` 自己的第一步取消检查处理。
     let mut _launch_permit = None;
     if let Some(gate) = task.launch_gate.as_ref() {
         match Arc::clone(gate).try_acquire_owned() {
@@ -4744,21 +4588,16 @@ async fn run_subagent_task(task: SubAgentTask) {
     )
     .await;
 
-    // Emit BOTH a human-friendly summary (rendered in the parent's
-    // sidebar / cell) AND a structured sentinel the model can recognize
-    // on its next turn. Format: human summary on the first line,
-    // sentinel on the second. The sentinel uses an opaque tag
-    // (`codewhale:subagent.done`) to avoid collision with normal user
-    // text.
+    // 同时发出人类友好的摘要（在父级侧边栏/单元格中渲染）和模型在下一轮中可以识别的结构化哨兵。
+    // 格式：第一行人类摘要，第二行哨兵。
+    // 哨兵使用不透明标签（`codewhale:subagent.done`）以避免与普通用户文本冲突。
     let model_id = task.runtime.model.clone();
     let (summary, sentinel) = match &result {
         Ok(res) => {
-            // Issue #2652: the child's free-text result is its self-report, not
-            // verified evidence. Stamp it with a provenance marker: a soft
-            // "re-verify" note when short, or a head+tail truncation (reusing
-            // the tool-output vocabulary) when it exceeds the wire budget. The
-            // resulting `truncated` flag is carried in the sentinel so the
-            // parent model can branch on `summary_kind`.
+            // Issue #2652: 子级的自由文本结果是其自我报告，而非经过验证的证据。
+            // 使用来源标记进行标记：简短时加一个柔和的"重新验证"说明，
+            // 超出线缆预算时进行头部+尾部截断（复用工具输出词汇）。
+            // 结果 `truncated` 标志携带在哨兵中，以便父级模型可以根据 `summary_kind` 分支。
             let raw = summarize_subagent_result(res);
             let (summary, truncated) = stamp_subagent_summary(&raw);
             let sentinel = match &res.status {
@@ -4817,11 +4656,10 @@ async fn run_subagent_task(task: SubAgentTask) {
     let payload = format!("{summary}\n{sentinel}");
     let agent_id = task.agent_id.clone();
 
-    // Wake the engine's parent turn loop if this is one of its direct
-    // children (issue #756). Issue #1961 also requires emit to happen
-    // before marking the manager terminal state so the parent can observe the
-    // completion while its "running children" gate is still open. If we
-    // update first, the parent can finalize before the completion arrives.
+    // 如果这是引擎的直接子级之一（issue #756），则唤醒引擎的父级轮次循环。
+    // Issue #1961 也要求发出的时间在标记管理器终止状态之前，
+    // 以便父级在其"运行中子级"门控仍打开时可以观察到完成。
+    // 如果我们先更新，父级可能在完成事件到达之前就终结了。
     emit_parent_completion(&task.runtime, &agent_id, &payload);
 
     let mut manager = task.manager_handle.write().await;
@@ -4896,13 +4734,11 @@ async fn record_queued_launch_progress(task: &SubAgentTask) {
     }
 }
 
-/// Notify this runtime's immediate parent that the child finished (issue
-/// #756). Root-spawned children send to the engine turn loop. Nested children
-/// send to the parent sub-agent's local inbox, which is swapped into the
-/// runtime used by that parent's `agent` tool. Returns `true` if a send was
-/// attempted, `false` if this is the engine itself or no channel is wired.
-/// Skips silently when the channel sender has no receiver — the receiver may
-/// have ended because the parent turn/agent already completed.
+/// 通知此运行时的直接父级子级已完成（issue #756）。
+/// 根生成的子级发送到引擎轮次循环。嵌套子级发送到父级子代理的本地收件箱，
+/// 该收件箱被交换到父级 `agent` 工具使用的运行时中。
+/// 如果尝试发送则返回 `true`，如果这是引擎本身或没有通道连接则返回 `false`。
+/// 当通道发送方没有接收方时静默跳过——接收方可能因为父级轮次/代理已完成而结束。
 pub(crate) fn emit_parent_completion(
     runtime: &SubAgentRuntime,
     agent_id: &str,
@@ -5018,30 +4854,25 @@ fn strip_evidence_block(text: &str) -> String {
     text.trim().to_string()
 }
 
-/// Build a `<codewhale:subagent.done>` JSON sentinel for a successful child.
-/// Intended to surface in the parent's transcript so the model recognizes
-/// child completion.
+/// 为成功的子级构建 `<codewhale:subagent.done>` JSON 哨兵。
+/// 旨在出现在父级的转录中，以便模型识别子级完成。
 ///
-/// Keep this payload deliberately lean. The human summary is emitted on the
-/// line immediately before the sentinel; duplicating it here bloats the next
-/// parent request's cache-miss tail. Wall-clock duration is useful UI
-/// telemetry, but it is volatile and not useful for model coordination.
+/// 有意保持此有效载荷精简。人类摘要紧接在哨兵之前发出；
+/// 在此处复述它会使下一个父级请求的缓存未命中尾部膨胀。
+/// 挂钟持续时间是有用的 UI 遥测数据，但它是易变的，对模型协调没有用处。
 ///
-/// `truncated` reflects whether the previous-line summary was length-gated by
-/// [`stamp_subagent_summary`] (issue #2652); it surfaces as `summary_kind` so
-/// the parent model can tell a complete self-report from a clipped one and
-/// verify material claims accordingly.
+/// `truncated` 反映前一行摘要是否被 [`stamp_subagent_summary`]（issue #2652）
+/// 长度限制；它以 `summary_kind` 形式呈现，以便父级模型可以区分完整自我报告
+/// 和截断版本，并相应地验证实质性声明。
 fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool) -> String {
     let mut payload = json!({
         "agent_id": agent_id,
-        // Whale name — a stable, human-friendly handle the orchestrator can use
-        // to refer to this child in its own reasoning/output.
+        // 鲸鱼名称——编排者可以在自己的推理/输出中引用此子级的稳定、人类友好的句柄。
         "name": res.nickname,
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
-        // issue #2652: lets the parent branch on whether the previous-line
-        // summary is the full child report or a head+tail excerpt.
+        // issue #2652: 让父级根据前一行摘要是完整子级报告还是头部+尾部摘录进行分支。
         "summary_kind": if truncated { "truncated" } else { "complete" },
     });
     if let Some(needs_input) = res.needs_input.clone() {
@@ -5050,11 +4881,10 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool)
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
 }
 
-/// Build a `<codewhale:subagent.done>` sentinel for a failed child.
+/// 为失败的子级构建 `<codewhale:subagent.done>` 哨兵。
 ///
-/// Kept lean: the (annotated) error is on the previous line (`error_location`)
-/// so the sentinel only signals completion state rather than re-embedding the
-/// error text.
+/// 保持精简：（带注释的）错误在前一行（`error_location`），
+/// 因此哨兵仅信号完成状态，而非重新嵌入错误文本。
 fn subagent_failed_sentinel(agent_id: &str, _err: &str) -> String {
     let payload = json!({
         "agent_id": agent_id,
@@ -5118,11 +4948,9 @@ async fn insert_subagent_full_transcript_handle(
     duration_ms: u64,
     fork_context: bool,
 ) -> VarHandle {
-    // Byte-bound the retained transcript (#3882): the handle store keeps this
-    // payload resident per agent, and the checkpoint already carries its own
-    // bounded message tail — embedding it verbatim would duplicate that tail
-    // inside one payload. Keep checkpoint metadata, drop its messages, and
-    // record how much of the true history the bounded tail omits.
+    // 字节限制保留的转录（#3882）：句柄存储使此有效载荷常驻于每个代理，
+    // 且检查点已经携带自己的有界消息尾部——逐字嵌入它将在一个有效载荷内复制该尾部。
+    // 保留检查点元数据，丢弃其消息，并记录有界尾部省略了多少真实历史。
     let (bounded_messages, omitted_messages) =
         bounded_tail_messages(messages, SUBAGENT_TRANSCRIPT_MESSAGE_BUDGET_BYTES);
     let checkpoint_meta = checkpoint.map(|checkpoint| SubAgentCheckpoint {
@@ -5150,20 +4978,16 @@ async fn insert_subagent_full_transcript_handle(
     store.insert_json(format!("agent:{agent_id}"), "full_transcript", payload)
 }
 
-/// Bound a sub-agent tool result before it enters `messages` (#3882).
+/// 在子代理工具结果进入 `messages`（#3882）之前对其进行限制。
 ///
-/// The root engine applies spillover in `turn_loop.rs`; the sub-agent loop
-/// bypassed it, so one multi-MB build log became many resident copies across
-/// child messages, checkpoints, transcript handles, and persistence — the
-/// Fleet fanout memory blow-up. Over-threshold content (successes AND
-/// errors: sub-agent error output is routinely a full build log, so the root
-/// loop's pass-errors-through rationale does not hold here) is written to the
-/// shared spillover directory and replaced inline by a bounded head plus a
-/// footer naming the on-disk path.
+/// 根引擎在 `turn_loop.rs` 中应用溢出；子代理循环绕过了它，
+/// 因此一个多 MB 的构建日志变成了子级消息、检查点、转录句柄和持久化中的多个常驻副本——
+/// Fleet 扇出内存爆炸。超过阈值的内容（成功**和**错误：子代理错误输出通常是完整的构建日志，
+/// 因此根循环的"错误通过"原则在此处不成立）被写入共享溢出目录，
+/// 并内联替换为有界的头部加上命名磁盘路径的页脚。
 ///
-/// Returns the (possibly bounded) content and the spillover path when one was
-/// written. Spillover write failures degrade to passing the original content
-/// through, mirroring `apply_spillover`.
+/// 返回（可能受限的）内容和（写入时）的溢出路径。
+/// 溢出写入失败降级为传递原始内容，镜像 `apply_spillover`。
 fn bound_subagent_tool_result(
     agent_id: &str,
     tool_id: &str,
@@ -5204,17 +5028,15 @@ fn bound_subagent_tool_result(
     }
 }
 
-/// Rough serialized size of one message, used for checkpoint/transcript byte
-/// budgets. Exact JSON size via serde; unserializable messages (should not
-/// happen) count as 1 KiB so they still consume budget.
+/// 一条消息的粗略序列化大小，用于检查点/转录字节预算。
+/// 通过 serde 获取精确 JSON 大小；不可序列化的消息（不应发生）计为 1 KiB，以便它们仍然消耗预算。
 fn approximate_message_bytes(message: &Message) -> usize {
     serde_json::to_string(message).map_or(1024, |s| s.len())
 }
 
-/// Keep the most recent messages whose combined approximate size fits
-/// `budget_bytes`. Always keeps at least the final message (even if it alone
-/// exceeds the budget) so a non-empty history stays continuable. Returns the
-/// retained tail and how many older messages were omitted.
+/// 保留组合近似大小适合 `budget_bytes` 的最近消息。
+/// 始终至少保留最后一条消息（即使它单独超出预算），以便非空历史保持可继续。
+/// 返回保留的尾部和跳过了多少条旧消息。
 fn bounded_tail_messages(messages: &[Message], budget_bytes: usize) -> (Vec<Message>, usize) {
     let mut kept_rev: Vec<Message> = Vec::new();
     let mut used = 0usize;
@@ -5539,9 +5361,8 @@ async fn run_subagent(
             .unwrap_or(agent_type.as_str())
             .to_string(),
         allowed_tools.clone(),
-        // Share the parent's todo list so child checklist updates are visible
-        // in the Work sidebar live. Previously each child got a fresh isolated
-        // TodoList — parent never saw child progress until completion.
+        // 共享父级的待办列表，以便子级清单更新在 Work 侧边栏中实时可见。
+        // 以前每个子级都获得一个新的隔离 TodoList——父级直到完成才能看到子级进度。
         runtime.todos.clone(),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -5568,17 +5389,15 @@ async fn run_subagent(
     let mut consecutive_truncated_responses = 0;
     let mut latest_checkpoint: Option<SubAgentCheckpoint> = None;
     let mut tokens_used: u64 = 0;
-    // #4050: distinguish a real "the model chose to stop" exit (the `break`
-    // below) from loop exhaustion (running out of `max_steps` while still
-    // tool-calling). Only the former, with a non-empty final summary, is a
-    // genuine success; everything else must surface its stop reason instead of
-    // reporting a completed child with no payload.
+    // #4050: 区分模型选择停止的真实退出（下面的 `break`）与循环耗尽
+    // （仍然在工具调用中用尽 `max_steps`）。只有前者，带有非空最终摘要，
+    // 才是真正的成功；其他所有情况必须暴露其停止原因，
+    // 而不是报告一个无有效载荷的已完成子级。
     let mut stopped_naturally = false;
 
     for _step in 0..max_steps {
-        // Cooperative cancellation: bail if this session's token was cancelled
-        // while we were between steps. Top-level model-visible sub-agents use
-        // a detached token so parent turn cancellation does not stop them.
+        // 协作取消：如果此会话的令牌在步骤之间被取消，则退出。
+        // 顶级模型可见的子代理使用分离的令牌，因此父级轮次取消不会停止它们。
         if runtime.cancel_token.is_cancelled() {
             record_agent_progress(
                 runtime,
@@ -5704,9 +5523,8 @@ async fn run_subagent(
             .await,
         );
 
-        // Race the API call against the cancellation token so a parent
-        // cancel during a long thinking turn doesn't have to wait for the
-        // step timeout.
+        // 将 API 调用与取消令牌竞速，以便在长时间思考轮次中父级取消
+        // 不必等待步骤超时。
         let response = tokio::select! {
             biased;
             () = runtime.cancel_token.cancelled() => {
@@ -5835,7 +5653,7 @@ async fn run_subagent(
 
         let mut tool_uses = Vec::new();
 
-        // Report token usage so the parent's cost counter updates live.
+        // 报告 token 使用情况，以便父级的成本计数器实时更新。
         if let Some(mb) = runtime.mailbox.as_ref() {
             let _ = mb.send(MailboxMessage::token_usage(
                 &agent_id,
@@ -5848,13 +5666,10 @@ async fn run_subagent(
             manager.record_worker_usage(&agent_id, &response.usage);
         }
 
-        // Per-worker token-budget enforcement (#3321): stop a single runaway
-        // worker once its accumulated model tokens exceed its own cap. This
-        // complements — and does not double-count — the scope-level admission
-        // gate (#3319), which bounds aggregate fan-out across siblings. The
-        // local accumulator mirrors the manager's `record.usage.total_tokens`
-        // (both derive from `response.usage`), so the scope accounting stays
-        // consistent and is never inflated by this check.
+        // 每工作者 token 预算执行（#3321）：一旦单个失控工作者的累积模型 token 超过其自身上限，则停止。
+        // 这补充——且不重复计数——作用域级别的准入门控（#3319），后者限制同级间的聚合扇出。
+        // 本地累加器镜像管理器的 `record.usage.total_tokens`
+        // （两者都源自 `response.usage`），因此作用域记账保持一致，且从不会被此检查夸大。
         tokens_used = tokens_used.saturating_add(usage_total_tokens(&response.usage));
         if let Some(budget) = token_budget
             && tokens_used > budget
@@ -6141,7 +5956,7 @@ async fn run_subagent(
         .as_deref()
         .map(|text| !text.trim().is_empty())
         .unwrap_or(false);
-    // #4050: only a natural stop with a final summary is a real success.
+    // #4050: 只有带有最终摘要的自然停止才是真正的成功。
     let status = if stopped_naturally {
         if has_final_summary {
             SubAgentStatus::Completed
@@ -6347,9 +6162,8 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         })
         .transpose()?;
 
-    // Role may be either a SubAgentType alias (reviewer → Review) or a fleet
-    // roster role / member id (scout, release_lead). Type aliases still set
-    // agent_type; non-alias roles defer to fleet profile resolution (#4177).
+    // Role 可以是 SubAgentType 别名（reviewer → Review）或舰队名册角色/成员 id（scout, release_lead）。
+    // 类型别名仍然设置 agent_type；非别名角色遵循舰队配置文件解析（#4177）。
     let parsed_role_type = role_input.and_then(SubAgentType::from_str);
 
     if let (Some(type_kind), Some(role_kind)) = (&parsed_type, &parsed_role_type)
@@ -6370,8 +6184,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         .or_else(|| type_input.and_then(normalize_role_alias))
         .map(str::to_string);
 
-    // Fleet role token: either the raw role when it is not a type alias, or
-    // the alias form (e.g. implementer) used as a roster lookup key.
+    // 舰队角色 token：要么是非类型别名的原始角色，要么是用作名册查找键的别名形式（例如 implementer）。
     let fleet_role_token = match role_input {
         Some(raw) => {
             let token = validate_role_name(raw)?;
@@ -6389,8 +6202,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let mut profile = optional_input_str(input, &["profile", "fleet_profile", "roster_profile"])
         .map(validate_profile_name)
         .transpose()?;
-    // When the caller only declared a fleet role, use it as the profile key
-    // so `apply_spawn_profile` is the single roster resolution path (#4177).
+    // 当调用方仅声明了舰队角色时，将其用作配置文件键，以便 `apply_spawn_profile` 是单一的名册解析路径（#4177）。
     if profile.is_none() {
         profile = fleet_role_token.clone();
     }
@@ -6419,13 +6231,10 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         .transpose()?;
     let model_strength_explicit = explicit_model_strength.is_some();
     let model_strength = explicit_model_strength.unwrap_or_else(|| {
-        // Default model strength. `type: "explore"` defaults to Faster for
-        // bounded read-only lookup/search/status work — the cheap, fast
-        // same-family sibling is exactly the lossy-breadth job a child
-        // should run. Every other role (and any call that supplies an
-        // explicit `model`) stays conservative at Same. Explicit
-        // model_strength above already wins via .parse(); explicit `model`
-        // wins downstream in assignment_model_route regardless of strength.
+        // 默认模型强度。`type: "explore"` 默认为 Faster，用于有限的只读查找/搜索/状态工作——
+        // 廉价、快速的同族兄弟模型正是子级应该运行的有损广度任务。
+        // 其他所有角色（以及提供显式 `model` 的任何调用）保持保守的 Same。
+        // 上面的显式 model_strength 已通过 `.parse()` 获胜；显式 `model` 在下游的 assignment_model_route 中获胜，无论强度如何。
         if agent_type == SubAgentType::Explore && model.is_none() {
             SubAgentModelStrength::Faster
         } else {
@@ -6469,8 +6278,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let token_budget =
         parse_optional_positive_u64(input, &["token_budget", "tokenBudget", "max_tokens"])?;
 
-    // #4042: optional caller-supplied tool deny-list (unioned with the parent's
-    // inherited deny-list) and the inheritance opt-out flag (default inherits).
+    // #4042: 可选的调用方提供的工具拒绝列表（与父级的继承拒绝列表合并）和继承退出标志（默认继承）。
     let disallowed_tools = parse_disallowed_tools(input)?;
     let inherit_disallowed_tools = parse_optional_bool(
         input,
@@ -6522,10 +6330,9 @@ fn validate_session_name(name: &str) -> Result<String, ToolError> {
     Ok(trimmed.to_string())
 }
 
-/// Validate and normalize the `profile` spawn parameter: a bare roster member
-/// id token (same rule as fleet model/profile tokens — visible, no
-/// whitespace, quotes, backticks, or '='), lowercased for the roster's
-/// case-insensitive lookup.
+/// 验证并标准化 `profile` 生成参数：裸名册成员 id token
+/// （与舰队模型/配置文件 token 相同规则——可见字符，无空格、引号、反引号或 '='），
+/// 小写化以进行名册的不区分大小写查找。
 fn validate_profile_name(value: &str) -> Result<String, ToolError> {
     validate_roster_token(value, "profile")
 }
@@ -6550,17 +6357,14 @@ fn validate_roster_token(value: &str, field: &str) -> Result<String, ToolError> 
     Ok(trimmed.to_ascii_lowercase())
 }
 
-/// Resolve the `profile` spawn parameter against the fleet roster and fold
-/// the member into the request: agent type (when not explicitly given),
-/// assignment role, and the profile instruction overlay on the child prompt.
+/// 根据舰队名册解析 `profile` 生成参数，并将成员合并到请求中：
+/// 代理类型（未显式给出时）、分配角色以及配置文件指令覆盖到子级提示词上。
 ///
-/// Runs at spawn time — `parse_spawn_request` has no runtime access. Returns
-/// the resolved member so the spawn path can apply its model routing and
-/// delegation bounds. The member's `permissions` block is intentionally NOT
-/// consumed here: it defaults to the floor (no shell, no trust, approvals on)
-/// and the child's capability posture is governed by the member's
-/// `SubAgentType` via `WorkerRuntimeProfile::for_role` — applying the block
-/// here could only widen that posture.
+/// 在生成时运行——`parse_spawn_request` 没有运行时访问权限。
+/// 返回已解析的成员，以便生成路径可以应用其模型路由和委托边界。
+/// 成员的 `permissions` 块有意不在此处使用：它默认为下限（无 shell、无信任、需要批准），
+/// 而子级的能力姿态由成员的 `SubAgentType` 通过 `WorkerRuntimeProfile::for_role` 控制——
+/// 在此处应用该块只会扩大姿态。
 fn apply_spawn_profile(
     request: &mut SpawnRequest,
     roster: &crate::fleet::roster::FleetRoster,
@@ -6591,10 +6395,10 @@ fn apply_spawn_profile(
         )));
     }
     request.agent_type = member_type;
-    // Record the canonical profile id after role→profile resolution.
+    // 在角色→配置文件解析后记录规范配置文件 id。
     request.profile = Some(member.id.clone());
 
-    // Surface the member's role in prompts and ledger records.
+    // 在提示词和分类账记录中展示成员的角色。
     let role_name = member.profile.role.name.trim();
     request.assignment.role = Some(if role_name.is_empty() {
         member.id.clone()
@@ -6609,12 +6413,12 @@ fn apply_spawn_profile(
     Ok(Some(member.clone()))
 }
 
-/// Resolve a fleet role or profile token against the roster (#4177).
+/// 根据名册解析舰队角色或配置文件 token（#4177）。
 ///
-/// Lookup order:
-/// 1. Member id (case-insensitive)
-/// 2. Member role name
-/// 3. Common stopship aliases (`implementer` → `builder`, `release_lead` → `manager`)
+/// 查找顺序：
+/// 1. 成员 id（不区分大小写）
+/// 2. 成员角色名称
+/// 3. 常见的 stopship 别名（`implementer` → `builder`，`release_lead` → `manager`）
 fn resolve_roster_member<'a>(
     roster: &'a crate::fleet::roster::FleetRoster,
     id_or_role: &str,
@@ -6642,10 +6446,8 @@ fn resolve_roster_member<'a>(
     alias.and_then(|id| roster.get(id))
 }
 
-/// Compact profile block appended to the child prompt, mirroring the fleet
-/// dispatcher's `fleet_task_prompt_with_profile` overlay. `None` when the
-/// member carries no description or instructions (built-ins: posture alone
-/// speaks through the type system prompt).
+/// 附加到子级提示词的紧凑配置文件块，镜像舰队调度器的 `fleet_task_prompt_with_profile` 覆盖。
+/// 当成员没有描述或指令时（内置项：仅姿态通过类型系统提示词表达），为 `None`。
 fn spawn_profile_prompt_overlay(member: &crate::fleet::profile::AgentProfile) -> Option<String> {
     let description = member.description.as_deref().map(str::trim);
     let instructions = member.profile.role.instructions.as_deref().map(str::trim);
@@ -6671,11 +6473,10 @@ fn spawn_profile_prompt_overlay(member: &crate::fleet::profile::AgentProfile) ->
     Some(overlay)
 }
 
-/// Requested model route for a spawn, honoring fleet profile precedence:
-/// explicit `model` param > explicit `model_strength` param > member model
-/// pin (Fixed) > member loadout > parse-time default. An explicit `model`
-/// still wins downstream via the configured-model path (which turns it into
-/// a Fixed route), as does a `role_models` override where one matches today.
+/// 生成的请求模型路由，遵循舰队配置文件优先级：
+/// 显式 `model` 参数 > 显式 `model_strength` 参数 > 成员模型固定（Fixed）> 成员装载 > 解析时默认值。
+/// 显式的 `model` 仍然通过配置模型路径（将其转换为 Fixed 路由）在下游获胜，
+/// `role_models` 覆盖（如果匹配）也是如此。
 fn spawn_model_route(
     request: &SpawnRequest,
     member: Option<&crate::fleet::profile::AgentProfile>,
@@ -6697,20 +6498,18 @@ fn spawn_model_route(
     }
     match member.profile.loadout {
         codewhale_config::FleetLoadout::Fast => ModelRoute::Faster,
-        // Inherit and the richer loadout classes (strong/balanced/...) all
-        // inherit the parent model here. The fleet dispatcher maps those
-        // classes to Auto, but in this seam Auto routes to the cheap sibling —
-        // a silent downgrade for e.g. a "strong" member. Inheriting keeps the
-        // existing non-profile default behavior.
+        // Inherit 和更丰富的装载类（strong/balanced/...）都
+        // 在此处继承父级模型。舰队调度器将这些类映射到 Auto，
+        // 但在此接缝中 Auto 路由到廉价兄弟模型——例如对"strong"成员的静默降级。
+        // 使用 Inherit 保持现有的非配置文件默认行为。
         _ => ModelRoute::Inherit,
     }
 }
 
-/// Effective absolute `max_spawn_depth` for a child, combining the inherited
-/// runtime budget, the caller's `max_depth` request, and a fleet profile's
-/// `delegation.max_spawn_depth` hint. An explicit request keeps its existing
-/// semantics (may widen up to the ceiling); a profile hint only narrows —
-/// either the request (min) or the inherited budget.
+/// 子级的有效绝对 `max_spawn_depth`，结合继承的运行时预算、调用方的 `max_depth` 请求
+/// 和舰队配置文件的 `delegation.max_spawn_depth` 提示。
+/// 显式请求保持其现有语义（可能扩大到上限）；配置文件提示仅缩小——
+/// 要么是请求（min），要么是继承的预算。
 fn child_max_spawn_depth_for_spawn(
     inherited: u32,
     child_spawn_depth: u32,
@@ -6734,10 +6533,9 @@ fn parse_optional_bool(input: &Value, names: &[&str]) -> Option<bool> {
         .and_then(Value::as_bool)
 }
 
-/// Parse an optional caller-supplied `disallowed_tools` array (#4042). Mirrors
-/// the `allowed_tools` parsing: trimmed, de-duplicated, non-empty-only. Returns
-/// `None` when the key is absent or yields no usable entries so the union merge
-/// in `spawn_subagent_from_input` only runs when there is something to add.
+/// 解析可选的调用方提供的 `disallowed_tools` 数组（#4042）。镜像 `allowed_tools` 解析：
+/// 修剪、去重、仅非空。当键缺失或未产生可用条目时返回 `None`，
+/// 以便 `spawn_subagent_from_input` 中的并集合并仅在有内容要添加时运行。
 fn parse_disallowed_tools(input: &Value) -> Result<Option<Vec<String>>, ToolError> {
     let Some(array) = input.get("disallowed_tools").and_then(Value::as_array) else {
         return Ok(None);
@@ -6802,9 +6600,8 @@ pub(crate) fn normalize_requested_subagent_model(
     if trimmed.is_empty() {
         return Err(ToolError::invalid_input(format!("{field} cannot be blank")));
     }
-    // #3018: Use provider-aware validation so non-DeepSeek providers can
-    // accept their own model IDs instead of failing with "Expected a
-    // DeepSeek model id".
+    // #3018: 使用提供商感知验证，以便非 DeepSeek 提供商可以接受自己的模型 id，
+    // 而不是以"Expected a DeepSeek model id"失败。
     let normalized =
         crate::config::requested_model_for_provider(provider, trimmed).ok_or_else(|| {
             let valid_names = crate::provider_lake::all_catalog_models_for_provider(provider);
@@ -6823,10 +6620,8 @@ pub(crate) fn normalize_requested_subagent_model(
 }
 
 fn provider_name_for_error(provider: crate::config::ApiProvider) -> &'static str {
-    // Reuse the canonical picker/status label so every provider is named
-    // concretely (DeepSeek, Sakana, Zhipu, …) instead of collapsing the long
-    // tail to "this provider", and so error copy stays in sync with the model
-    // picker labels (#4049).
+    // 复用规范的选取器/状态标签，以便每个提供商都被具体命名（DeepSeek, Sakana, Zhipu, …），
+    // 而不是将长尾折叠为"this provider"，并且错误文本与模型选取器标签保持一致（#4049）。
     provider.display_name()
 }
 
@@ -6918,8 +6713,7 @@ fn subagent_request_tuning(reasoning_effort: Option<&str>) -> RequestTuning {
     }
 }
 
-/// Candidate pair for explicit sub-agent strength routing, derived from the
-/// active provider and the already provider-resolved parent model.
+/// 显式子代理强度路由的候选对，源自活跃提供商和已经提供商解析的父级模型。
 fn subagent_router_candidates(runtime: &SubAgentRuntime) -> crate::model_routing::RouterCandidates {
     crate::model_routing::provider_router_candidates(runtime.client.api_provider(), &runtime.model)
 }
@@ -6942,14 +6736,14 @@ fn fallback_subagent_assignment_route(
     )
 }
 
-/// Operator-visible model for the active provider when inherit/faster routing
-/// must not cross namespaces (#3227, subagent route validation 2026-07-07).
+/// 当继承/更快路由不得跨命名空间时，用于活跃提供商的算子可见模型
+/// （#3227，子代理路由验证 2026-07-07）。
 ///
-/// Enumerates through the catalog-backed [`crate::provider_lake`] facade rather
-/// than the raw legacy `model_completion_names_for_provider` table (#4116 /
-/// #4188). The facade prefers live Models.dev, then the offline bundled
-/// snapshot, and only then the legacy hardcoded table for CodeWhale-only /
-/// unbundled providers. This consumer only reads the first entry.
+/// 通过目录支持的 [`crate::provider_lake`] 门面枚举，而非原始的遗留
+/// `model_completion_names_for_provider` 表（#4116 / #4188）。
+/// 门面优先使用实时的 Models.dev，然后是离线捆绑快照，
+/// 最后才是仅 CodeWhale/未捆绑提供商的遗留硬编码表。
+/// 此消费者仅读取第一个条目。
 fn operator_model_for_subagent(runtime: &SubAgentRuntime) -> String {
     let provider = runtime.client.api_provider();
     if crate::config::validate_route(provider, &runtime.model).is_ok() {
@@ -6961,9 +6755,8 @@ fn operator_model_for_subagent(runtime: &SubAgentRuntime) -> String {
         .unwrap_or_else(|| runtime.model.clone())
 }
 
-/// Reject or remap a resolved sub-agent model so it matches the runtime
-/// provider before spawn. Explicit fixed pins fail fast; inherit/faster/auto
-/// fall back to the operator route instead of cross-wiring namespaces.
+/// 拒绝或重新映射解析的子代理模型，使其在生成前与运行时提供商匹配。
+/// 显式固定固定快速失败；继承/更快/自动回退到算子路由，而非跨接线命名空间。
 pub(crate) fn ensure_subagent_model_for_provider(
     runtime: &SubAgentRuntime,
     model_route: &ModelRoute,
@@ -7028,11 +6821,10 @@ fn subagent_reasoning_effort_for_request(
                 .to_string(),
         ),
         SubAgentThinking::Inherit if requested_fast_lane => {
-            // Faster/explore lane: cheaper reasoning by default. The OpenAI Codex
-            // (GPT-5.5) adapter has no true "off" on the wire (it collapses off
-            // to low), so we resolve Low honestly for that provider instead of
-            // emitting an off that is silently rewritten. Explicit thinking
-            // passed by the caller already won via the arms above.
+            // 更快/探索通道：默认更便宜的推理。OpenAI Codex（GPT-5.5）适配器
+            // 在线缆上没有真正的"off"（它将 off 折叠为 low），
+            // 因此我们诚实地为该提供商解析 Low，而不是发出一个被静默重写的 off。
+            // 调用方传递的显式 thinking 已经通过上面的分支获胜。
             let provider = runtime.client.api_provider();
             let effort = if matches!(provider, crate::config::ApiProvider::OpenaiCodex) {
                 ReasoningEffort::Low
@@ -7072,17 +6864,16 @@ fn parse_optional_subagent_model(input: &Value, key: &str) -> Result<Option<Stri
             if trimmed.is_empty() {
                 return Err(ToolError::invalid_input(format!("{key} cannot be blank")));
             }
-            // #3018: Basic parsing only — provider-aware validation is deferred
-            // to the spawn path where the runtime's ApiProvider is available.
+            // #3018: 仅基本解析——提供商感知验证延迟到生成路径中，
+            // 其中运行时的 ApiProvider 可用。
             Ok(Some(trimmed.to_string()))
         }
         Some(_) => Err(ToolError::invalid_input(format!("{key} must be a string"))),
     }
 }
 
-/// Extract an optional `cwd: String` from spawn input and convert to a
-/// `PathBuf`. Empty / absent → `None`. Workspace-boundary check happens
-/// at spawn time (the parent's workspace is known there, not here).
+/// 从生成输入中提取可选的 `cwd: String` 并转换为 `PathBuf`。
+/// 空/缺失 → `None`。工作区边界检查在生成时发生（父级的工作区在那里已知，而非在此处）。
 fn parse_optional_cwd(input: &Value) -> Result<Option<PathBuf>, ToolError> {
     let raw = input.get("cwd").and_then(|v| v.as_str()).map(str::trim);
     match raw {
@@ -7491,12 +7282,12 @@ fn run_git_checked(workspace: &Path, args: &[String], action: &str) -> Result<St
     )))
 }
 
-/// Resolve a user-supplied role/agent_role value to a canonical role string.
+/// 将用户提供的 role/agent_role 值解析为规范角色字符串。
 ///
-/// This must accept the full set that [`SubAgentType::from_str`] accepts, plus
-/// role-only aliases (`worker`, `default`, `awaiter`). Before #2649 it covered
-/// only a subset, so `role: "reviewer"` (accepted by `from_str`) was rejected
-/// here by the second validation pass with a misleading four-value hint.
+/// 这必须接受 [`SubAgentType::from_str`] 接受的完整集合，
+/// 加上仅角色的别名（`worker`、`default`、`awaiter`）。
+/// 在 #2649 之前，它只覆盖了一个子集，因此 `role: "reviewer"`（被 `from_str` 接受）
+/// 在此处被第二次验证传递拒绝，并带有误导性的四个值提示。
 fn normalize_role_alias(input: &str) -> Option<&'static str> {
     match input.to_ascii_lowercase().as_str() {
         "default" => Some("default"),
@@ -7647,35 +7438,28 @@ fn routine_agent_progress_can_preserve_event_headroom(status: &str) -> bool {
     )
 }
 
-// === Tool Registry Helpers ===
+// === 工具注册表辅助 ===
 
-/// Per-sub-agent tool registry.
+/// 每个子代理的工具注册表。
 ///
-/// Two modes:
-/// - **Full inheritance** (`allowed_tools = None`): the child sees the same
-///   tool surface as the parent's Agent mode, except legacy sub-agent lifecycle
-///   tools are removed. The single `agent` launcher remains visible only while
-///   the configured depth budget allows another child. Approval-gated tools are
-///   callable only when the parent runtime is auto-approved or, for explicit
-///   write-capable roles (`implementer`, `custom`), when the tool's approval
-///   requirement is `Suggest`.
-/// - **Explicit narrow** (`allowed_tools = Some(list)`): legacy / Custom
-///   path. The registry still builds the full surface, but only the listed
-///   tool names are visible to the model and callable.
+/// 两种模式：
+/// - **完整继承**（`allowed_tools = None`）：子级看到与父级 Agent 模式相同的工具表面，
+///   但移除了遗留的子代理生命周期工具。仅当配置的深度预算允许另一个子级时，
+///   单一的 `agent` 启动器才保持可见。需要批准的工具仅在父运行时自动批准时，
+///   或对于显式可写角色（`implementer`、`custom`）当工具的批准要求为 `Suggest` 时才可调用。
+/// - **显式窄化**（`allowed_tools = Some(list)`）：遗留/自定义路径。
+///   注册表仍然构建完整的表面，但只有列出的工具名称对模型可见且可调用。
 ///
-/// Pure per-role posture check (#3217), independent of any runtime: whether a
-/// role may invoke a tool of the given approval level.
+/// 纯每角色姿态检查（#3217），独立于任何运行时：一个角色是否可以调用给定批准级别的工具。
 ///
-/// - Read (`Auto`) tools are always allowed.
-/// - Write/edit/patch (`Suggest`) tools require a write-capable posture, so the
-///   read-only roles (`explore`/`review`/`plan`/`verifier`) are denied.
-/// - Shell (`Required`) tools require a `Full` shell posture, so only
-///   `verifier`/`implementer`/`general` may shell out; `explore`/`review`
-///   (read-only shell) and `plan` (no shell) are denied because read-only-shell
-///   enforcement is not yet wired at the exec layer.
+/// - 读取（`Auto`）工具始终允许。
+/// - 写入/编辑/补丁（`Suggest`）工具需要可写姿态，因此只读角色（`explore`/`review`/`plan`/`verifier`）被拒绝。
+/// - Shell（`Required`）工具需要 `Full` shell 姿态，因此只有 `verifier`/`implementer`/`general` 可以使用 shell；
+///   `explore`/`review`（只读 shell）和 `plan`（无 shell）被拒绝，
+///   因为只读 shell 的执行层尚未接入。
 ///
-/// `custom` is governed by its explicit `allowed_tools` list, so the posture
-/// check permits it here (the allowlist is the authority for that role).
+/// `custom` 由其显式的 `allowed_tools` 列表控制，因此姿态检查在此处允许它
+/// （允许列表是该角色的权威来源）。
 fn role_posture_permits(agent_type: &SubAgentType, approval: ApprovalRequirement) -> bool {
     if matches!(agent_type, SubAgentType::Custom) {
         return true;
@@ -7691,24 +7475,21 @@ fn role_posture_permits(agent_type: &SubAgentType, approval: ApprovalRequirement
 }
 
 struct SubAgentToolRegistry {
-    /// `None` → full inheritance (no allowlist filter applied). `Some(list)` →
-    /// only the listed tools are visible to the model and callable.
+    /// `None` → 完整继承（不应用允许列表过滤）。`Some(list)` →
+    /// 只有列出的工具对模型可见且可调用。
     allowed_tools: Option<Vec<String>>,
-    /// Tool deny-list inherited from the parent runtime's `worker_profile`
-    /// (#4042). Deny always wins over allow, even when a tool is in both the
-    /// allowlist and this list. Wildcard matching mirrors the session-side
-    /// `command_denies_tool` (exact + `prefix*`, case-insensitive).
+    /// 从父运行时的 `worker_profile`（#4042）继承的工具拒绝列表。
+    /// 拒绝始终优先于允许，即使工具同时在允许列表和此列表中。
+    /// 通配符匹配镜像会话端的 `command_denies_tool`（精确 + `prefix*`，不区分大小写）。
     disallowed_tools: Vec<String>,
     auto_approve: bool,
-    /// Workflow-spawned children auto-accept Suggest-level file edits.
+    /// Workflow 生成的子级自动接受 Suggest 级别的文件编辑。
     accept_edits: bool,
-    /// The role/type of the sub-agent that this registry belongs to. Used to
-    /// decide whether `Suggest`-level tools (write/edit/patch) may run inside
-    /// the child without the parent runtime being auto-approved (#1828, #1833).
+    /// 此注册表所属的子代理的角色/类型。用于决定 `Suggest` 级别工具
+    /// （写入/编辑/补丁）是否可以在父运行时未自动批准的情况下在子级内部运行（#1828, #1833）。
     agent_type: SubAgentType,
-    /// Already-derived capability envelope for this child. This captures the
-    /// parent posture intersection, so a Plan parent can expose delegation
-    /// without accidentally granting write or shell tools to the child.
+    /// 已为此子级派生的能力信封。这捕获了父级姿态交集，
+    /// 因此 Plan 父级可以暴露委托，而不会意外授予子级写入或 shell 工具。
     runtime_profile: WorkerRuntimeProfile,
     can_spawn_child: bool,
     owner_agent_id: String,
@@ -7745,10 +7526,10 @@ impl SubAgentToolRegistry {
         todo_list: SharedTodoList,
         plan_state: SharedPlanState,
     ) -> Self {
-        // Build the full agent surface — same as the parent's Agent mode.
-        // Children inherit shell, file, patch, search, web, git, diagnostics,
-        // review, and RLM, plus per-child fresh todo/plan state. `agent` is
-        // retained only when depth budget remains.
+        // 构建完整的代理表面——与父级的 Agent 模式相同。
+        // 子级继承 shell、file、patch、search、web、git、diagnostics、
+        // review 和 RLM，加上每个子级的新待办/计划状态。
+        // 仅当深度预算仍有剩余时，`agent` 才被保留。
         let can_spawn_child = !runtime.would_exceed_depth();
         let context = runtime.context.clone();
         let mut surface_options = runtime.agent_tool_surface_options.clone();
@@ -7783,25 +7564,19 @@ impl SubAgentToolRegistry {
         }
     }
 
-    /// Whether this role is allowed to use `Suggest`-level tools (write_file,
-    /// edit_file, apply_patch, ...) without the parent runtime being
-    /// auto-approved. Read-only stances (`explore`, `plan`, `review`,
-    /// `verifier`) stay blocked so they can't quietly mutate the workspace
-    /// while a non-auto parent is delegating bounded investigation.
-    /// `Required`-level tools (shell, etc.) still need parent auto-approve
-    /// regardless of role (#1828, #1833).
+    /// 此角色是否允许在父运行时未自动批准的情况下使用 `Suggest` 级别工具（write_file、
+    /// edit_file、apply_patch, ...）。只读姿态（`explore`、`plan`、`review`、
+    /// `verifier`）保持阻止，因此它们不能在非自动批准的父级委托有限调查时静默修改工作区。
+    /// `Required` 级别工具（shell 等）无论角色如何仍然需要父级自动批准（#1828, #1833）。
     fn role_can_delegate_writes(agent_type: &SubAgentType) -> bool {
         matches!(agent_type, SubAgentType::Implementer | SubAgentType::Custom)
     }
 
-    /// Whether the role posture permits a given registered tool, independent of
-    /// parent auto-approval. Delegates to the pure `role_posture_permits`.
-    /// Unregistered names pass through (the allowlist / availability checks
-    /// handle those separately).
+    /// 角色姿态是否允许给定的已注册工具，独立于父级自动批准。委托给纯 `role_posture_permits`。
+    /// 未注册的名称通过（允许列表/可用性检查分别处理它们）。
     fn posture_permits_tool(&self, name: &str) -> bool {
-        // Delegation (`agent`) is governed by the depth budget and the
-        // allowlist (`can_spawn_child` / `is_tool_allowed`), not the write/shell
-        // posture — a read-only role may still fan out child work.
+        // 委托（`agent`）由深度预算和允许列表（`can_spawn_child` / `is_tool_allowed`）控制，
+        // 而非写入/shell 姿态——只读角色可能仍然扇出子级工作。
         if name == "agent" {
             return true;
         }
@@ -7821,9 +7596,9 @@ impl SubAgentToolRegistry {
         }
     }
 
-    /// Check whether a tool name is denied by the `disallowed_tools` list, using
-    /// the same matching logic as the session-side `command_denies_tool`: exact
-    /// match + `prefix*` wildcard, case-insensitive (#4042, #3027).
+    /// 检查工具名称是否被 `disallowed_tools` 列表拒绝，
+    /// 使用与会话端 `command_denies_tool` 相同的匹配逻辑：
+    /// 精确匹配 + `prefix*` 通配符，不区分大小写（#4042, #3027）。
     fn is_tool_denied(&self, name: &str) -> bool {
         if self.disallowed_tools.is_empty() {
             return false;
@@ -7839,14 +7614,13 @@ impl SubAgentToolRegistry {
         })
     }
 
-    /// Whether a given tool name is permitted under this child's filter.
-    /// `None` filter = everything permitted.
+    /// 给定工具名称在此子级的过滤下是否被允许。
+    /// `None` 过滤 = 所有内容被允许。
     fn is_tool_allowed(&self, name: &str) -> bool {
         if name == "agent" && !self.can_spawn_child {
             return false;
         }
-        // Deny always wins over allow — check the deny-list first so a tool in
-        // both the allowlist and the deny-list is still blocked (#4042).
+        // 拒绝始终优先于允许——先检查拒绝列表，以便同时在允许列表和拒绝列表中的工具仍然被阻止（#4042）。
         if self.is_tool_denied(name) {
             return false;
         }
@@ -7869,13 +7643,11 @@ impl SubAgentToolRegistry {
         filtered
             .into_iter()
             .filter(|tool| tool.name != "agent" || self.can_spawn_child)
-            // #4042: hide explicitly disallowed tools so the model never sees
-            // them in the function-calling schema (defense-in-depth with the
-            // `is_tool_allowed` / `execute` guards).
+            // #4042: 隐藏显式禁止的工具，以便模型在函数调用 schema 中永远看不到它们
+            // （与 `is_tool_allowed` / `execute` 守卫构成纵深防御）。
             .filter(|tool| !self.is_tool_denied(&tool.name))
-            // #3217: hide tools the role posture forbids so the model never
-            // even sees write/edit/patch (read-only roles) or shell (no-shell
-            // roles). Defense-in-depth with the `execute` guard below.
+            // #3217: 隐藏角色姿态禁止的工具，以便模型甚至从未看到写入/编辑/补丁
+            // （只读角色）或 shell（无 shell 角色）。与下面的 `execute` 守卫构成纵深防御。
             .filter(|tool| self.posture_permits_tool(&tool.name))
             .collect()
     }
@@ -7895,10 +7667,9 @@ impl SubAgentToolRegistry {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
-        // #3217: authoritative per-role posture — read-only roles cannot mutate
-        // and non-`Full`-shell roles cannot run shell, regardless of whether
-        // the parent session is auto-approved. This closes the auto-approve
-        // bypass where a read-only child could quietly write or shell out.
+        // #3217: 权威的每角色姿态——只读角色不能修改，非 `Full` shell 角色不能运行 shell，
+        // 无论父级会话是否自动批准。这堵住了自动批准绕过漏洞，
+        // 即只读子级可以静默写入或使用 shell 的问题。
         if !self.posture_permits_tool(name) {
             return Err(anyhow!(
                 "Tool {name} is not permitted for the read-only `{role}` sub-agent role. Use an `implementer` or `general` role (or a `custom` role with an explicit allowed_tools list) to mutate the workspace or run shell commands.",
@@ -7912,11 +7683,10 @@ impl SubAgentToolRegistry {
             match spec.approval_requirement() {
                 ApprovalRequirement::Auto => {}
                 ApprovalRequirement::Suggest => {
-                    // Write/edit/patch tools land here. Explicit
-                    // write-capable roles (`implementer`, `custom`) may run them
-                    // without parent auto-approve (#1828, #1833). Workflow-spawned
-                    // children also accept Suggest edits for any write-capable
-                    // posture (including general). Read-only roles still bounce.
+                // 写入/编辑/补丁工具落在此处。显式可写角色（`implementer`、`custom`）
+                // 可以在没有父级自动批准的情况下运行它们（#1828, #1833）。
+                // Workflow 生成的子级也接受任何可写姿态（包括 general）的 Suggest 编辑。
+                // 只读角色仍然被拒绝。
                     let may_write = self.runtime_profile.permissions.write
                         && (self.accept_edits || Self::role_can_delegate_writes(&self.agent_type));
                     if !may_write {
@@ -7963,18 +7733,16 @@ fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the effective allowed-tools list for a child.
+/// 解析子级的有效允许工具列表。
 ///
-/// **v0.6.6 default: full inheritance.** Returning `Ok(None)` means the
-/// child sees the same tool surface as the parent's Agent mode — every
-/// family including `with_subagent_tools` so it can recurse. The narrowing
-/// path (`Ok(Some(list))`) is only used by:
-/// - `Custom` agent types (which require an explicit list).
-/// - Callers that pass `explicit_tools` (advanced / legacy use).
+/// **v0.6.6 默认值：完整继承。** 返回 `Ok(None)` 意味着子级看到与父级 Agent 模式
+/// 相同的工具表面——每个工具族包括 `with_subagent_tools` 以便它可以递归。
+/// 窄化路径（`Ok(Some(list))`）仅由以下使用：
+/// - `Custom` 代理类型（需要显式列表）。
+/// - 传递 `explicit_tools` 的调用方（高级/遗留使用）。
 ///
-/// `allow_shell = false` no longer narrows the tool LIST — the child's
-/// registry simply doesn't register shell tools, which has the same
-/// effect without papering over the parent's choice with a deny-list.
+/// `allow_shell = false` 不再窄化工具列表——子级的注册表只是不注册 shell 工具，
+/// 这具有相同效果，且无需用拒绝列表掩盖父级的选择。
 fn build_allowed_tools(
     agent_type: &SubAgentType,
     explicit_tools: Option<Vec<String>>,
@@ -8002,21 +7770,16 @@ fn build_allowed_tools(
         ));
     }
 
-    // Default: full registry inheritance from the parent. The child sees every
-    // tool the parent has, including the sub-agent management family. The
-    // registry execution guard still blocks approval-gated tools unless the
-    // parent runtime is auto-approved.
+    // 默认值：从父级完整继承注册表。子级看到父级拥有的每个工具，包括子代理管理工具族。
+    // 注册表执行守卫仍然阻止需要批准的工具，除非父运行时被自动批准。
     Ok(None)
 }
 
-/// Render a sub-agent model failure with its full error chain. `to_string()`
-/// on an anyhow error prints only the outermost context (for Codex children
-/// that is the bare "Responses API request failed"), discarding the HTTP
-/// status, sanitized body snippet, and error class carried by the source
-/// `LlmError` — the exact masking reported in #3884. The alternate format
-/// walks the chain, and the downcast prefixes a stable class tag so failure
-/// records distinguish auth/rate-limit/invalid-request/model/server/network
-/// failures at a glance.
+/// 呈现子代理模型失败及其完整错误链。anyhow 错误上的 `to_string()` 仅打印最外层上下文
+/// （对于 Codex 子级，那是裸的"Responses API request failed"），丢弃了 HTTP 状态、
+/// 清理后的正文片段和源 `LlmError` 携带的错误类——正是 #3884 中报告的错误掩盖。
+/// 替代格式遍历链，downcast 前缀了一个稳定的类标签，以便失败记录一眼区分
+/// auth/rate-limit/invalid-request/model/server/network 失败。
 fn subagent_failure_message(err: &anyhow::Error) -> String {
     let class = match err.downcast_ref::<LlmError>() {
         Some(LlmError::RateLimited { .. }) => Some("rate_limited"),
@@ -8037,9 +7800,8 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
     }
 }
 
-/// Human label for how a child's model was selected, so a launch failure can
-/// name the route that produced the failing model — inherited from the parent,
-/// a faster same-family sibling, or an explicit id (#4049).
+/// 子级模型选择方式的人类可读标签，以便启动失败可以指出产生失败模型的路由——
+/// 从父级继承、更快的同族兄弟模型或显式 id（#4049）。
 fn route_source_label(route: &ModelRoute) -> String {
     match route {
         ModelRoute::Inherit => "inherited from the parent/session model".to_string(),
@@ -8049,12 +7811,10 @@ fn route_source_label(route: &ModelRoute) -> String {
     }
 }
 
-/// When a child agent fails because its model is unavailable under the current
-/// access profile, a bare provider 403/404 (classified `Authorization` or
-/// `State`) is unactionable. Annotate it so the parent knows which provider and
-/// route produced the failing model and how to recover (#2653, #4049) without
-/// re-classifying the underlying error. Errors unrelated to model availability
-/// pass through unchanged.
+/// 当子代理因其模型在当前访问配置文件下不可用而失败时，
+/// 裸的提供商 403/404（分类为 `Authorization` 或 `State`）是无法操作的。
+/// 注释它，以便父级知道哪个提供商和路由产生了失败的模型以及如何恢复（#2653, #4049），
+/// 而无需重新分类底层错误。与模型可用性无关的错误保持不变地通过。
 fn annotate_child_model_error(
     err: &str,
     model: &str,
@@ -8074,10 +7834,9 @@ fn annotate_child_model_error(
         crate::error_taxonomy::ErrorCategory::Authorization
         | crate::error_taxonomy::ErrorCategory::State => hint(),
         _ => {
-            // #3020 (#2653): Provider rejections like "Model Not Exist" or
-            // "does not exist or you do not have access" often classify as
-            // `Internal` rather than `Authorization`/`State`.  Catch these
-            // patterns in the raw error text and annotate anyway.
+            // #3020 (#2653): 诸如"Model Not Exist"或"does not exist or you do not have access"
+            // 等提供商拒绝通常被分类为 `Internal` 而非 `Authorization`/`State`。
+            // 在原始错误文本中捕获这些模式并无论如何进行注释。
             let lower = err.to_ascii_lowercase();
             if lower.contains("model not exist")
                 || lower.contains("model_not_found")
@@ -8093,35 +7852,30 @@ fn annotate_child_model_error(
     }
 }
 
-/// Char budget above which a sub-agent summary is treated as a large dump and
-/// head+tail truncated. Mirrors `TOOL_RESULT_SENT_CHAR_BUDGET` in
-/// `crates/tui/src/client/chat.rs:702` so sub-agent summaries use the same
-/// threshold as regular tool outputs. Duplicated locally to avoid coupling the
-/// sub-agent module to the wire-compaction internals.
+/// 字符预算，超过此预算的子代理摘要被视为大型转储并进行头部+尾部截断。
+/// 镜像 `crates/tui/src/client/chat.rs:702` 中的 `TOOL_RESULT_SENT_CHAR_BUDGET`，
+/// 以便子代理摘要使用与常规工具输出相同的阈值。
+/// 本地复制以避免子代理模块与线路压缩内部实现耦合。
 const SUBAGENT_SUMMARY_CHAR_BUDGET: usize = 12_000;
-/// Head/tail slice sizes when truncating; mirror the wire constants
-/// (`TOOL_RESULT_HEAD_CHARS`/`TOOL_RESULT_TAIL_CHARS`, chat.rs:703-704).
+/// 截断时的头部/尾部切片大小；镜像线路常量
+///（`TOOL_RESULT_HEAD_CHARS`/`TOOL_RESULT_TAIL_CHARS`, chat.rs:703-704）。
 const SUBAGENT_SUMMARY_HEAD_CHARS: usize = 4_000;
 const SUBAGENT_SUMMARY_TAIL_CHARS: usize = 4_000;
 
-/// One-line provenance suffix reinforcing that a sub-agent summary is a
-/// self-report (issue #2652). Appended only when the summary was NOT
-/// length-truncated, so every summary carries exactly one boundary marker.
+/// 一行来源后缀，强调子代理摘要是自我报告（issue #2652）。
+/// 仅在摘要未被长度截断时追加，因此每个摘要恰好携带一个边界标记。
 const SUBAGENT_SELF_REPORT_NOTE: &str = "\n[Sub-agent self-report — re-verify material claims (read changed files, \
 run the relevant tests) before relying on it.]";
 
-/// Stamp a sub-agent summary with a provenance/clip marker (issue #2652).
+/// 用来源/裁剪标记标记子代理摘要（issue #2652）。
 ///
-/// Returns `(stamped_summary, truncated)`:
-/// - When the raw summary is within the budget, append the soft self-report
-///   note and report `truncated: false`.
-/// - When it exceeds the budget, keep a head+tail slice and stamp it with the
-///   existing `[Output truncated ...]` vocabulary (reused from tool-output
-///   truncation), adapted to be honest that the elided middle is NOT in the
-///   spillover store — there is no `retrieve_tool_result` handle for
-///   sub-agent summaries. Report `truncated: true`.
+/// 返回 `(stamped_summary, truncated)`：
+/// - 当原始摘要在预算内时，追加柔和的自我报告说明并报告 `truncated: false`。
+/// - 当它超出预算时，保留头部+尾部切片并用现有的 `[Output truncated ...]`
+///   词汇（从工具输出截断复用）标记，调整为诚实地说明被省略的中间部分不在溢出存储中——
+///   子代理摘要没有 `retrieve_tool_result` 句柄。报告 `truncated: true`。
 ///
-/// Every summary therefore gets exactly one boundary marker, never both.
+/// 因此每个摘要恰好获得一个边界标记，永远不会有两个。
 fn stamp_subagent_summary(raw: &str) -> (String, bool) {
     let total = raw.chars().count();
     if total <= SUBAGENT_SUMMARY_CHAR_BUDGET {
@@ -8233,7 +7987,7 @@ const VERIFIER_AGENT_INTRO: &str = concat!(
     "CHANGES will almost always be \"None.\" for a verifier.\n\n"
 );
 
-// === Tests ===
+// === 测试 ===
 
 #[cfg(test)]
 mod tests;

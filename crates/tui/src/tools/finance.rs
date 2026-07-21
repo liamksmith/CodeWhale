@@ -1,7 +1,6 @@
-//! Finance quote tool backed by Yahoo Finance-style public endpoints.
+//! 由 Yahoo Finance 风格公开端点支持的金融报价工具。
 //!
-//! The tool prefers Yahoo's quote endpoint and falls back to the chart endpoint
-//! when quote access is unavailable or returns no data.
+//! 该工具优先使用 Yahoo 的报价端点，在报价访问不可用或未返回数据时回退到图表端点。
 
 use std::time::Duration;
 

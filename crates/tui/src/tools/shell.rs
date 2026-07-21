@@ -1,12 +1,12 @@
-//! Advanced shell execution with background process support and sandboxing.
+//! 增强型 shell 执行模块，支持后台进程管理和沙箱隔离。
 //!
-//! Provides:
-//! - Synchronous command execution with timeout
-//! - Background process execution
-//! - Process output retrieval
-//! - Process termination
-//! - Sandbox support (macOS Seatbelt)
-//! - Streaming output (future)
+//! 提供以下功能：
+//! - 带超时的同步命令执行
+//! - 后台进程执行
+//! - 进程输出获取
+//! - 进程终止
+//! - 沙箱支持（macOS Seatbelt）
+//! - 流式输出（计划中）
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -45,13 +45,13 @@ use crate::sandbox::{
     CommandSpec,
     ExecEnv,
     SandboxManager,
-    SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
+    SandboxPolicy as ExecutionSandboxPolicy, // 重命名以避免与 spec::SandboxPolicy 冲突
     SandboxType,
 };
 use crate::worker_profile::ShellPolicy;
 use output::{tail_from_buffer, take_delta_from_buffer};
 
-/// Status of a shell process
+/// Shell 进程的状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShellStatus {
     Running,
@@ -61,7 +61,7 @@ pub enum ShellStatus {
     TimedOut,
 }
 
-/// Result from a shell command execution
+/// Shell 命令执行的结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 
 pub struct ShellResult {
@@ -71,36 +71,36 @@ pub struct ShellResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
-    /// Original stdout length in bytes.
+    /// 原始标准输出的字节长度
     #[serde(default)]
     pub stdout_len: usize,
-    /// Original stderr length in bytes.
+    /// 原始标准错误的字节长度
     #[serde(default)]
     pub stderr_len: usize,
-    /// Bytes omitted from stdout due to truncation.
+    /// 标准输出因截断而省略的字节数
     #[serde(default)]
     pub stdout_omitted: usize,
-    /// Bytes omitted from stderr due to truncation.
+    /// 标准错误因截断而省略的字节数
     #[serde(default)]
     pub stderr_omitted: usize,
-    /// Whether stdout was truncated.
+    /// 标准输出是否被截断
     #[serde(default)]
     pub stdout_truncated: bool,
-    /// Whether stderr was truncated.
+    /// 标准错误是否被截断
     #[serde(default)]
     pub stderr_truncated: bool,
-    /// Whether the command was executed in a sandbox.
+    /// 命令是否在沙箱中执行
     #[serde(default)]
     pub sandboxed: bool,
-    /// Type of sandbox used (if any).
+    /// 使用的沙箱类型（如有）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_type: Option<String>,
-    /// Whether the command was blocked by sandbox restrictions.
+    /// 命令是否被沙箱限制阻止
     #[serde(default)]
     pub sandbox_denied: bool,
 }
 
-/// Compact, UI-oriented view of a tracked background shell job.
+/// 紧凑的、面向 UI 的后台 shell 作业快照视图
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellJobSnapshot {
     pub id: String,
@@ -125,7 +125,7 @@ pub struct ShellJobSnapshot {
     pub owner_agent_name: Option<String>,
 }
 
-/// Once-only completion event for a tracked background shell job.
+/// 追踪的后台 shell 作业的一次性完成事件
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellCompletionEvent {
     pub task_id: String,
@@ -142,14 +142,14 @@ pub struct ShellCompletionEvent {
     pub owner_agent_name: Option<String>,
 }
 
-/// Optional owner attribution for background shell work.
+/// 后台 shell 作业的可选所属者归属
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellJobOwner {
     pub agent_id: String,
     pub agent_name: String,
 }
 
-/// Full output view used by `/jobs show <id>`.
+/// `/jobs show <id>` 使用的完整输出视图
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellJobDetail {
     pub snapshot: ShellJobSnapshot,
@@ -190,31 +190,26 @@ fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
-/// Configure parent-death signaling so shell-spawned children are reaped when
-/// the TUI dies abnormally (#421). On Linux this installs
-/// `PR_SET_PDEATHSIG(SIGTERM)` via `pre_exec` — the kernel then sends SIGTERM
-/// to the child the moment the parent process exits, even on SIGKILL of the
-/// TUI. The cancellation path already SIGKILLs the whole process group, so
-/// this only fires when the parent dies without running its drop / cleanup
-/// code (panic during shutdown, OOM, hardware crash, etc.).
+/// 配置父进程死亡信号，以便在 TUI 异常退出时回收 shell 启动的子进程（#421）。
+/// 在 Linux 上，通过 `pre_exec` 安装 `PR_SET_PDEATHSIG(SIGTERM)` —— 内核会在父进程
+/// 退出时立即向子进程发送 SIGTERM，即使 TUI 被 SIGKILL 也是如此。取消路径已经对整个
+/// 进程组发起了 SIGKILL，因此此机制仅在父进程未运行 drop/cleanup 代码就死亡时触发
+/// （如关闭时 panic、OOM、硬件崩溃等）。
 ///
-/// On macOS / Windows there's no kernel equivalent. The existing graceful
-/// path (`kill_child_process_group` from the cancellation token) still
-/// handles normal shutdown; abnormal exit can leak children — tracked as a
-/// follow-up watchdog item per the original issue's acceptance criteria.
+/// 在 macOS/Windows 上没有等价的 kernel 机制。现有的优雅关闭路径（取消令牌中的
+/// `kill_child_process_group`）仍能处理正常关闭；异常退出可能导致子进程泄漏 ——
+/// 根据原始 issue 的验收标准，作为后续 watchdog 项跟踪。
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 fn install_parent_death_signal(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: `pre_exec` runs in the child between fork and exec. The closure
-    // only calls `libc::prctl` with stack-allocated constant arguments and
-    // does not touch heap memory or the parent's locks. Both requirements
-    // (async-signal-safe + no allocation in the post-fork window) are met.
+    // SAFETY: `pre_exec` 在子进程的 fork 和 exec 之间运行。该闭包仅使用栈分配的
+    // 常量参数调用 `libc::prctl`，不涉及堆内存或父进程的锁。两个要求
+    //（异步信号安全 + 无 post-fork 分配）都满足。
     unsafe {
         cmd.pre_exec(|| {
             let result = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
             if result == -1 {
-                // Surface the errno but do not abort the spawn — the child
-                // will simply lose the parent-death cleanup safety net.
+                // 透传 errno 但不中止 spawn —— 子进程只会失去父进程死亡清理的安全网
                 Err(std::io::Error::last_os_error())
             } else {
                 Ok(())
@@ -223,27 +218,24 @@ fn install_parent_death_signal(cmd: &mut Command) {
     }
 }
 
-/// Attach `args` to a `std::process::Command`, honoring shell-quoting on
-/// Windows.
+/// 将 `args` 附加到 `std::process::Command`，在 Windows 上保留 shell 引号语义。
 ///
-/// Issue #1691: on Windows the shell command is invoked as
-/// `cmd /C "chcp 65001 >NUL & <command>"`. Rust's `Command::arg` applies
-/// MSVCRT (`CommandLineToArgvW`) escaping, turning the embedded `"` in a
-/// quoted argument (e.g. `git commit -m "feat: complete sub-pages"`) into
-/// `\"`. `cmd.exe` does NOT use MSVCRT parsing — it treats `\` literally and
-/// `"` as a bare quote toggle — so the escaped payload is mis-tokenized and
-/// `git` receives `feat:`, `complete`, `sub-pages"` as separate pathspecs
-/// (the reported `pathspec 'sub-pages"' did not match` symptom). Passing the
-/// `cmd /C` payload through `CommandExt::raw_arg` suppresses std's escaping so
-/// the string reaches `cmd.exe` verbatim, exactly as a terminal would.
+/// Issue #1691：在 Windows 上，shell 命令被调用为
+/// `cmd /C "chcp 65001 >NUL & <command>"`。Rust 的 `Command::arg` 使用
+/// MSVCRT（`CommandLineToArgvW`）转义，会将带引号参数（如 `git commit -m "feat: complete sub-pages"`）中的内嵌 `"` 转义为
+/// `\"`。但 `cmd.exe` 不使用 MSVCRT 解析 —— 它将 `\` 视为字面量，
+/// 将 `"` 视为原始引号切换 —— 因此转义后的载荷被错误分词，
+/// `git` 收到 `feat:`、`complete`、`sub-pages"` 作为独立 pathspec
+///（表现为报告的 `pathspec 'sub-pages"' did not match` 症状）。通过
+/// `CommandExt::raw_arg` 传递 `cmd /C` 载荷可抑制 std 的转义，
+/// 使字符串原样到达 `cmd.exe`，与终端行为完全一致。
 #[cfg(windows)]
 fn push_shell_args(cmd: &mut Command, program: &str, args: &[String]) {
     use std::os::windows::process::CommandExt;
-    // The `cmd /C <payload>` shape is the only place std's per-arg escaping
-    // corrupts a quoted command. Pass `/C` and the payload raw so the quotes
-    // survive; any other program keeps normal (correct) escaping. Match `cmd`
-    // by file stem so a full path (`C:\Windows\System32\cmd.exe`) or `.exe`
-    // suffix still triggers the raw-arg path.
+    // `cmd /C <payload>` 是 std 按参数转义会破坏引号命令的唯一场景。
+    // 以原始方式传递 `/C` 和载荷以保留引号；其他程序保持正常（正确）转义。通过
+    // 文件主名匹配 `cmd`，使得完整路径（`C:\Windows\System32\cmd.exe`）或 `.exe`
+    // 后缀仍能触发原始参数路径。
     let is_cmd = std::path::Path::new(program)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -259,17 +251,16 @@ fn push_shell_args(cmd: &mut Command, program: &str, args: &[String]) {
 
 #[cfg(not(windows))]
 fn push_shell_args(cmd: &mut Command, _program: &str, args: &[String]) {
-    // Unix delegates tokenization entirely to `sh -c <command>`; the command
-    // string is passed as a single argv entry and never split by us.
+    // Unix 将分词完全委托给 `sh -c <command>`；命令字符串
+    // 作为单个 argv 条目传递，不会由我们拆分。
     cmd.args(args);
 }
 
 #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
 fn install_parent_death_signal(_cmd: &mut Command) {
-    // No kernel-level equivalent on macOS / Windows. The cooperative
-    // cancellation + process_group SIGKILL path covers normal shutdown;
-    // abnormal exit (panic without unwind, SIGKILL of the TUI) can still
-    // leak children on those platforms — tracked as a follow-up.
+    // macOS / Windows 上没有内核级别等效机制。协作式取消 + 进程组 SIGKILL 路径
+    // 覆盖正常关闭；异常退出（无 unwind 的 panic、TUI 被 SIGKILL）在这些平台上
+    // 仍可能导致子进程泄漏 —— 作为后续项跟踪。
 }
 
 #[cfg(windows)]
@@ -279,13 +270,12 @@ struct WindowsJob {
 }
 
 #[cfg(windows)]
-// SAFETY: Windows job handles are process-wide kernel handles. Moving the
-// wrapper between threads does not invalidate the handle, and access is
-// externally synchronized by ShellManager's mutex.
+// SAFETY: Windows 作业句柄是进程范围内的内核句柄。在线程间移动
+// 包装器不会使句柄失效，访问由 ShellManager 的互斥锁外部同步。
 unsafe impl Send for WindowsJob {}
 #[cfg(windows)]
-// SAFETY: The wrapper exposes only terminate/drop operations around a kernel
-// handle; concurrent use is guarded by ShellManager.
+// SAFETY: 该包装器仅暴露关于内核句柄的 terminate/drop 操作；
+// 并发使用由 ShellManager 保护。
 unsafe impl Sync for WindowsJob {}
 
 #[cfg(windows)]
@@ -508,7 +498,7 @@ fn recv_sync_reader_output(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// A background shell process being tracked
+/// 正在追踪的后台 shell 进程
 pub struct BackgroundShell {
     pub id: String,
     pub command: String,
@@ -535,7 +525,7 @@ pub struct BackgroundShell {
 }
 
 impl BackgroundShell {
-    /// Check if the process has completed and update status
+    /// 检查进程是否已完成并更新状态
     fn poll(&mut self) -> bool {
         self.refresh_output_activity();
         if self.status != ShellStatus::Running {
@@ -554,7 +544,7 @@ impl BackgroundShell {
                     self.collect_output();
                     true
                 }
-                Ok(None) => false, // Still running
+                Ok(None) => false, // 仍在运行
                 Err(_) => {
                     self.status = ShellStatus::Failed;
                     self.collect_output();
@@ -588,13 +578,13 @@ impl BackgroundShell {
         stdout_len.saturating_add(stderr_len)
     }
 
-    /// Collect output from the background threads
+    /// 从后台线程收集输出
     fn collect_output(&mut self) {
-        // Kill the whole process group before joining reader threads.
-        // When the shell spawned persistent background jobs (e.g. `nohup curl`),
-        // those subprocesses keep the pipe write-ends open after the shell exits.
-        // Without this kill, handle.join() blocks indefinitely, freezing the UI
-        // event loop that calls list_jobs() → poll() → collect_output().
+        // 在合并读取线程之前杀死整个进程组。
+        // 当 shell 产生了持久化后台作业（如 `nohup curl`）时，
+        // 这些子进程会在 shell 退出后保持管道写端打开。
+        // 不进行此杀死操作，handle.join() 将无限阻塞，冻结调用
+        // list_jobs() → poll() → collect_output() 的 UI 事件循环。
         #[cfg(unix)]
         if let Some(child) = self.child.as_mut() {
             match child {
@@ -700,7 +690,7 @@ impl BackgroundShell {
         )
     }
 
-    /// Kill the process
+    /// 杀死进程
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
             match child {
@@ -729,7 +719,7 @@ impl BackgroundShell {
         Ok(())
     }
 
-    /// Get a snapshot of the current state
+    /// 获取当前状态的快照
     #[allow(dead_code)]
     pub fn snapshot(&self) -> ShellResult {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
@@ -760,11 +750,10 @@ impl BackgroundShell {
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
-        // Use tail_from_buffer instead of full_output so we never clone the
-        // entire accumulated stdout/stderr for display purposes.  full_output
-        // is O(total_bytes_written), which caused the ShellManager mutex to be
-        // held for an arbitrarily long time during list_jobs() calls from the
-        // TUI event loop — freezing input handling on long automation runs.
+        // 使用 tail_from_buffer 而非 full_output，这样我们永远不会为显示目的
+        // 克隆整个累积的 stdout/stderr。full_output 的时间复杂度是 O(总写入字节数)，
+        // 这会导致在 TUI 事件循环中调用 list_jobs() 时，ShellManager 互斥锁被
+        // 持有任意长时间 —— 在长时间自动化运行时冻结输入处理。
         let (stdout_len, stdout_tail) = tail_from_buffer(&self.stdout_buffer, 1200);
         let (stderr_len, stderr_tail) = self
             .stderr_buffer
@@ -851,7 +840,7 @@ impl Drop for BackgroundShell {
     }
 }
 
-/// Manages background shell processes with optional sandboxing.
+/// 管理后台 shell 进程，支持可选的沙箱功能。
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
     stale_jobs: HashMap<String, ShellJobSnapshot>,
@@ -877,7 +866,7 @@ impl std::fmt::Debug for ShellManager {
 }
 
 impl ShellManager {
-    /// Create a new `ShellManager` with default (no sandbox) policy.
+    /// 创建新的 `ShellManager`，使用默认（无沙箱）策略。
     pub fn new(workspace: PathBuf) -> Self {
         Self {
             processes: HashMap::new(),
@@ -889,7 +878,7 @@ impl ShellManager {
         }
     }
 
-    /// Create a new `ShellManager` with a specific sandbox policy.
+    /// 创建新的 `ShellManager`，使用指定的沙箱策略。
     #[allow(dead_code)]
     pub fn with_sandbox(workspace: PathBuf, policy: ExecutionSandboxPolicy) -> Self {
         Self {
@@ -902,29 +891,29 @@ impl ShellManager {
         }
     }
 
-    /// Set the sandbox policy for future commands.
+    /// 设置后续命令使用的沙箱策略。
     #[allow(dead_code)]
     pub fn set_sandbox_policy(&mut self, policy: ExecutionSandboxPolicy) {
         self.sandbox_policy = policy;
     }
 
-    /// Get the current sandbox policy.
+    /// 获取当前的沙箱策略。
     #[allow(dead_code)]
     pub fn sandbox_policy(&self) -> &ExecutionSandboxPolicy {
         &self.sandbox_policy
     }
 
-    /// Enable or disable bubblewrap passthrough (#2184).
+    /// 启用或禁用 bubblewrap 直通模式（#2184）。
     ///
-    /// When enabled and `/usr/bin/bwrap` is present on Linux, exec_shell
-    /// commands are routed through bubblewrap for filesystem isolation.
-    #[allow(dead_code)] // Wired from EngineConfig in follow-up PR
+    /// 启用后，如果 Linux 上存在 `/usr/bin/bwrap`，exec_shell
+    /// 命令将通过 bubblewrap 进行文件系统隔离。
+    #[allow(dead_code)] // 在后续 PR 中从 EngineConfig 接入
     pub fn set_prefer_bwrap(&mut self, prefer: bool) {
         self.sandbox_manager.set_prefer_bwrap(prefer);
     }
 
-    /// Request that the active foreground shell wait detach and leave its
-    /// process running in the background job table.
+    /// 请求将活动的前台 shell wait 分离，并使其进程
+    /// 在后台作业表中继续运行。
     pub fn request_foreground_background(&mut self) {
         self.foreground_background_requested = true;
     }
@@ -939,7 +928,7 @@ impl ShellManager {
         requested
     }
 
-    /// Check if sandboxing is available on this platform.
+    /// 检查当前平台是否支持沙箱功能。
     #[allow(dead_code)]
     pub fn is_sandbox_available(&mut self) -> bool {
         self.sandbox_manager.is_available()
@@ -950,7 +939,7 @@ impl ShellManager {
         &self.default_workspace
     }
 
-    /// Execute a shell command with the configured sandbox policy.
+    /// 使用已配置的沙箱策略执行 shell 命令。
     #[allow(dead_code)]
     pub fn execute(
         &mut self,
@@ -962,7 +951,7 @@ impl ShellManager {
         self.execute_with_policy(command, working_dir, timeout_ms, background, None)
     }
 
-    /// Execute a shell command with a specific sandbox policy (overrides default).
+    /// 使用指定的沙箱策略执行 shell 命令（覆盖默认策略）。
     #[allow(dead_code)]
     pub fn execute_with_policy(
         &mut self,
@@ -983,7 +972,7 @@ impl ShellManager {
         )
     }
 
-    /// Execute a shell command with stdin/TTY options.
+    /// 使用 stdin/TTY 选项执行 shell 命令。
     #[allow(clippy::too_many_arguments)]
     pub fn execute_with_options(
         &mut self,
@@ -1007,10 +996,9 @@ impl ShellManager {
         )
     }
 
-    /// Same as `execute_with_options`, plus an extra env-var map that is
-    /// merged into the spawned process environment. Used by the `shell_env`
-    /// hook injection path (#456); other callers should use the simpler
-    /// wrapper above.
+    /// 与 `execute_with_options` 相同，额外增加一个环境变量映射，
+    /// 合并到生成的进程环境中。由 `shell_env` 钩子注入路径使用（#456）；
+    /// 其他调用者应使用上面更简单的包装器。
     #[allow(clippy::too_many_arguments)]
     pub fn execute_with_options_env(
         &mut self,
@@ -1036,8 +1024,8 @@ impl ShellManager {
         )
     }
 
-    /// Same as `execute_with_options_env`, with optional background-job owner
-    /// attribution for sub-agent launched jobs.
+    /// 与 `execute_with_options_env` 相同，增加了可选的子代理启动作业的
+    /// 后台作业所有者归属。
     #[allow(clippy::too_many_arguments)]
     pub fn execute_with_options_env_for_owner(
         &mut self,
@@ -1051,18 +1039,18 @@ impl ShellManager {
         extra_env: HashMap<String, String>,
         owner_agent: Option<ShellJobOwner>,
     ) -> Result<ShellResult> {
-        // Log execution via ShellDispatcher when SHELL_DISPATCHER_LOG is set.
+        // 当设置了 SHELL_DISPATCHER_LOG 时通过 ShellDispatcher 记录执行日志。
         crate::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
-        // Clamp timeout to max 10 minutes (600000ms)
+        // 将超时限制为最大 10 分钟（600000ms）
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
 
-        // Use override policy if provided, otherwise use the manager's policy
+        // 如果提供了覆盖策略则使用之，否则使用管理器的策略
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
 
-        // Create command spec and prepare sandboxed environment
+        // 创建命令规格并准备沙箱环境
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
             .with_policy(policy)
             .with_env(extra_env);
@@ -1087,7 +1075,7 @@ impl ShellManager {
         }
     }
 
-    /// Execute a shell command interactively (stdin/stdout/stderr inherit from terminal).
+    /// 以交互方式执行 shell 命令（stdin/stdout/stderr 继承自终端）。
     #[allow(dead_code)]
     pub fn execute_interactive(
         &mut self,
@@ -1098,7 +1086,7 @@ impl ShellManager {
         self.execute_interactive_with_policy(command, working_dir, timeout_ms, None)
     }
 
-    /// Execute a shell command interactively with a specific sandbox policy override.
+    /// 以交互方式执行 shell 命令，使用指定的沙箱策略覆盖。
     pub fn execute_interactive_with_policy(
         &mut self,
         command: &str,
@@ -1115,7 +1103,7 @@ impl ShellManager {
         )
     }
 
-    /// Interactive variant that accepts extra env vars (#456 shell_env hook).
+    /// 接受额外环境变量的交互式变体（#456 shell_env 钩子）。
     pub fn execute_interactive_with_policy_env(
         &mut self,
         command: &str,
@@ -1139,7 +1127,7 @@ impl ShellManager {
         Self::execute_interactive_sandboxed(command, &work_dir, timeout_ms, &exec_env)
     }
 
-    /// Execute command synchronously with timeout (sandboxed).
+    /// 以同步方式执行命令，带超时（沙箱化）。
     fn execute_sync_sandboxed(
         original_command: &str,
         working_dir: &std::path::Path,
@@ -1152,7 +1140,7 @@ impl ShellManager {
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = exec_env.is_sandboxed();
 
-        // Build the command from ExecEnv
+        // 从 ExecEnv 构建命令
         let program = exec_env.program();
         let args = exec_env.args();
 
@@ -1174,8 +1162,8 @@ impl ShellManager {
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
-        // Disable raw mode before spawn; restore only if raw mode was active
-        // on entry (issue #1690).
+        // 在 spawn 前禁用 raw mode；仅在进入时 raw mode 已激活时才恢复
+        // （issue #1690）。
         let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
         if raw_mode_was_enabled {
             let _ = crossterm::terminal::disable_raw_mode();
@@ -1212,13 +1200,13 @@ impl ShellManager {
         let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
         let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
 
-        // Spawn threads to read output. Use bounded receives below so a killed
-        // or detached descendant that keeps pipe handles open cannot wedge the
-        // foreground shell path while the global tool lock is held (#2571).
+        // 生成线程来读取输出。使用下面的有界接收通道，这样被杀死的
+        // 或分离的后代进程（保持管道句柄打开）无法在持有全局工具锁时
+        // 卡住前台 shell 路径（#2571）。
         let stdout_rx = spawn_sync_reader_thread(stdout_handle);
         let stderr_rx = spawn_sync_reader_thread(stderr_handle);
 
-        // Wait with timeout
+        // 带超时等待
         if let Some(status) = child.wait_timeout(timeout)? {
             #[cfg(unix)]
             let _ = kill_child_process_group(&mut child);
@@ -1230,7 +1218,7 @@ impl ShellManager {
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let exit_code = status.code().unwrap_or(-1);
 
-            // Check if sandbox denied the operation
+            // 检查沙箱是否拒绝了该操作
             let sandbox_denied = SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
             let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
@@ -1261,7 +1249,7 @@ impl ShellManager {
                 sandbox_denied,
             })
         } else {
-            // Timeout - kill the process
+            // 超时 —— 杀死进程
             #[cfg(unix)]
             let _ = kill_child_process_group(&mut child);
             #[cfg(windows)]
@@ -1300,7 +1288,7 @@ impl ShellManager {
         }
     }
 
-    /// Execute command interactively with timeout (sandboxed).
+    /// 以交互方式执行命令，带超时（沙箱化）。
     fn execute_interactive_sandboxed(
         original_command: &str,
         working_dir: &std::path::Path,
@@ -1328,8 +1316,8 @@ impl ShellManager {
         }
         install_parent_death_signal(&mut cmd);
 
-        // Disable raw mode before spawn; restore only if raw mode was active
-        // on entry (issue #1690).
+        // 在 spawn 前禁用 raw mode；仅在进入时 raw mode 已激活时才恢复
+        // （issue #1690）。
         let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
         if raw_mode_was_enabled {
             let _ = crossterm::terminal::disable_raw_mode();
@@ -1417,7 +1405,7 @@ impl ShellManager {
         }
     }
 
-    /// Spawn a background process (sandboxed).
+    /// 生成一个后台进程（沙箱化）。
     fn spawn_background_sandboxed(
         &mut self,
         original_command: &str,
@@ -1432,7 +1420,7 @@ impl ShellManager {
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = exec_env.is_sandboxed();
 
-        // Build the command from ExecEnv
+        // 从 ExecEnv 构建命令
         let program = exec_env.program();
         let args = exec_env.args();
 
@@ -1596,7 +1584,7 @@ impl ShellManager {
         })
     }
 
-    /// Get output from a background process
+    /// 获取后台进程的输出
     #[allow(dead_code)]
     pub fn get_output(
         &mut self,
@@ -1620,7 +1608,7 @@ impl ShellManager {
                 std::thread::sleep(Duration::from_millis(100));
             }
 
-            // If still running after timeout
+            // 如果超时后仍在运行
             if shell.status == ShellStatus::Running {
                 return Ok(shell.snapshot());
             }
@@ -1631,7 +1619,7 @@ impl ShellManager {
         Ok(shell.snapshot())
     }
 
-    /// Write data to stdin of a background process.
+    /// 向后台进程的 stdin 写入数据。
     pub fn write_stdin(&mut self, task_id: &str, input: &str, close: bool) -> Result<()> {
         let shell = self
             .processes
@@ -1641,7 +1629,7 @@ impl ShellManager {
         Ok(())
     }
 
-    /// Get incremental output from a background process, consuming any new output.
+    /// 获取后台进程的增量输出，消耗所有新输出。
     fn get_output_delta(
         &mut self,
         task_id: &str,
@@ -1710,7 +1698,7 @@ impl ShellManager {
         })
     }
 
-    /// Kill a running background process
+    /// 杀死一个正在运行的后台进程
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
         let shell = self
             .processes
@@ -1721,7 +1709,7 @@ impl ShellManager {
         Ok(shell.snapshot())
     }
 
-    /// Kill every currently running background shell process.
+    /// 杀死所有当前正在运行的后台 shell 进程。
     pub fn kill_running(&mut self) -> Result<Vec<ShellResult>> {
         let ids = self
             .processes
@@ -1737,7 +1725,7 @@ impl ShellManager {
         Ok(results)
     }
 
-    /// Poll a background process and return incremental output.
+    /// 轮询后台进程并返回增量输出。
     pub fn poll_delta(
         &mut self,
         task_id: &str,
@@ -1747,7 +1735,7 @@ impl ShellManager {
         self.get_output_delta(task_id, wait, timeout_ms)
     }
 
-    /// Attach durable task context to a live shell job.
+    /// 将持久化任务上下文附加到活动的 shell 作业。
     pub fn tag_linked_task(&mut self, task_id: &str, linked_task_id: Option<String>) -> Result<()> {
         let shell = self
             .processes
@@ -1757,7 +1745,7 @@ impl ShellManager {
         Ok(())
     }
 
-    /// Inspect full output for a live or stale job.
+    /// 检查活动或过期作业的完整输出。
     pub fn inspect_job(&mut self, task_id: &str) -> Result<ShellJobDetail> {
         if let Some(shell) = self.processes.get_mut(task_id) {
             shell.poll();
@@ -1773,12 +1761,12 @@ impl ShellManager {
         Err(anyhow!("Task {task_id} not found"))
     }
 
-    /// List all live and known-stale background shell jobs for the TUI.
+    /// 列出 TUI 中所有活动及已知过期的后台 shell 作业。
     pub fn list_jobs(&mut self) -> Vec<ShellJobSnapshot> {
         for shell in self.processes.values_mut() {
             shell.poll();
         }
-        // Evict completed processes older than 1 hour to bound memory growth.
+        // 回收完成时间超过 1 小时的进程以限制内存增长。
         self.cleanup(Duration::from_secs(3600));
 
         let mut jobs = self
@@ -1795,8 +1783,7 @@ impl ShellManager {
         jobs
     }
 
-    /// Drain finished background shell jobs that have not yet been reported to
-    /// runtime status.
+    /// 排出尚未报告给运行时状态的已完成后台 shell 作业。
     pub fn drain_finished_jobs(&mut self) -> Vec<ShellCompletionEvent> {
         let mut events = Vec::new();
         for shell in self.processes.values_mut() {
@@ -1810,7 +1797,7 @@ impl ShellManager {
         events
     }
 
-    /// Remember a restart-stale job so the UI can show it instead of hiding it.
+    /// 记住重启后过期的作业，以便 UI 可以显示它而不是隐藏它。
     #[allow(dead_code)]
     pub fn remember_stale_job(
         &mut self,
@@ -1844,7 +1831,7 @@ impl ShellManager {
         );
     }
 
-    /// Clean up completed processes older than the given duration
+    /// 清理完成时间超过指定时长的进程
     pub fn cleanup(&mut self, max_age: Duration) {
         let _now = Instant::now();
         self.processes.retain(|_, shell| {
@@ -1869,15 +1856,15 @@ fn job_status_rank(status: &ShellStatus, stale: bool) -> u8 {
     }
 }
 
-/// Thread-safe wrapper for `ShellManager`
+/// `ShellManager` 的线程安全包装器
 pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 
-/// Create a new shared shell manager with default sandbox policy.
+/// 创建一个新的共享 shell 管理器，使用默认沙箱策略。
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
 }
 
-// === ToolSpec Implementations ===
+// === ToolSpec 实现 ===
 
 use crate::command_safety::{
     SafetyLevel, analyze_command, extract_primary_command, is_parallel_readonly_command,
@@ -1903,9 +1890,8 @@ shell sandbox). Workarounds: (1) run the Docker build from a regular terminal ou
 TUI, or (2) disable BuildKit with DOCKER_BUILDKIT=0 (only works if your Dockerfiles do not \
 use RUN --mount directives).";
 
-/// Human-readable exit status for a shell result: the numeric code when the
-/// process returned one, or "terminated by signal" when it did not (rather
-/// than leaking `Some(127)` / `None` Debug output to the user).
+/// shell 结果的人类可读退出状态：当进程返回数字代码时显示该代码，
+/// 否则显示 "terminated by signal"（而不是向用户泄漏 `Some(127)` / `None` 的 Debug 输出）。
 fn exit_code_label(code: Option<i32>) -> String {
     match code {
         Some(code) => format!("exit code {code}"),
@@ -2245,7 +2231,7 @@ async fn execute_foreground_via_background(
     }
 }
 
-/// Tool for executing shell commands.
+/// 用于执行 shell 命令的工具。
 pub struct ExecShellTool;
 
 #[async_trait]
@@ -2401,7 +2387,7 @@ impl ToolSpec for ExecShellTool {
             }
         }
 
-        // Safety analysis (always run for metadata, but only block when not in YOLO mode)
+        // 安全检查（始终为元数据运行，但仅在不处于 YOLO 模式时阻止执行）
         let safety = analyze_command(command);
         if !context.auto_approve {
             match safety.level {
@@ -2426,7 +2412,7 @@ impl ToolSpec for ExecShellTool {
                     });
                 }
                 SafetyLevel::RequiresApproval | SafetyLevel::Safe | SafetyLevel::WorkspaceSafe => {
-                    // Proceed normally
+                    // 正常继续
                 }
             }
         }
@@ -2438,17 +2424,16 @@ impl ToolSpec for ExecShellTool {
             .and_then(serde_json::Value::as_str)
         {
             Some(dir) => {
-                // Validate cwd against workspace boundary (same as file tools)
+                // 验证 cwd 是否在工作区边界内（与文件工具相同）
                 let resolved = context.resolve_path(dir)?;
                 Some(resolved.to_string_lossy().to_string())
             }
             None => None,
         };
 
-        // #456 — collect env from any configured `shell_env` hooks. Runs
-        // synchronously, captures stdout, parses `KEY=VAL` lines, audit-logs
-        // the keys (never the values). Empty / no-op when no hook is
-        // configured.
+        // #456 — 从任何已配置的 `shell_env` 钩子收集环境变量。同步运行，
+        // 捕获 stdout，解析 `KEY=VAL` 行，审计日志记录键名（绝不记录值）。
+        // 未配置钩子时为空操作。
         let extra_env = if let Some(hook_executor) = &context.runtime.hook_executor {
             let hook_ctx = crate::hooks::HookContext::new()
                 .with_tool_name("exec_shell")
@@ -2458,7 +2443,7 @@ impl ToolSpec for ExecShellTool {
             std::collections::HashMap::new()
         };
 
-        // Route through external sandbox backend when configured.
+        // 当配置了外部沙箱后端时通过其路由。
         if let Some(backend) = &context.sandbox_backend {
             if interactive {
                 return Ok(ToolResult::error(
@@ -2511,7 +2496,7 @@ impl ToolSpec for ExecShellTool {
                 }
             };
 
-            // Build result (reuse the existing output rendering below).
+            // 构建结果（复用下面的现有输出渲染）。
             let stdout_summary = summarize_output(&result.stdout);
             let stderr_summary = summarize_output(&result.stderr);
             let summary = if !stderr_summary.is_empty() {
@@ -3106,7 +3091,7 @@ impl ToolSpec for ShellWaitTool {
     }
 
     fn model_visible(&self) -> bool {
-        // `exec_wait` is a legacy alias; only `exec_shell_wait` is model-visible.
+        // `exec_wait` 是遗留别名；只有 `exec_shell_wait` 对模型可见。
         self.name == "exec_shell_wait"
     }
 
@@ -3193,7 +3178,7 @@ impl ToolSpec for ShellInteractTool {
     }
 
     fn model_visible(&self) -> bool {
-        // `exec_interact` is a legacy alias; only `exec_shell_interact` is model-visible.
+        // `exec_interact` 是遗留别名；只有 `exec_shell_interact` 对模型可见。
         self.name == "exec_shell_interact"
     }
 
@@ -3319,7 +3304,7 @@ impl ToolSpec for ShellInteractTool {
     }
 }
 
-/// Tool for appending notes to a notes file.
+/// 用于将笔记追加到笔记文件的工具。
 pub struct NoteTool;
 
 #[async_trait]
@@ -3350,7 +3335,7 @@ impl ToolSpec for NoteTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Auto // Notes are low-risk
+        ApprovalRequirement::Auto // 笔记是低风险的
     }
 
     async fn execute(
@@ -3360,14 +3345,14 @@ impl ToolSpec for NoteTool {
     ) -> Result<ToolResult, ToolError> {
         let note_content = required_str(&input, "content")?;
 
-        // Ensure parent directory exists
+        // 确保父目录存在
         if let Some(parent) = context.notes_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 ToolError::execution_failed(format!("Failed to create notes directory: {e}"))
             })?;
         }
 
-        // Append to notes file
+        // 追加到笔记文件
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

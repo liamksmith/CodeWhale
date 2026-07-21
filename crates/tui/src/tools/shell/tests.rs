@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HAND
 #[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
-// `env_lock` serializes tests that mutate the process environment.
+// `env_lock` 对修改进程环境的测试进行序列化。
 #[cfg(any(unix, windows))]
 use std::sync::{Mutex, OnceLock};
 
@@ -608,7 +608,7 @@ fn test_kill() {
         .task_id
         .expect("background execution should return task_id");
 
-    // Kill it
+    // 杀死
     let killed = manager.kill(&task_id).expect("kill");
     assert_eq!(killed.status, ShellStatus::Killed);
 }
@@ -1108,10 +1108,9 @@ fn test_exec_shell_schema_guides_gt_five_second_work_to_background() {
     let description = schema["properties"]["background"]["description"]
         .as_str()
         .expect("background description");
-    // The schema must steer >5s work to the background and point at the wait
-    // tool for early output. The wording references `exec_shell_wait` (the
-    // model-visible wait tool); the older `task_shell_start` phrasing was
-    // dropped, but the >5s + wait-tool guidance is the load-bearing contract.
+    // schema 必须将 >5 秒的工作引导到后台，并指向 wait 工具以获取早期输出。
+    // 措辞引用了 `exec_shell_wait`（模型可见的 wait 工具）；旧的 `task_shell_start` 表述
+    // 已被移除，但 >5秒 + wait-tool 指引是承载契约。
     assert!(description.contains(">5 seconds"), "{description}");
     assert!(description.contains("exec_shell_wait"), "{description}");
 }
@@ -1189,8 +1188,8 @@ async fn test_exec_shell_foreground_can_move_to_background() {
             .content
             .contains("Foreground shell wait moved to /jobs")
     );
-    // The detach message points the model at the wait tool for early output
-    // (the cancel-tool reference was reworded to `exec_shell_wait`).
+    // 分离消息将模型指向 wait 工具以获取早期输出
+    //（cancel-tool 引用已改写为 `exec_shell_wait`）。
     assert!(result.content.contains("exec_shell_wait"));
 
     let meta = result.metadata.expect("metadata");
@@ -1424,24 +1423,23 @@ fn test_macos_provenance_not_triggered_on_unrelated_eperm() {
     assert!(!looks_like_macos_provenance_failure(&result));
 }
 
-// Regression test for #828: shell spawns an orphaned background subprocess
-// (simulating `nohup curl`) that keeps the pipe write-end open after the shell
-// exits. collect_output() must not block indefinitely — it kills the whole
-// process group first, allowing reader threads to get EOF and exit.
+// #828 回归测试：shell 产生了一个孤立的后台子进程（模拟 `nohup curl`），
+// 该进程在 shell 退出后仍保持管道写入端打开。collect_output() 不能无限阻塞——
+// 它先杀死整个进程组，让读取线程收到 EOF 后退出。
 #[cfg(unix)]
 #[test]
 fn test_orphaned_subprocess_does_not_block_collect_output() {
     let tmp = tempdir().expect("tempdir");
     let mut manager = ShellManager::new(tmp.path().to_path_buf());
 
-    // sh spawns `sleep 100 &` and exits; the sleep subprocess inherits the
-    // pipe write-ends and would keep reader threads blocked without the fix.
+    // sh 产生 `sleep 100 &` 然后退出；sleep 子进程继承了管道写入端，
+    // 如果没有修复，会导致读取线程阻塞。
     let result = manager
         .execute("sh -c 'sleep 100 &'", None, 5000, true)
         .expect("execute");
     let task_id = result.task_id.expect("task id");
 
-    // Drive to completion with a tight timeout — must not hang.
+    // 用紧凑的超时时间驱动到完成——绝不能挂起。
     let done = manager
         .get_output(&task_id, true, 3000)
         .expect("get_output must complete, not hang");
@@ -1466,10 +1464,10 @@ fn foreground_shell_does_not_block_on_orphaned_subprocess_pipe() {
     assert_eq!(result.status, ShellStatus::Completed);
 }
 
-// Windows equivalent of the orphaned pipe-handle regression. `cmd /c start /b`
-// launches a descendant process that inherits stdout/stderr and outlives the
-// shell. Job-object cleanup must terminate that descendant before reader-thread
-// joins, otherwise get_output() blocks until ping exits.
+// 孤立管道句柄回归问题的 Windows 等价版本。`cmd /c start /b`
+// 启动一个继承 stdout/stderr 且寿命超过 shell 的子进程。
+// 作业对象清理必须在读取线程 join 之前终止该子进程，
+// 否则 get_output() 会阻塞直到 ping 退出。
 #[cfg(windows)]
 #[test]
 fn background_collection_does_not_block_on_detached_descendant_pipe() {
@@ -1630,10 +1628,10 @@ fn test_list_jobs_cleans_up_completed_old_processes() {
     let bg_id = bg.task_id.expect("bg task id");
     manager.get_output(&bg_id, true, 3000).expect("bg done");
 
-    // Both the completed job and any tracking state should be present.
+    // 已完成的任务及所有追踪状态都应存在。
     assert!(!manager.processes.is_empty());
 
-    // cleanup(ZERO) removes all completed processes immediately.
+    // cleanup(ZERO) 立即移除所有已完成的进程。
     manager.cleanup(Duration::ZERO);
     assert!(
         manager.processes.is_empty(),
@@ -1641,9 +1639,9 @@ fn test_list_jobs_cleans_up_completed_old_processes() {
     );
 }
 
-/// Regression for #1691: a `git commit -m "feat: complete sub-pages"` shell
-/// command must reach the OS shell with its quoted message intact (one argv
-/// slot), never split into `feat:` / `complete` / `sub-pages"`.
+/// #1691 回归测试：`git commit -m "feat: complete sub-pages"` shell
+/// 命令必须以完整的引号消息（一个 argv 槽位）到达 OS shell，
+/// 绝不能分割成 `feat:` / `complete` / `sub-pages"`。
 #[test]
 fn issue_1691_quoted_commit_message_round_trips() {
     let cmd = r#"git commit -m "feat: complete sub-pages""#;
@@ -1654,9 +1652,9 @@ fn issue_1691_quoted_commit_message_round_trips() {
     );
 
     let dispatcher = crate::shell_dispatcher::global_dispatcher();
-    // The whole command (with quotes) is a single argv entry. The actual
-    // shell binary can vary by platform, but the payload itself must stay
-    // intact in one shell arg. We never split the command string ourselves.
+    // 整个命令（含引号）是一个单独的 argv 条目。实际的
+    // shell 二进制文件可能因平台而异，但负载本身必须
+    // 保持在一个 shell 参数中完整。我们永远不会自己分割命令字符串。
     assert_eq!(spec.program, dispatcher.kind().binary());
     if dispatcher.kind().is_powershell() {
         assert_eq!(

@@ -21,10 +21,10 @@ use crate::tools::spec::{
 /// 或可选的预算耗尽为止。参见 `goal_loop::decide_continuation`。
 pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
 
-/// Shared reference to the current runtime goal.
+/// 当前运行时目标的共享引用。
 pub type SharedGoalState = Arc<Mutex<GoalState>>;
 
-/// Create an empty shared goal state.
+/// 创建一个空的共享目标状态。
 #[must_use]
 pub fn new_shared_goal_state() -> SharedGoalState {
     Arc::new(Mutex::new(GoalState::default()))
@@ -42,7 +42,7 @@ pub fn new_shared_goal_state_from_host_status(
     Arc::new(Mutex::new(state))
 }
 
-/// Runtime status for a goal.
+/// 目标的运行时状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalStatus {
     Active,
@@ -249,7 +249,7 @@ impl GoalState {
     }
 }
 
-/// Serializable tool output and prompt input for the current goal.
+/// 当前目标的可序列化工具输出和提示词输入。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct GoalSnapshot {
     pub objective: Option<String>,
@@ -312,9 +312,9 @@ pub fn thread_goal_status_as_goal_status(
     }
 }
 
-/// Render the continuation prompt injected when a goal is still active after a
-/// turn. There is no run-level cap, so this shows progress (turn count, tokens)
-/// rather than a "N/max" meter — the loop runs until done, blocked, or paused.
+/// 当目标在一轮之后仍处于活跃状态时，渲染注入的继续提示词。
+/// 没有运行层级的上限，因此显示进度（轮次计数、token 数）
+/// 而非"N/max"计量器——循环会一直运行，直到完成、阻塞或暂停。
 #[must_use]
 pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
     let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
@@ -884,9 +884,9 @@ mod tests {
 
     #[test]
     fn completed_goal_snapshot_freezes_elapsed() {
-        // Regression: a completed goal's snapshot elapsed_seconds must not keep
-        // growing. Before the fix, snapshot() always used started_at.elapsed(),
-        // so a finished goal's elapsed kept ticking in the sidebar/tool output.
+        // 回归测试：已完成目标的快照 elapsed_seconds 不得继续增长。
+        // 修复前，snapshot() 始终使用 started_at.elapsed()，
+        // 因此已完成目标的已用时间在侧边栏/工具输出中持续跳动。
         let state = new_shared_goal_state_from_host_status(
             Some("freeze on completion".to_string()),
             None,
@@ -907,10 +907,10 @@ mod tests {
         };
         let elapsed_at_completion = first.elapsed_seconds.expect("elapsed present");
 
-        // Sleep past a whole-second boundary. Under the old (buggy) code,
-        // snapshot() returned started_at.elapsed().as_secs(), so this would
-        // tick up by at least one second and the assertion below would fail.
-        // With the freeze, the completed snapshot stays at the captured value.
+        // 休眠跨越整秒边界。在旧的（有 bug 的）代码下，
+        // snapshot() 返回 started_at.elapsed().as_secs()，因此会
+        // 至少增加一秒，导致下方的断言失败。
+        // 有了冻结机制，完成的快照保持捕获时的值不变。
         std::thread::sleep(std::time::Duration::from_millis(1_100));
         let second = state.lock().expect("goal lock").snapshot();
         assert_eq!(second.status, "complete");

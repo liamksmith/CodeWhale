@@ -1,4 +1,4 @@
-//! Tool for structured code reviews of files, diffs, or pull requests.
+//! 用于文件、差异或拉取请求的结构化代码审查工具。
 
 use std::fs;
 use std::path::{Path, PathBuf};

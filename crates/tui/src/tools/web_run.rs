@@ -1,7 +1,7 @@
-//! Web browsing tool with multi-command support (search/open/click/find/screenshot).
+//! 支持多命令的网页浏览工具（搜索/打开/点击/查找/截图）。
 //!
-//! This mirrors the Codex harness `web.run` interface so models can use a single
-//! tool call to perform multiple web actions and cite sources with ref_ids.
+//! 此实现镜像了 Codex 的 `web.run` 接口，使得模型可以通过单次工具调用执行多个网页操作，
+//! 并使用 ref_id 引用来源。
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -947,7 +947,7 @@ fn extract_duckduckgo_vqd(html: &str) -> Option<String> {
         }
     }
 
-    // Fallback: look for `vqd=` and accept a conservative token charset.
+    // 回退：查找 `vqd=` 并接受保守的令牌字符集。
     if let Some(start) = html.find("vqd=") {
         let rest = &html[start + 4..];
         let mut token = String::new();
@@ -978,7 +978,7 @@ async fn run_image_search(
         .build()
         .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
 
-    // Step 1: fetch the HTML page to obtain the `vqd` token used by the images API.
+    // 步骤 1：获取 HTML 页面以获取图片 API 所需的 `vqd` 令牌。
     let encoded = url_encode(query);
     let seed_url = format!("https://duckduckgo.com/?q={encoded}&iax=images&ia=images");
     let seed_resp = client
@@ -1010,7 +1010,7 @@ async fn run_image_search(
         ToolError::execution_failed("Failed to extract DuckDuckGo image token (vqd)")
     })?;
 
-    // Step 2: query the DuckDuckGo images JSON endpoint.
+    // 步骤 2：查询 DuckDuckGo 图片 JSON 接口。
     let api_url = format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&p=1");
     let api_resp = client
         .get(&api_url)
@@ -1052,7 +1052,7 @@ async fn run_image_search(
         })
         .collect::<Vec<_>>();
 
-    // Domain filter is applied to the source page URL when available.
+    // 域名过滤器在可用时应用于来源页面 URL。
     let warning = if !domains.is_empty() {
         let before = results.len();
         results.retain(|entry| match entry.url.as_deref() {
@@ -1103,8 +1103,8 @@ fn page_from_search(query: &str, results: &[SearchEntry]) -> WebPage {
     }
 }
 
-/// Check network policy for a URL before fetching.
-/// Returns an error if the policy denies access.
+/// 在获取前检查 URL 的网络策略。
+/// 如果策略拒绝访问则返回错误。
 fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolError> {
     let Some(decider) = context.network_policy.as_ref() else {
         return Ok(());
@@ -1366,7 +1366,7 @@ fn screenshot_page(
     })
 }
 
-// === HTML Parsing ===
+// === HTML 解析 ===
 
 static ANCHOR_RE: OnceLock<Regex> = OnceLock::new();
 static TAG_RE: OnceLock<Regex> = OnceLock::new();
@@ -1723,7 +1723,7 @@ fn url_encode(input: &str) -> String {
     crate::utils::url_encode(input)
 }
 
-// === Tests ===
+// === 测试 ===
 
 #[cfg(test)]
 mod tests {
@@ -1814,17 +1814,17 @@ mod tests {
 
     #[test]
     fn percent_decode_handles_utf8_multibyte_sequences() {
-        // Percent-encoded CJK: %E4%B8%AA%E4%BA%BA = 个人 (each glyph is 3 UTF-8 bytes).
+        // 百分号编码的 CJK：%E4%B8%AA%E4%BA%BA = 个人（每个字形占用 3 个 UTF-8 字节）。
         assert_eq!(percent_decode("Hello %E4%B8%AA%E4%BA%BA"), "Hello 个人");
         assert_eq!(percent_decode("%E7%B4%A0%E6%9D%90"), "素材");
-        // Percent-encoded UTF-8 inside a URL path (DuckDuckGo `uddg=` redirect shape).
+        // URL 路径中的百分号编码 UTF-8（DuckDuckGo `uddg=` 重定向形式）。
         assert_eq!(
             percent_decode("https://example.com/%E9%A1%B5%E9%9D%A2"),
             "https://example.com/页面"
         );
-        // Raw UTF-8 in the input passes through unchanged.
+        // 输入中的原始 UTF-8 保持原样不变。
         assert_eq!(percent_decode("查询 keyword"), "查询 keyword");
-        // ASCII-only inputs preserve existing behavior; `+` stays literal.
+        // 纯 ASCII 输入保持原有行为；`+` 保持字面值。
         assert_eq!(percent_decode("foo+bar%20baz"), "foo+bar baz");
     }
 
@@ -1927,9 +1927,8 @@ mod tests {
         let ref_id = format!("{}turn0search1", scoped_ref_prefix(namespace));
         store_page(namespace, &ref_id, sample_page("https://example.com/alpha"));
 
-        // On Windows, Instant's epoch is system boot.  If the CI runner has
-        // been up for less than WEB_RUN_SESSION_TTL the subtraction would
-        // underflow, so we skip the test in that case.
+        // 在 Windows 上，Instant 的纪元是系统启动时间。如果 CI 运行器的运行时间
+        // 小于 WEB_RUN_SESSION_TTL，减法会下溢，因此此时跳过测试。
         let stale = WEB_RUN_SESSION_TTL + Duration::from_secs(1);
         let can_test = with_state(|state| {
             let session = state
@@ -1945,7 +1944,7 @@ mod tests {
             }
         });
         if !can_test {
-            // System uptime shorter than session TTL; can't test eviction.
+            // 系统运行时间短于会话 TTL；无法测试驱逐。
             return;
         }
 

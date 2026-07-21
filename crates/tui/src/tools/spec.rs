@@ -1,10 +1,10 @@
-//! Tool specification traits for the CodeWhale agent system.
+//! CodeWhale 代理系统的工具规范特征。
 //!
-//! This module defines the core abstractions for tools:
-//! - `ToolSpec`: The main trait that all tools must implement
-//! - `ToolContext`: Execution context passed to tools
-//! - `ToolResult`: Unified result type for tool execution
-//! - `ToolCapability`: Capabilities and requirements of tools
+//! 本模块定义了工具的核心抽象：
+//! - `ToolSpec`: 所有工具必须实现的主要特征
+//! - `ToolContext`: 传递给工具的执行上下文
+//! - `ToolResult`: 工具执行的统一结果类型
+//! - `ToolCapability`: 工具的能力和需求
 
 use std::collections::HashMap;
 use std::fs;
@@ -42,12 +42,11 @@ pub trait DynamicToolExecutor: Send + Sync {
     ) -> Result<ToolResult, ToolError>;
 }
 
-/// Optional durable runtime services made available to model-visible tools.
+/// 可选持久化运行时服务，提供给模型可见的工具使用。
 ///
-/// These are intentionally optional so existing unit tests and one-off tool
-/// contexts keep working. Tools that need durable task/automation state fail
-/// closed with a clear "not available" error when the relevant service is not
-/// attached.
+/// 这些服务有意设计为可选的，以便现有的单元测试和一次性工具
+/// 上下文能够继续工作。需要持久化任务/自动化状态的工具在相关服务
+/// 未附加时会以清晰的"不可用"错误关闭。
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub shell_manager: Option<SharedShellManager>,
@@ -57,14 +56,14 @@ pub struct RuntimeToolServices {
     pub active_task_id: Option<String>,
     pub active_thread_id: Option<String>,
     pub dynamic_tool_executor: Option<Arc<dyn DynamicToolExecutor>>,
-    /// Hook executor for `shell_env` injection (#456) and any future
-    /// tool-side hook events. `None` outside the live engine — test
-    /// contexts that don't care about hooks get a no-op.
+    /// `shell_env` 注入（#456）以及任何未来工具端钩子事件的
+    /// 钩子执行器。在活动引擎之外为 `None`，
+    /// 不关心钩子的测试上下文会得到一个空操作实例。
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
-    /// Per-session backing store for `var_handle` payloads. Cloned tool
-    /// contexts share this Arc so handles survive across turns.
+    /// `var_handle` 负载的每会话后端存储。克隆的工具
+    /// 上下文共享此 Arc，因此句柄可以在多次交互中存活。
     pub handle_store: SharedHandleStore,
-    /// Per-session persistent RLM kernels, keyed by caller-chosen context name.
+    /// 每会话持久化 RLM 内核，由调用者选择的上下文名称作为键。
     pub rlm_sessions: SharedRlmSessionStore,
 }
 
@@ -132,130 +131,124 @@ fn file_read_snapshot(path: &Path) -> Result<FileReadSnapshot, ToolError> {
     })
 }
 
-/// Sandbox policy for command execution.
+/// 命令执行的沙箱策略。
 #[derive(Debug, Clone, Default)]
 pub enum SandboxPolicy {
-    /// No sandboxing (dangerous but sometimes needed)
+    /// 无沙箱（危险，但有时需要）
     #[default]
     None,
 }
 
-/// Context passed to tools during execution.
+/// 执行期间传递给工具的上下文。
 #[derive(Clone)]
 pub struct ToolContext {
-    /// The workspace root directory
+    /// 工作区根目录
     pub workspace: PathBuf,
-    /// Shared shell manager for background tasks and streaming IO.
+    /// 用于后台任务和流式 IO 的共享 shell 管理器。
     pub shell_manager: SharedShellManager,
-    /// Per-session snapshots for files successfully observed by `read_file`.
-    /// Mutation tools use this to reject narrow edits against unread or stale
-    /// content.
+    /// 由 `read_file` 成功观察到的文件的每会话快照。
+    /// 修改工具使用此信息拒绝针对未读取或过期内容的窄编辑。
     pub file_read_tracker: SharedFileReadTracker,
-    /// Sub-agent that owns tool work started through this context. Root user
-    /// turns leave this unset; child contexts stamp it so long-running shell
-    /// jobs can be attributed in UI surfaces.
+    /// 拥有通过此上下文启动的工具工作的子代理。根用户
+    /// 轮次保持未设置；子上下文会标记此信息，以便长时间运行的 shell
+    /// 作业可以在 UI 界面中被归因。
     pub owner_agent_id: Option<String>,
     pub owner_agent_name: Option<String>,
-    /// Whether to allow paths outside workspace
+    /// 是否允许工作区之外的路径
     pub trust_mode: bool,
-    /// Current sandbox policy
+    /// 当前的沙箱策略
     #[allow(dead_code)]
     pub sandbox_policy: SandboxPolicy,
-    /// Path for notes file
+    /// 笔记文件路径
     pub notes_path: PathBuf,
-    /// MCP configuration path
+    /// MCP 配置路径
     #[allow(dead_code)]
     pub mcp_config_path: PathBuf,
-    /// Explicit skills directory used for model-visible skill discovery.
+    /// 显式技能目录，用于模型可见的技能发现。
     pub skills_dir: Option<PathBuf>,
-    /// Restrict skill discovery to CodeWhale-owned roots plus `skills_dir`.
+    /// 将技能发现限制为 CodeWhale 拥有的根目录加上 `skills_dir`。
     pub skills_scan_codewhale_only: bool,
-    /// Elevated sandbox policy override (used when retrying after sandbox denial).
-    /// This overrides the default sandbox behavior for shell commands.
+    /// 提升的沙箱策略覆盖（在沙箱拒绝后重试时使用）。
+    /// 此设置覆盖 shell 命令的默认沙箱行为。
     pub elevated_sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
-    /// Optional user-facing hint for shell commands that fail because the
-    /// active sandbox policy intentionally denies outbound network access.
+    /// 当 shell 命令因活动沙箱策略有意拒绝出站网络访问而
+    /// 失败时，可选的面向用户的提示。
     pub shell_network_denied_hint: Option<String>,
-    /// Whether tools should auto-approve without safety checks (YOLO mode).
-    /// When true, command safety analysis is skipped for shell execution.
+    /// 工具是否应跳过安全检查自动批准（YOLO 模式）。
+    /// 启用时，shell 执行的命令安全分析会被跳过。
     pub auto_approve: bool,
-    /// Effective shell policy for this execution context.
+    /// 此执行上下文的有效 shell 策略。
     pub shell_policy: ShellPolicy,
-    /// Effective feature flag set for the running session.
+    /// 运行中会话的有效特性标志集合。
     pub features: Features,
-    /// Namespace for tool state that should be scoped to the current session/thread.
+    /// 应限定在当前会话/线程范围内的工具状态命名空间。
     pub state_namespace: String,
-    /// User-trusted external paths the agent may read/write even when they
-    /// fall outside `workspace`. Loaded from `~/.deepseek/workspace-trust.json`
-    /// and refreshed when the user runs `/trust add <path>`. Distinct from
-    /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
+    /// 用户信任的外部路径，即使它们位于 `workspace` 之外，代理也可以读写。
+    /// 从 `~/.deepseek/workspace-trust.json` 加载，
+    /// 并在用户运行 `/trust add <path>` 时刷新。与
+    /// `trust_mode` 不同，后者是全有或全无的旧式开关（#29）。
     pub trusted_external_paths: Vec<PathBuf>,
-    /// Whether to follow symbolic links during file discovery and tool
-    /// operations. When `true`, symlinked directories are traversed and
-    /// symlinked paths that resolve outside the workspace are still allowed
-    /// (the symlink itself must be inside the workspace). Mirrors the
-    /// `workspace_follow_symlinks` setting.
+    /// 在文件发现和工具操作期间是否跟随符号链接。
+    /// 启用时，会遍历符号链接目录，并且解析到工作区之外的
+    /// 符号链接路径仍然允许（符号链接本身必须在工作区内）。
+    /// 反映 `workspace_follow_symlinks` 设置。
     pub follow_symlinks: bool,
-    /// Per-domain network policy (#135). When `None`, network tools fall back
-    /// to a permissive default that mirrors pre-v0.7.0 behavior so tests and
-    /// other contexts that don't construct a real policy keep working.
+    /// 每域名网络策略（#135）。为 `None` 时，网络工具回退到
+    /// 宽松默认值，反映 v0.7.0 之前的行为，以便测试和其他
+    /// 未构造实际策略的上下文能够继续工作。
     pub network_policy: Option<NetworkPolicyDecider>,
-    /// Durable runtime services for task, gate, PR-attempt, GitHub evidence,
-    /// and automation tools.
+    /// 任务、门控、PR 尝试、GitHub 证据和自动化工具的
+    /// 持久化运行时服务。
     pub runtime: RuntimeToolServices,
-    /// Snapshot of the active prompt/session/history exposed as symbolic RLM
-    /// objects. Tools only receive compact cards unless explicitly opening a
-    /// bounded object through `rlm_open`.
+    /// 活动提示词/会话/历史的快照，以符号化 RLM 对象形式暴露。
+    /// 工具仅接收紧凑卡片，除非通过 `rlm_open` 显式打开有界对象。
     pub session_objects: Option<SessionObjectSnapshot>,
-    /// Cancellation token for the active engine turn. Tools that may wait on
-    /// external work should observe this so UI cancel can interrupt them.
+    /// 活动引擎轮次的取消令牌。可能等待外部工作的工具应
+    /// 观察此令牌，以便 UI 取消可以中断它们。
     pub cancel_token: Option<CancellationToken>,
-    /// Optional external sandbox backend for shell execution.
-    /// When set, exec_shell routes commands through this instead of spawning
-    /// a local process.
+    /// shell 执行的可选外部沙箱后端。
+    /// 设置时，exec_shell 通过此后端路由命令，而不是生成本地进程。
     pub sandbox_backend: Option<std::sync::Arc<dyn SandboxBackend>>,
-    /// Path to the user memory file. `None` when the user-memory feature
-    /// (#489) is disabled — tools that read or write the file should
-    /// short-circuit on `None` rather than fall back to a workspace-local
-    /// default.
+    /// 用户记忆文件的路径。当用户记忆功能（#489）禁用时为 `None` —
+    /// 读取或写入该文件的工具应在 `None` 时短路处理，
+    /// 而不是回退到工作区本地默认值。
     pub memory_path: Option<PathBuf>,
-    /// LSP manager for post-edit diagnostics injection (#428). `None` when
-    /// LSP is disabled or the context is constructed in a test that does not
-    /// need diagnostics. Edit tools append a `<diagnostics>` block to their
-    /// result when this is present and the manager is enabled.
+    /// 用于编辑后诊断注入的 LSP 管理器（#428）。当 LSP 禁用或
+    /// 上下文构建于不需要诊断的测试中时为 `None`。编辑工具在
+    /// 此管理器存在且启用时，会在其结果后附加 `<diagnostics>` 块。
     pub lsp_manager: Option<Arc<LspManager>>,
 
-    /// Large-output router (#548). When `Some`, tool results that exceed the
-    /// configured token threshold are routed through a V4-Flash synthesis
-    /// sub-agent before being returned to the parent context. `None` disables
-    /// routing (e.g. in sub-agents and test contexts to avoid recursion).
+    /// 大型输出路由器（#548）。为 `Some` 时，超过配置令牌阈值的
+    /// 工具结果在返回给父上下文之前，会通过 V4-Flash 摘要
+    /// 子代理进行路由。`None` 禁用路由（例如在子代理和测试
+    /// 上下文中以避免递归）。
     pub large_output_router: Option<crate::tools::large_output_router::LargeOutputRouter>,
 
-    /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
-    /// `[search] provider` in config.toml.
+    /// `web_search` 应使用的搜索后端。默认：DuckDuckGo。通过
+    /// `config.toml` 中的 `[search] provider` 设置。
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
-    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
+    /// Tavily、Bocha、Metaso 或 Baidu 的 API 密钥。Bing 或 DuckDuckGo 为 `None`。
+    /// Metaso 也会回退到 `METASO_API_KEY` 环境变量，然后是内置密钥。
+    /// Baidu 也会回退到 `BAIDU_SEARCH_API_KEY`。
     pub search_api_key: Option<String>,
-    /// Optional DuckDuckGo-compatible HTML endpoint override for `web_search`.
+    /// `web_search` 的可选 DuckDuckGo 兼容 HTML 端点覆盖。
     pub search_base_url: Option<String>,
 
-    /// Per-session workshop variable store (#548). Holds the raw content of
-    /// the most recent large-tool routing event so the parent can call
-    /// `promote_to_context` later. `None` when the router is disabled.
+    /// 每会话工作坊变量存储（#548）。保存最新的大工具路由事件的原始内容，
+    /// 以便父上下文稍后可以调用 `promote_to_context`。
+    /// 当路由器禁用时为 `None`。
     pub workshop_vars: Option<
         std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
     >,
 }
 
 impl ToolContext {
-    /// Create a new `ToolContext` with default settings.
+    /// 使用默认设置创建一个新的 `ToolContext`。
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
-        // Prefer .codewhale, fall back to .deepseek for project-local state
+        // 优先使用 .codewhale，回退到 .deepseek 用于项目本地状态
         let notes_path = codewhale_config::resolve_project_state_dir(&workspace, "notes.md")
             .expect("hardcoded project notes state path is valid")
             .1;
@@ -297,7 +290,7 @@ impl ToolContext {
         }
     }
 
-    /// Create a `ToolContext` with all settings specified.
+    /// 创建一个包含所有指定设置的 `ToolContext`。
     #[allow(dead_code)]
     pub fn with_options(
         workspace: impl Into<PathBuf>,
@@ -342,7 +335,7 @@ impl ToolContext {
         }
     }
 
-    /// Create a `ToolContext` with auto-approve mode (YOLO).
+    /// 创建一个自动批准模式（YOLO）的 `ToolContext`。
     pub fn with_auto_approve(
         workspace: impl Into<PathBuf>,
         trust_mode: bool,
@@ -387,21 +380,21 @@ impl ToolContext {
         }
     }
 
-    /// Attach a per-domain network policy to this context (#135).
+    /// 为此上下文附加每域名网络策略（#135）。
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
         self
     }
 
-    /// Attach durable runtime services to tools.
+    /// 为工具附加持久化运行时服务。
     #[must_use]
     pub fn with_runtime_services(mut self, runtime: RuntimeToolServices) -> Self {
         self.runtime = runtime;
         self
     }
 
-    /// Stamp tool work with the sub-agent that owns it.
+    /// 用拥有该工具工作的子代理标记工具工作。
     #[must_use]
     pub fn with_owner_agent(
         mut self,
@@ -415,8 +408,7 @@ impl ToolContext {
         self
     }
 
-    /// Attach skill discovery settings for tools that need to resolve
-    /// model-visible skills by name.
+    /// 为需要按名称解析模型可见技能的工具附加技能发现设置。
     #[must_use]
     pub fn with_skills_config(
         mut self,
@@ -428,28 +420,28 @@ impl ToolContext {
         self
     }
 
-    /// Attach active prompt/history/session symbolic objects for RLM tools.
+    /// 为 RLM 工具附加活动提示词/历史/会话符号化对象。
     #[must_use]
     pub fn with_session_objects(mut self, snapshot: SessionObjectSnapshot) -> Self {
         self.session_objects = Some(snapshot);
         self
     }
 
-    /// Attach the active engine cancellation token.
+    /// 附加活动引擎取消令牌。
     #[must_use]
     pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
         self.cancel_token = Some(cancel_token);
         self
     }
 
-    /// Attach the effective shell policy for this turn.
+    /// 附加本次轮次的有效 shell 策略。
     #[must_use]
     pub fn with_shell_policy(mut self, policy: ShellPolicy) -> Self {
         self.shell_policy = policy;
         self
     }
 
-    /// Attach an external sandbox backend for remote shell execution.
+    /// 为远程 shell 执行附加外部沙箱后端。
     #[must_use]
     #[allow(dead_code)]
     pub fn with_sandbox_backend(mut self, backend: std::sync::Arc<dyn SandboxBackend>) -> Self {
@@ -457,27 +449,26 @@ impl ToolContext {
         self
     }
 
-    /// Set the user's trusted external paths (loaded from
-    /// `~/.deepseek/workspace-trust.json`). See [`Self::resolve_path`] for
-    /// how the list is consulted.
+    /// 设置用户信任的外部路径（从 `~/.deepseek/workspace-trust.json` 加载）。
+    /// 关于如何查询此列表，请参见 [`Self::resolve_path`]。
     #[must_use]
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.trusted_external_paths = paths;
         self
     }
 
-    /// Set whether tools should follow symbolic links. When `true`,
-    /// `resolve_path` allows symlinked paths that resolve outside the
-    /// workspace, and walk-based tools traverse symlinked directories.
-    /// Mirrors the `workspace_follow_symlinks` setting.
+    /// 设置工具是否应跟随符号链接。启用时，
+    /// `resolve_path` 允许解析到工作区之外的符号链接路径，
+    /// 基于遍历的工具会遍历符号链接目录。
+    /// 反映 `workspace_follow_symlinks` 设置。
     #[must_use]
     pub fn with_follow_symlinks(mut self, follow: bool) -> Self {
         self.follow_symlinks = follow;
         self
     }
 
-    /// Attach an LSP manager so that edit tools can auto-inject diagnostics
-    /// into their results after a successful file modification (#428).
+    /// 附加 LSP 管理器，以便编辑工具在成功修改文件后
+    /// 自动将诊断注入其结果（#428）。
     #[must_use]
     #[allow(dead_code)]
     pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
@@ -485,10 +476,9 @@ impl ToolContext {
         self
     }
 
-    /// Remember that the caller has observed the current on-disk state of a
-    /// file. This is intentionally best-effort so successful reads/writes do
-    /// not fail after completing only because a post-operation metadata lookup
-    /// raced with filesystem changes.
+    /// 记录调用者已观察到文件的当前磁盘状态。
+    /// 这有意为尽力而为，以便在成功的读写操作完成后，
+    /// 不会因为操作后元数据查找与文件系统变更发生竞争而失败。
     pub fn note_file_read(&self, path: &Path) {
         let Ok(snapshot) = file_read_snapshot(path) else {
             return;
@@ -499,9 +489,9 @@ impl ToolContext {
         tracker.reads.insert(path.to_path_buf(), snapshot);
     }
 
-    /// Require a successful, still-fresh `read_file` snapshot before a narrow
-    /// in-place edit. This catches model edits made against guessed or stale
-    /// content while leaving transactional patch preflight separate.
+    /// 在窄范围原地编辑之前要求成功且仍然新鲜的 `read_file` 快照。
+    /// 这捕获了模型针对猜测或过期内容进行的编辑，
+    /// 同时保持事务性补丁预检查的独立性。
     pub fn require_fresh_file_read(
         &self,
         path: &Path,
@@ -544,14 +534,13 @@ impl ToolContext {
         Ok(())
     }
 
-    /// Resolve a path relative to workspace, validating it doesn't escape.
+    /// 解析相对于工作区的路径，验证它不会逃逸。
     ///
-    /// This handles both existing files (using canonicalize) and non-existent files
-    /// (for write operations) by canonicalizing the parent directory and appending
-    /// the filename.
-    /// Resolve a path relative to workspace, validating it doesn't escape.
+    /// 这处理现有文件（使用 canonicalize）和不存在文件
+    ///（用于写入操作）——通过规范化父目录并附加文件名。
+    /// 解析相对于工作区的路径，验证它不会逃逸。
     ///
-    /// # Examples
+    /// # 示例
     ///
     /// ```ignore
     /// # use crate::tools::spec::ToolContext;
@@ -566,21 +555,21 @@ impl ToolContext {
             self.workspace.join(raw)
         };
 
-        // In trust mode, allow any path without validation
+        // 在信任模式下，允许任何路径无需验证
         if self.trust_mode {
-            // Still try to canonicalize for consistency, but don't require it
+            // 仍然尝试规范化以保持一致性，但不要求必须成功
             return Ok(candidate.canonicalize().unwrap_or(candidate));
         }
 
-        // Try to canonicalize the workspace
+        // 尝试规范化工作区路径
         let workspace_canonical = self
             .workspace
             .canonicalize()
             .unwrap_or_else(|_| self.workspace.clone());
 
-        // When follow_symlinks is enabled, check the non-canonical (symlink)
-        // path against the workspace first. A symlink inside the workspace
-        // that resolves outside is allowed — the symlink itself is the gate.
+        // 当 follow_symlinks 启用时，首先检查非规范化的（符号链接）
+        // 路径是否在工作区内。工作区内解析到外部的符号链接
+        // 是允许的——符号链接本身是门控。
         if self.follow_symlinks {
             let candidate_normalized = normalize_path(&candidate);
             let workspace_normalized = normalize_path(&self.workspace);
@@ -589,30 +578,29 @@ impl ToolContext {
             if candidate_normalized.starts_with(&workspace_normalized)
                 || candidate_normalized.starts_with(&workspace_canonical_normalized)
             {
-                // The symlink (or plain path) is inside the workspace.
-                // Return the canonicalized target so file I/O works correctly.
+                // 符号链接（或普通路径）在工作区内。
+                // 返回规范化后的目标路径，以便文件 I/O 正常工作。
                 if candidate.exists() {
                     return Ok(candidate.canonicalize().unwrap_or(candidate));
                 }
-                // Non-existent path: canonicalize the deepest existing ancestor
+                // 不存在的路径：规范化最深层的现有祖先
                 return self.resolve_nonexistent_path(candidate, &workspace_canonical);
             }
 
-            // Path is outside workspace even before resolving symlinks.
-            // Fall through to the standard escape check.
+            // 即使未解析符号链接，路径也在工作区之外。
+            // 回退到标准逃逸检查。
         }
 
-        // For the initial check, also try to canonicalize the candidate if possible
-        // This handles symlinks like /var -> /private/var on macOS
+        // 对于初始检查，也尝试规范化候选路径
+        // 这处理像 macOS 上 /var -> /private/var 这样的符号链接
         let candidate_canonical = candidate
             .canonicalize()
             .unwrap_or_else(|_| normalize_path(&candidate));
         let workspace_normalized = normalize_path(&workspace_canonical);
 
-        // Check if the candidate is under the workspace (comparing canonical paths)
+        // 检查候选路径是否在工作区内（比较规范化路径）
         if !candidate_canonical.starts_with(&workspace_normalized) {
-            // Also try with non-canonical workspace for cases where workspace itself
-            // hasn't been canonicalized yet
+            // 也尝试非规范化的工作区路径，适用于工作区本身尚未被规范化的情况
             let workspace_plain = normalize_path(&self.workspace);
             let candidate_normalized = normalize_path(&candidate);
             if !candidate_normalized.starts_with(&workspace_plain)
@@ -625,7 +613,7 @@ impl ToolContext {
             }
         }
 
-        // For existing paths, use canonicalize directly
+        // 对于现有路径，直接使用 canonicalize
         if candidate.exists() {
             let canonical = candidate.canonicalize().map_err(|e| {
                 ToolError::execution_failed(format!(
@@ -647,9 +635,8 @@ impl ToolContext {
         self.resolve_nonexistent_path(candidate, &workspace_canonical)
     }
 
-    /// Resolve a non-existent path by canonicalizing its deepest existing
-    /// ancestor and validating the result is under the workspace or a
-    /// trusted external path.
+    /// 通过规范化其最深层的现有祖先并验证结果在
+    /// 工作区或信任的外部路径下来解析不存在的路径。
     fn resolve_nonexistent_path(
         &self,
         candidate: PathBuf,
@@ -669,7 +656,7 @@ impl ToolContext {
                     existing_ancestor = parent.to_path_buf();
                 }
                 _ => {
-                    // No existing parent found; fall back to simple check
+                    // 未找到现有父目录；回退到简单检查
                     break;
                 }
             }
@@ -684,7 +671,7 @@ impl ToolContext {
             existing_ancestor
         };
 
-        // Rebuild the full path from canonicalized ancestor
+        // 从规范化后的祖先重建完整路径
         let mut canonical = canonical_ancestor;
         for part in suffix_parts.into_iter().rev() {
             canonical.push(part);
@@ -698,9 +685,9 @@ impl ToolContext {
             return Ok(canonical);
         }
 
-        // Validate it's under workspace, OR is under a user-trusted external
-        // path (`/trust add <path>` from the slash command, persisted in
-        // `~/.deepseek/workspace-trust.json`).
+        // 验证路径在工作区内，或者在用户信任的外部路径下
+        //（来自斜杠命令的 `/trust add <path>`，持久化在
+        // `~/.deepseek/workspace-trust.json` 中）。
         if !canonical.starts_with(workspace_canonical)
             && !canonical.starts_with(&workspace_normalized)
             && !self.is_trusted_external_path(&canonical)
@@ -711,64 +698,62 @@ impl ToolContext {
         Ok(canonical)
     }
 
-    /// Whether `path` is under any of the user-trusted external roots. The
-    /// caller should pass an already-canonicalized (or normalized) path.
+    /// 检查 `path` 是否在用户信任的外部根目录下。
+    /// 调用者应传入已规范化（或标准化）的路径。
     fn is_trusted_external_path(&self, path: &Path) -> bool {
         self.trusted_external_paths
             .iter()
             .any(|trusted| path.starts_with(trusted))
     }
 
-    /// Set the trust mode.
+    /// 设置信任模式。
     #[allow(dead_code)]
     pub fn with_trust_mode(mut self, trust: bool) -> Self {
         self.trust_mode = trust;
         self
     }
 
-    /// Set the sandbox policy.
+    /// 设置沙箱策略。
     #[allow(dead_code)]
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
         self
     }
 
-    /// Set feature flags for tool execution.
+    /// 设置工具执行的特性标志。
     pub fn with_features(mut self, features: Features) -> Self {
         self.features = features;
         self
     }
 
-    /// Override the shared shell manager.
+    /// 覆盖共享的 shell 管理器。
     pub fn with_shell_manager(mut self, shell_manager: SharedShellManager) -> Self {
         self.shell_manager = shell_manager;
         self
     }
 
-    /// Set the elevated sandbox policy override.
+    /// 设置提升的沙箱策略覆盖。
     ///
-    /// This is used when retrying a tool after a sandbox denial, to run
-    /// with elevated permissions.
+    /// 在沙箱拒绝后重试工具时使用，以提升的权限运行。
     pub fn with_elevated_sandbox_policy(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
         self.elevated_sandbox_policy = Some(policy);
         self
     }
 
-    /// Set the shell network-denial hint used by network-restricted modes.
+    /// 设置由网络受限模式使用的 shell 网络拒绝提示。
     pub fn with_shell_network_denied_hint(mut self, hint: impl Into<String>) -> Self {
         self.shell_network_denied_hint = Some(hint.into());
         self
     }
 
-    /// Set the namespace used for session-scoped tool state.
+    /// 设置用于会话范围工具状态的命名空间。
     pub fn with_state_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.state_namespace = namespace.into();
         self
     }
 
-    /// Attach the large-output router (#548). When set, tool results that
-    /// exceed the configured token threshold are synthesised by a V4-Flash
-    /// sub-agent before being returned to the parent context.
+    /// 附加大型输出路由器（#548）。设置后，超过配置令牌阈值的
+    /// 工具结果在返回给父上下文之前，会由 V4-Flash 子代理进行摘要合成。
     #[must_use]
     pub fn with_large_output_router(
         mut self,
@@ -783,17 +768,16 @@ impl ToolContext {
     }
 }
 
-/// Gather LSP diagnostics for `paths` using the manager stored in `context`,
-/// and return the rendered `<diagnostics …>` blocks joined by newlines.
+/// 使用 `context` 中存储的管理器收集 `paths` 的 LSP 诊断，
+/// 并返回由换行符连接的渲染后的 `<diagnostics …>` 块。
 ///
-/// Returns an empty string when:
-/// - `context.lsp_manager` is `None`
-/// - the manager's `enabled` flag is `false`
-/// - none of the files produce diagnostics (e.g. all clean, or language unknown)
+/// 在以下情况下返回空字符串：
+/// - `context.lsp_manager` 为 `None`
+/// - 管理器的 `enabled` 标志为 `false`
+/// - 没有文件产生诊断（例如全部干净，或语言未知）
 ///
-/// This function is non-blocking by design: every failure mode (missing LSP
-/// binary, timeout, unknown language) degrades to an empty string rather than
-/// propagating an error to the caller.
+/// 此函数设计为非阻塞的：所有失败模式（缺少 LSP 二进制文件、超时、未知语言）
+/// 都会降级为空字符串，而不是向调用者传播错误。
 pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
     use crate::lsp::render_blocks;
 
@@ -856,22 +840,22 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// The core trait that all tools must implement.
+/// 所有工具必须实现的核心特征。
 #[async_trait]
 pub trait ToolSpec: Send + Sync {
-    /// Returns the unique name of this tool (used in API calls).
+    /// 返回此工具的唯一名称（用于 API 调用）。
     fn name(&self) -> &str;
 
-    /// Returns a human-readable description of what this tool does.
+    /// 返回此工具功能的人类可读描述。
     fn description(&self) -> &str;
 
-    /// Returns the JSON Schema for the tool's input parameters.
+    /// 返回工具输入参数的 JSON Schema。
     fn input_schema(&self) -> Value;
 
-    /// Returns the capabilities this tool has.
+    /// 返回此工具拥有的能力。
     fn capabilities(&self) -> Vec<ToolCapability>;
 
-    /// Returns the approval requirement for this tool.
+    /// 返回此工具的审批要求。
     fn approval_requirement(&self) -> ApprovalRequirement {
         let caps = self.capabilities();
         if caps.contains(&ToolCapability::ExecutesCode) {
@@ -883,18 +867,18 @@ pub trait ToolSpec: Send + Sync {
         }
     }
 
-    /// Returns the approval requirement for this concrete tool input.
+    /// 返回此具体工具输入的审批要求。
     fn approval_requirement_for(&self, _input: &Value) -> ApprovalRequirement {
         self.approval_requirement()
     }
 
-    /// Returns whether this tool is sandboxable.
+    /// 返回此工具是否可沙箱化。
     #[allow(dead_code)]
     fn is_sandboxable(&self) -> bool {
         self.capabilities().contains(&ToolCapability::Sandboxable)
     }
 
-    /// Returns whether this tool is read-only.
+    /// 返回此工具是否只读。
     fn is_read_only(&self) -> bool {
         let caps = self.capabilities();
         caps.contains(&ToolCapability::ReadOnly)
@@ -902,48 +886,47 @@ pub trait ToolSpec: Send + Sync {
             && !caps.contains(&ToolCapability::ExecutesCode)
     }
 
-    /// Returns whether this concrete tool input is read-only.
+    /// 返回此具体工具输入是否只读。
     fn is_read_only_for(&self, _input: &Value) -> bool {
         self.is_read_only()
     }
 
-    /// Returns whether this tool can be executed in parallel with others.
+    /// 返回此工具是否可以与其他工具并行执行。
     fn supports_parallel(&self) -> bool {
         false
     }
 
-    /// Returns whether this concrete tool input can run in parallel.
+    /// 返回此具体工具输入是否可以并行运行。
     fn supports_parallel_for(&self, _input: &Value) -> bool {
         self.supports_parallel()
     }
 
-    /// Returns whether this input starts durable/detached work and returns
-    /// immediately. Detached starts are not read-only, but in auto-approved
-    /// turns they do not need to block neighboring read-only inspections.
+    /// 返回此输入是否启动持久/分离工作并立即返回。
+    /// 分离启动不是只读的，但在自动批准的轮次中，
+    /// 它们不需要阻塞邻近的只读检查。
     fn starts_detached_for(&self, _input: &Value) -> bool {
         false
     }
 
-    /// Returns whether this tool should be excluded from the model-visible
-    /// tool catalog (deferred loading). Tools marked `true` are registered
-    /// but not sent to the model until explicitly activated via tool search.
+    /// 返回此工具是否应从模型可见的工具目录中排除（延迟加载）。
+    /// 标记为 `true` 的工具会被注册，但在通过工具搜索显式激活之前
+    /// 不会发送给模型。
     fn defer_loading(&self) -> bool {
         false
     }
 
-    /// Returns whether this tool should be advertised in the model-facing
-    /// catalog. Hidden compatibility tools remain registered and executable
-    /// by name so saved transcripts can replay without teaching new sessions
-    /// the deprecated spelling.
+    /// 返回此工具是否应在面向模型的目录中展示。
+    /// 隐藏的兼容性工具保持注册状态且可按名称执行，
+    /// 以便保存的记录可以重放，而无需教新会话使用已弃用的拼写。
     fn model_visible(&self) -> bool {
         true
     }
 
-    /// Execute the tool with the given input and context.
+    /// 使用给定的输入和上下文执行工具。
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
 }
 
-// === Unit Tests ===
+// === 单元测试 ===
 
 #[cfg(test)]
 mod tests {
@@ -987,7 +970,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // Create a test file
+        // 创建一个测试文件
         let test_file = tmp.path().join("test.txt");
         std::fs::write(&test_file, "test").expect("write");
 
@@ -1000,7 +983,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // Try to escape workspace
+        // 尝试逃逸工作区
         let result = ctx.resolve_path("/etc/passwd");
         assert!(result.is_err());
     }
@@ -1028,14 +1011,13 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf()).with_trust_mode(true);
 
-        // In trust mode, absolute paths should work
+        // 在信任模式下，绝对路径应该正常工作
         let result = ctx.resolve_path("/tmp");
         assert!(result.is_ok());
     }
 
-    /// Issue #29: paths under a user-trusted external directory resolve
-    /// successfully even though they fall outside the workspace, while
-    /// untrusted external paths still error with `PathEscape`.
+    /// Issue #29: 即使路径位于工作区之外，用户信任的外部目录下的路径也
+    /// 能成功解析，而不受信任的外部路径仍然返回 `PathEscape` 错误。
     #[test]
     fn test_tool_context_trusted_external_path_allows_escape() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -1056,7 +1038,7 @@ mod tests {
             .expect("trusted path should resolve");
         assert!(resolved.ends_with("notes.md"));
 
-        // Path outside workspace AND outside the trust list should still fail.
+        // 工作区之外的路径且不在信任列表中的应该仍然失败。
         let other = tempdir().expect("untrusted tempdir");
         let other_file = other.path().join("secret.md");
         std::fs::write(&other_file, "x").unwrap();
@@ -1112,7 +1094,7 @@ mod tests {
         let input = json!({"name": "test", "count": 42});
         assert_eq!(required_str(&input, "name").unwrap(), "test");
         assert!(required_str(&input, "missing").is_err());
-        assert!(required_str(&input, "count").is_err()); // not a string
+        assert!(required_str(&input, "count").is_err()); // 不是字符串
     }
 
     #[test]

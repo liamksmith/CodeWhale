@@ -1,9 +1,9 @@
-//! Symbolic handle storage and bounded reads.
+//! 符号句柄存储与有界读取。
 //!
-//! `var_handle` is the shared protocol that lets expensive environments
-//! (RLM sessions, sub-agent transcripts, large artifacts) hand the parent a
-//! small symbolic reference instead of copying the whole payload into the
-//! parent transcript.
+//! `var_handle` 是一个共享协议，让开销大的环境
+//!（RLM 会话、子代理对话记录、大型产物）向父级传递一个
+//! 小型符号引用，而不是将整个载荷复制到
+//! 父级对话记录中。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::tools::spec::{
 
 const DEFAULT_MAX_CHARS: usize = 12_000;
 const HARD_MAX_CHARS: usize = 50_000;
-#[allow(dead_code)] // Used by producers as they begin returning var_handle records.
+#[allow(dead_code)] // 生产者开始返回 var_handle 记录时使用。
 const REPR_PREVIEW_CHARS: usize = 160;
 
 pub type SharedHandleStore = Arc<Mutex<HandleStore>>;
@@ -63,14 +63,14 @@ pub struct HandleRecord {
     pub value: HandleValue,
 }
 
-#[allow(dead_code)] // Producers land in later v0.8.33 slices; handle_read is first.
+#[allow(dead_code)] // 生产者在后续 v0.8.33 切片中落地；handle_read 是第一个。
 #[derive(Debug, Clone)]
 pub enum HandleValue {
     Text(String),
     Json(Value),
 }
 
-#[allow(dead_code)] // Foundation methods used by upcoming RLM/agent session producers.
+#[allow(dead_code)] // 基础方法，供即将到来的 RLM/代理会话生产者使用。
 impl HandleValue {
     fn length(&self) -> usize {
         match self {
@@ -113,7 +113,7 @@ pub struct HandleStore {
     records: HashMap<HandleKey, HandleRecord>,
 }
 
-#[allow(dead_code)] // Insertors are for producer tools; this PR wires the reader first.
+#[allow(dead_code)] // 插入器供生产者工具使用；此 PR 先接入读取器。
 impl HandleStore {
     #[must_use]
     pub fn insert_text(
@@ -769,7 +769,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
-#[allow(dead_code)] // Used when producer tools register handle payloads.
+#[allow(dead_code)] // 当生产者工具注册句柄载荷时使用。
 fn sha256_hex(bytes: &[u8]) -> String {
     crate::hashing::sha256_hex(bytes)
 }

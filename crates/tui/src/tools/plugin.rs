@@ -1,12 +1,11 @@
-//! Plugin tool system — scripts and commands as first-class tools.
+//! Plugin 工具系统——将脚本与命令作为一等工具。
 //!
-//! Users can drop self-describing scripts in `~/.codewhale/tools/` and they
-//! are auto-discovered, parsed for frontmatter, and registered as model-visible
-//! tools alongside built-in implementations.
+//! 用户将自描述的脚本放入 `~/.codewhale/tools/` 目录后，它们会被
+//! 自动发现、解析前置元数据，并作为模型可见的工具注册，与内置实现并列。
 //!
-//! # Script frontmatter format
+//! # 脚本前置元数据格式
 //!
-//! Every plugin script must have a frontmatter header in its first 20 lines:
+//! 每个插件脚本必须在前 20 行中包含一个前置元数据头：
 //!
 //! ```sh
 //! # name: my-tool
@@ -15,9 +14,9 @@
 //! # approval: auto
 //! ```
 //!
-//! The script receives the tool's JSON input on **stdin** and must return
-//! a JSON `ToolResult` (`{"content": "...", "success": true}`) on **stdout**.
-//! Non-JSON output is wrapped in a `ToolResult` with `success: false`.
+//! 脚本通过 **stdin** 接收工具的 JSON 输入，并必须在 **stdout** 上返回
+//! JSON 格式的 `ToolResult`（`{"content": "...", "success": true}`）。
+//! 非 JSON 输出会被包装为 `success: false` 的 `ToolResult`。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,32 +32,31 @@ use super::spec::{
 
 use crate::config::ToolOverride;
 
-/// Timeout for plugin script execution (120 seconds).
+/// 插件脚本执行超时时间（120 秒）。
 const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Metadata extracted from a plugin script's frontmatter header.
+/// 从插件脚本前置元数据头中提取的元数据。
 #[derive(Debug, Clone)]
 pub struct PluginMetadata {
-    /// Tool name (from `# name:`).
+    /// 工具名称（来自 `# name:`）。
     pub name: String,
-    /// Human-readable description (from `# description:`).
+    /// 人类可读的描述（来自 `# description:`）。
     pub description: String,
-    /// JSON Schema for the tool's input (from `# schema:`).
-    /// Defaults to a permissive `{"type": "object"}` when absent.
+    /// 工具输入的 JSON Schema（来自 `# schema:`）。
+    /// 缺失时默认为宽松的 `{"type": "object"}`。
     pub input_schema: Value,
-    /// Approval requirement (from `# approval:`).
-    /// Defaults to `Suggest`.
+    /// 审批要求（来自 `# approval:`）。
+    /// 默认为 `Suggest`。
     pub approval: ApprovalRequirement,
 }
 
-/// A tool backed by an external script or executable dropped into the
-/// plugins directory. The script receives JSON input on stdin and writes
-/// a JSON `ToolResult` to stdout.
+/// 由外部脚本或可执行文件支持的工具，放置在插件目录中。
+/// 脚本通过 stdin 接收 JSON 输入，并向 stdout 写入 JSON `ToolResult`。
 struct ScriptPluginTool {
     metadata: PluginMetadata,
-    /// Absolute path to the script.
+    /// 脚本的绝对路径。
     script_path: PathBuf,
-    /// Optional static arguments passed before the JSON input.
+    /// 在 JSON 输入之前传递的可选静态参数。
     args: Vec<String>,
 }
 
@@ -86,7 +84,7 @@ impl ToolSpec for ScriptPluginTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        // Unknown plugin — conservative: mark as requiring execution + approval.
+        // 未知插件——保守策略：标记为需要执行 + 审批。
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
@@ -104,8 +102,8 @@ impl ToolSpec for ScriptPluginTool {
     }
 }
 
-/// A tool backed by an arbitrary shell command from config.toml overrides.
-/// Behaves like `ScriptPluginTool` but uses the user-specified command string.
+/// 由 config.toml 覆盖配置中的任意 shell 命令支持的工具。
+/// 行为类似 `ScriptPluginTool`，但使用用户指定的命令字符串。
 struct CommandPluginTool {
     name: String,
     description: String,
@@ -150,9 +148,9 @@ impl ToolSpec for CommandPluginTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        // On Windows, if the command doesn't have an extension, try wrapping
-        // in `cmd /c` or use `powershell` for `.ps1` files. For portability
-        // we let tokio::process::Command resolve via PATH.
+        // 在 Windows 上，如果命令没有扩展名，尝试用 `cmd /c` 包装，
+        // 或对 `.ps1` 文件使用 `powershell`。为便携性考虑，
+        // 我们让 tokio::process::Command 通过 PATH 解析。
         let mut cmd = if cfg!(windows) && !self.command.contains('.') {
             let mut c = tokio::process::Command::new("cmd");
             crate::utils::suppress_tokio_console_window(&mut c);
@@ -170,10 +168,10 @@ impl ToolSpec for CommandPluginTool {
 }
 
 // ---------------------------------------------------------------------------
-// Script interpreter resolution
+// 脚本解释器解析
 // ---------------------------------------------------------------------------
 
-/// Parse a shebang line (`#!/usr/bin/env node`) to extract the interpreter.
+/// 解析 shebang 行（`#!/usr/bin/env node`）以提取解释器。
 fn parse_shebang(path: &Path) -> Option<(String, Vec<String>)> {
     let mut file = std::fs::File::open(path).ok()?;
     let content = read_prefix_to_string(&mut file, 256)?;
@@ -188,18 +186,18 @@ fn parse_shebang(path: &Path) -> Option<(String, Vec<String>)> {
     Some((interpreter, args))
 }
 
-/// Resolve the interpreter binary and pre-args for a script file.
+/// 解析脚本文件的解释器二进制文件及前置参数。
 ///
-/// Priority:
-/// 1. Shebang line from the script itself (`#!/usr/bin/env node`)
-/// 2. Extension-based fallback for known script types
-/// 3. Direct execution (assumes the OS knows how to run it)
+/// 优先级：
+/// 1. 脚本自身的 shebang 行（`#!/usr/bin/env node`）
+/// 2. 基于扩展名的已知脚本类型回退
+/// 3. 直接执行（假设操作系统知道如何运行它）
 fn resolve_interpreter(path: &Path) -> (String, Vec<String>) {
-    // 1. Try shebang
+    // 1. 尝试 shebang
     if let Some((interp, shebang_args)) = parse_shebang(path) {
         let bin_name = interp.rsplit('/').next().unwrap_or(&interp);
-        // `env` is a special case: `#!/usr/bin/env node` → `node`
-        // On Windows, `env` is not available, so extract the intended binary.
+        // `env` 是特例：`#!/usr/bin/env node` → `node`
+        // 在 Windows 上 `env` 不可用，因此提取目标二进制文件名。
         if bin_name == "env" && !shebang_args.is_empty() {
             return (shebang_args[0].clone(), shebang_args[1..].to_vec());
         }
@@ -209,7 +207,7 @@ fn resolve_interpreter(path: &Path) -> (String, Vec<String>) {
         return (interp, shebang_args);
     }
 
-    // 2. Extension-based fallback for common script types
+    // 2. 基于扩展名的常见脚本类型回退
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -222,7 +220,7 @@ fn resolve_interpreter(path: &Path) -> (String, Vec<String>) {
         "ts" => ("npx".into(), vec!["tsx".into()]),
         "rb" => ("ruby".into(), vec![]),
         "sh" | "bash" | "zsh" => {
-            // On Windows, route shell scripts through sh if available
+            // 在 Windows 上，如果可用则通过 sh 运行 shell 脚本
             if cfg!(windows) {
                 ("sh".into(), vec![])
             } else {
@@ -252,10 +250,10 @@ fn read_prefix_to_string(reader: impl std::io::Read, max_bytes: u64) -> Option<S
 }
 
 // ---------------------------------------------------------------------------
-// Shared child process helpers
+// 子进程共享辅助函数
 // ---------------------------------------------------------------------------
 
-/// Spawn a command, pipe JSON input to stdin, collect ToolResult from stdout.
+/// 启动命令，将 JSON 输入通过管道写入 stdin，从 stdout 收集 ToolResult。
 async fn run_plugin_child(
     command: &str,
     args: &[String],
@@ -268,7 +266,7 @@ async fn run_plugin_child(
     run_plugin_child_raw(&mut cmd, label, input).await
 }
 
-/// Run a pre-configured tokio Command, pipe JSON input, collect ToolResult.
+/// 运行预配置的 tokio Command，通过管道输入 JSON，收集 ToolResult。
 async fn run_plugin_child_raw(
     cmd: &mut tokio::process::Command,
     label: &str,
@@ -326,12 +324,12 @@ async fn run_plugin_child_raw(
 }
 
 // ---------------------------------------------------------------------------
-// Frontmatter parsing
+// 前置元数据解析
 // ---------------------------------------------------------------------------
 
-/// Parse frontmatter header from the first `max_lines` lines of a text file.
+/// 从文本文件的前 `max_lines` 行解析前置元数据头。
 ///
-/// Expected format (one `# key: value` per line):
+/// 预期格式（每行一个 `# key: value`）：
 /// ```text
 /// # name: my-tool
 /// # description: Does something
@@ -339,7 +337,7 @@ async fn run_plugin_child_raw(
 /// # approval: auto
 /// ```
 ///
-/// Also supports `// ` prefix for JavaScript/TypeScript scripts and `-- ` for Lua.
+/// 同时支持 JavaScript/TypeScript 脚本的 `// ` 前缀和 Lua 的 `-- ` 前缀。
 pub fn parse_frontmatter(content: &str) -> PluginMetadata {
     let mut name = String::new();
     let mut description = String::new();
@@ -348,7 +346,7 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
 
     for line in content.lines().take(20) {
         let line = line.trim();
-        // Strip leading comment markers: `#`, `//`, `--`.
+        // 去除行首注释标记：`#`、`//`、`--`。
         let rest = line
             .strip_prefix('#')
             .or_else(|| line.strip_prefix("//"))
@@ -368,7 +366,7 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
     }
 
     let input_schema = if schema_str.is_empty() {
-        // Default: accept any object payload
+        // 默认：接受任意对象负载
         serde_json::json!({"type": "object"})
     } else {
         serde_json::from_str(&schema_str).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
@@ -396,12 +394,12 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
     }
 }
 
-/// Read the first 4 KB of a file and parse its frontmatter.
+/// 读取文件的前 4 KB 并解析其前置元数据。
 fn read_script_metadata(path: &Path) -> Option<PluginMetadata> {
     let mut file = std::fs::File::open(path).ok()?;
     let content = read_prefix_to_string(&mut file, 4096)?;
     let meta = parse_frontmatter(&content);
-    // Require at least the `name` field to consider it a valid plugin.
+    // 要求至少包含 `name` 字段才视为有效插件。
     if meta.name == "unnamed-plugin" {
         return None;
     }
@@ -409,16 +407,16 @@ fn read_script_metadata(path: &Path) -> Option<PluginMetadata> {
 }
 
 // ---------------------------------------------------------------------------
-// Directory scanning
+// 目录扫描
 // ---------------------------------------------------------------------------
 
-/// Scan a directory for plugin script files with frontmatter headers.
+/// 扫描目录中带有前置元数据头的插件脚本文件。
 ///
-/// Files are considered eligible when:
-/// - They are regular files (not directories, not symlinks)
-/// - They don't start with `.` (hidden files)
-/// - They are not `README.md`
-/// - Their first 20 lines contain `# name:` frontmatter
+/// 文件被视为符合条件当：
+/// - 是普通文件（非目录，非符号链接）
+/// - 不以 `.` 开头（非隐藏文件）
+/// - 不是 `README.md`
+/// - 其前 20 行包含 `# name:` 前置元数据
 pub fn scan_plugin_dir(dir: &Path) -> Vec<(PathBuf, PluginMetadata)> {
     let mut results = Vec::new();
 
@@ -436,7 +434,7 @@ pub fn scan_plugin_dir(dir: &Path) -> Vec<(PathBuf, PluginMetadata)> {
     for entry in entries {
         let path = entry.path();
 
-        // Skip directories and hidden files
+        // 跳过目录和隐藏文件
         if path.is_dir() {
             continue;
         }
@@ -446,7 +444,7 @@ pub fn scan_plugin_dir(dir: &Path) -> Vec<(PathBuf, PluginMetadata)> {
             continue;
         }
 
-        // Try to parse frontmatter
+        // 尝试解析前置元数据
         if let Some(meta) = read_script_metadata(&path) {
             results.push((path, meta));
         }
@@ -455,8 +453,8 @@ pub fn scan_plugin_dir(dir: &Path) -> Vec<(PathBuf, PluginMetadata)> {
     results
 }
 
-/// Load all plugin tools from a directory. Each eligible script becomes
-/// a registered `ScriptPluginTool`.
+/// 从目录加载所有插件工具。每个符合条件的脚本会成为
+/// 一个注册的 `ScriptPluginTool`。
 pub fn load_plugin_tools(plugin_dir: &Path) -> Vec<Arc<dyn ToolSpec>> {
     let discovered = scan_plugin_dir(plugin_dir);
     let mut tools: Vec<Arc<dyn ToolSpec>> = Vec::with_capacity(discovered.len());
@@ -477,9 +475,9 @@ pub fn load_plugin_tools(plugin_dir: &Path) -> Vec<Arc<dyn ToolSpec>> {
     tools
 }
 
-/// Create a single tool from a `ToolOverride` config entry.
+/// 从 `ToolOverride` 配置条目创建单个工具。
 ///
-/// Returns `None` for `Disabled` (the caller handles removal separately).
+/// 对 `Disabled` 返回 `None`（由调用方单独处理移除）。
 pub fn tool_from_override(
     tool_name: &str,
     override_cfg: &ToolOverride,
@@ -491,7 +489,7 @@ pub fn tool_from_override(
             let script_path = if Path::new(path).is_absolute() {
                 PathBuf::from(path)
             } else {
-                // Relative paths resolve relative to the plugin directory.
+                // 相对路径相对于插件目录进行解析。
                 plugin_dir.join(path)
             };
 
@@ -504,8 +502,8 @@ pub fn tool_from_override(
                 return None;
             }
 
-            // Read the script's own frontmatter for metadata, or provide
-            // defaults if it has none.
+            // 读取脚本自身的前置元数据以获取元信息，
+            // 如果没有则提供默认值。
             let meta = read_script_metadata(&script_path).unwrap_or_else(|| PluginMetadata {
                 name: tool_name.to_string(),
                 description: format!("Override for built-in tool '{tool_name}'"),
@@ -520,7 +518,7 @@ pub fn tool_from_override(
             }) as Arc<dyn ToolSpec>)
         }
         ToolOverride::Command { command, args } => {
-            // Build a description that includes the command.
+            // 构建包含命令的描述。
             let description = format!("Override for '{tool_name}' — runs: {command}");
             let cmd_args = args.clone().unwrap_or_default();
 
@@ -537,7 +535,7 @@ pub fn tool_from_override(
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// 测试
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -602,7 +600,7 @@ echo hello
         let content = "# description: no name here";
         let meta = parse_frontmatter(content);
         assert_eq!(meta.name, "unnamed-plugin");
-        // read_script_metadata would return None for this.
+        // read_script_metadata 对此会返回 None。
     }
 
     #[test]
@@ -729,24 +727,24 @@ echo hello
     fn test_scan_plugin_dir_finds_scripts() {
         let dir = TempDir::new().unwrap();
 
-        // Valid plugin
+        // 有效插件
         std::fs::write(
             dir.path().join("my-plugin.sh"),
             "# name: my-plugin\n# description: test\n",
         )
         .unwrap();
 
-        // Hidden file — should be skipped
+        // 隐藏文件——应被跳过
         std::fs::write(
             dir.path().join(".hidden.sh"),
             "# name: hidden\n# description: should skip\n",
         )
         .unwrap();
 
-        // README — should be skipped
+        // README——应被跳过
         std::fs::write(dir.path().join("README.md"), "# Tools\n").unwrap();
 
-        // No frontmatter — should be skipped
+        // 无前置元数据——应被跳过
         std::fs::write(dir.path().join("random.sh"), "echo hi\n").unwrap();
 
         let discovered = scan_plugin_dir(dir.path());

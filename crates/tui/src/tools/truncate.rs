@@ -1,37 +1,34 @@
-//! Tool-output spillover writer (#422).
+//! 工具输出溢出写入器 (#422)。
 //!
-//! When a tool produces output that's too large to land in the model's
-//! context budget, we want two things at once:
+//! 当工具产生的输出太大而无法放入模型的上下文预算时，
+//! 我们希望同时实现两件事：
 //!
-//! 1. The transcript / tool-cell renders a bounded preview so the UI
-//!    stays scannable.
-//! 2. The full original output is preserved on disk so the model can
-//!    `read_file` it back if it later needs the elided tail, and so
-//!    the user can open it in `$EDITOR`.
+//! 1. 转录/工具单元格渲染一个有限的预览，使 UI 保持可浏览性。
+//! 2. 完整的原始输出保存在磁盘上，以便模型在之后需要省略的尾部时可以
+//!    `read_file` 读取回来，并且用户可以在 `$EDITOR` 中打开它。
 //!
-//! This module owns the disk side. Files land in
-//! `~/.codewhale/tool_outputs/<sanitised-id>.txt`. The id is the tool
-//! call id the engine assigns; we sanitise it conservatively (ASCII
-//! alphanumeric + `-`/`_`) so a hostile id can't escape the directory
-//! via `..` or absolute-path tricks.
+//! 本模块负责磁盘端管理。文件存放在
+//! `~/.codewhale/tool_outputs/<sanitised-id>.txt`。id 是引擎分配的工具
+//! 调用 id；我们保守地对其进行清理（ASCII
+//! 字母数字 + `-`/`_`），这样恶意的 id 无法通过 `..` 或绝对路径技巧
+//! 逃逸出目录。
 //!
-//! Boot prune drops files whose mtime is older than [`SPILLOVER_MAX_AGE`]
-//! (7 days). Prune failures are logged and never fatal — the user
-//! shouldn't see startup wedge because of a stale tool-output file.
+//! 启动时修剪会删除 mtime 早于 [`SPILLOVER_MAX_AGE`]
+//! （7 天）的文件。修剪失败会被记录日志，但绝不会致命——用户
+//! 不应因为过期的工具输出文件而看到启动卡死。
 //!
-//! ## Live callers
+//! ## 实时调用者
 //!
-//! * [`apply_spillover`] — invoked from the engine's tool-execution
-//!   path (`turn_loop.rs`) so any successful tool result over
-//!   [`SPILLOVER_THRESHOLD_BYTES`] spills to disk and the model
-//!   receives a [`SPILLOVER_HEAD_BYTES`] head plus a pointer footer.
-//! * Boot prune in `main.rs` deletes files older than
-//!   [`SPILLOVER_MAX_AGE`].
+//! * [`apply_spillover`]——从引擎的工具执行路径（`turn_loop.rs`）调用，
+//!   任何超过 [`SPILLOVER_THRESHOLD_BYTES`] 的成功工具结果都会
+//!   溢出到磁盘，模型收到一个 [`SPILLOVER_HEAD_BYTES`] 的头部
+//!   加上一个指针尾部。
+//! * `main.rs` 中的启动修剪删除早于 [`SPILLOVER_MAX_AGE`] 的文件。
 //!
-//! UI-side rendering of the inline `full output: <path>` annotation
-//! is owned by `tui/history.rs::render_spillover_annotation`. The
-//! tool-details pager opens the spillover file when the user
-//! presses the tool-details shortcut on a spilled tool cell.
+//! UI 端渲染内联的 `full output: <path>` 注释
+//! 由 `tui/history.rs::render_spillover_annotation` 负责。当用户
+//! 在已溢出的工具单元格上按下工具详情快捷键时，
+//! 工具详情分页器会打开溢出文件。
 
 use std::fs;
 use std::io;
@@ -40,23 +37,22 @@ use std::time::{Duration, SystemTime};
 
 use crate::tools::spec::ToolResult;
 
-// `Path` is only referenced from helpers gated to test builds.
+// `Path` 仅在仅限测试构建的辅助函数中被引用。
 #[cfg(test)]
 use std::path::Path;
 
-/// Name of the spillover directory under the CodeWhale home.
+/// CodeWhale 主目录下溢出目录的名称。
 pub const SPILLOVER_DIR_NAME: &str = "tool_outputs";
 
-/// Default threshold above which a tool result is a candidate for
-/// spillover. Mirrors the `MAX_MEMORY_SIZE` ceiling we use elsewhere
-/// for "too large to inline" so the rules feel consistent. Wired
-/// callers can pass a different value if a tool family has different
-/// economics.
+/// 默认阈值，工具结果超过此值时将被视为溢出候选。
+/// 镜像了我们在其他地方用于"太大而无法内联"的 `MAX_MEMORY_SIZE` 上限，
+/// 使规则感觉一致。有线调用者可以传递不同的值，
+/// 如果某个工具族有不同的经济考量。
 pub const SPILLOVER_THRESHOLD_BYTES: usize = 100 * 1024; // 100 KiB
 
-/// Default boot-prune age. Older spillover files are deleted on
-/// startup to keep `~/.codewhale/tool_outputs/` from growing without
-/// bound. Mirrors the workspace-snapshot 7-day default.
+/// 默认启动修剪期限。启动时删除更早的溢出文件，
+/// 防止 `~/.codewhale/tool_outputs/` 无限制增长。
+/// 镜像工作区快照的 7 天默认值。
 pub const SPILLOVER_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[cfg(test)]
@@ -65,10 +61,10 @@ static TEST_SPILLOVER_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex
 #[cfg(test)]
 pub(crate) static TEST_SPILLOVER_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Resolve `~/.codewhale/tool_outputs/`. Returns `None` if the home
-/// directory can't be determined (CI containers occasionally hit
-/// this). Callers should treat `None` as "spillover unavailable" and
-/// degrade gracefully rather than fail the tool call.
+/// 解析 `~/.codewhale/tool_outputs/`。如果无法确定主目录
+/// 则返回 `None`（CI 容器偶尔会遇到这种情况）。
+/// 调用者应将 `None` 视为"溢出不可用"，
+/// 优雅降级而非使工具调用失败。
 #[must_use]
 pub fn spillover_root() -> Option<PathBuf> {
     #[cfg(test)]
@@ -89,7 +85,7 @@ pub fn spillover_root() -> Option<PathBuf> {
     Some(legacy)
 }
 
-/// Override the spillover root for tests without mutating `$HOME`.
+/// 在不改变 `$HOME` 的情况下为测试覆盖溢出根目录。
 #[cfg(test)]
 pub(crate) fn set_test_spillover_root(root: Option<PathBuf>) -> Option<PathBuf> {
     let mut guard = TEST_SPILLOVER_ROOT
@@ -98,22 +94,21 @@ pub(crate) fn set_test_spillover_root(root: Option<PathBuf>) -> Option<PathBuf> 
     std::mem::replace(&mut *guard, root)
 }
 
-/// Resolve the spillover-file path for a tool call id. Sanitises the
-/// id so that a hostile value can't escape the storage directory.
-/// Returns `None` for empty / fully-invalid ids; the caller should
-/// treat that as "spillover unavailable" and skip the write.
+/// 解析工具调用 id 的溢出文件路径。对 id 进行清理，
+/// 防止恶意值逃逸存储目录。
+/// 对空/完全无效的 id 返回 `None`；调用者应将其视为
+/// "溢出不可用"并跳过写入。
 #[must_use]
 pub fn spillover_path(id: &str) -> Option<PathBuf> {
     let sanitised = sanitise_id(id)?;
     Some(spillover_root()?.join(format!("{sanitised}.txt")))
 }
 
-/// Resolve the spillover-file path for a SHA256 content hash. Separate
-/// namespace (`sha_<hex>.txt`) from the tool-call-id files so the two
-/// reference systems (engine-side spillover + wire-side dedup) can
-/// co-exist in one directory without collisions. `sha` must be the
-/// raw 64-char lowercase hex digest — case-insensitive matching is
-/// done by the caller.
+/// 解析 SHA256 内容哈希的溢出文件路径。使用独立的
+/// 命名空间（`sha_<hex>.txt`）与工具调用 id 文件分离，使两个
+/// 引用系统（引擎端溢出 + 线路端去重）可以在同一目录中共存
+/// 而不发生冲突。`sha` 必须是原始的 64 字符小写十六进制摘要——
+/// 不区分大小写的匹配由调用者处理。
 #[must_use]
 pub fn sha_spillover_path(sha: &str) -> Option<PathBuf> {
     let sha = sha.trim().to_ascii_lowercase();
@@ -123,9 +118,9 @@ pub fn sha_spillover_path(sha: &str) -> Option<PathBuf> {
     Some(spillover_root()?.join(format!("sha_{sha}.txt")))
 }
 
-/// True when `s` is a 64-character lowercase ASCII hex string. Used
-/// to detect bare SHA refs the model might pass to retrieval and to
-/// validate input to [`sha_spillover_path`].
+/// 当 `s` 是 64 字符的小写 ASCII 十六进制字符串时为 true。用于
+/// 检测模型可能传递给检索的裸 SHA 引用，以及
+/// 验证 [`sha_spillover_path`] 的输入。
 #[must_use]
 pub fn is_valid_sha256(s: &str) -> bool {
     s.len() == 64
@@ -133,11 +128,11 @@ pub fn is_valid_sha256(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// Write content to the SHA-addressed spillover file. Idempotent —
-/// the same hash always maps to the same path, and the file's bytes
-/// are a function of the hash. Skips the write if the file already
-/// exists (which is the common case for the wire dedup, since the
-/// second sighting writes the same content that the first did).
+/// 将内容写入 SHA 地址的溢出文件。幂等——
+/// 相同的哈希始终映射到相同的路径，文件的内容
+/// 是哈希的函数。如果文件已存在则跳过写入
+/// （这是线路去重的常见情况，因为
+/// 第二次写入的内容与第一次相同）。
 pub fn write_sha_spillover(sha: &str, content: &str) -> io::Result<PathBuf> {
     let path = sha_spillover_path(sha).ok_or_else(|| {
         io::Error::new(
@@ -155,13 +150,13 @@ pub fn write_sha_spillover(sha: &str, content: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Write `content` to the spillover file for `id`. Creates the
-/// parent directory if needed. Returns the resolved path on success.
+/// 将 `content` 写入 `id` 的溢出文件。必要时创建
+/// 父目录。成功时返回解析后的路径。
 ///
-/// Atomic via `write` + filesystem rename guarantees from the
-/// underlying OS — the file is created at a temp name first and
-/// then renamed into place. Failures bubble up as `io::Error` so the
-/// caller can decide whether to surface them.
+/// 通过底层操作系统的 `write` + 文件系统重命名保证实现原子性——
+/// 文件首先以临时名称创建，然后重命名为目标位置。
+/// 失败以 `io::Error` 形式向上传递，以便
+/// 调用者决定是否将其展示给用户。
 pub fn write_spillover(id: &str, content: &str) -> io::Result<PathBuf> {
     let path = spillover_path(id).ok_or_else(|| {
         io::Error::new(
@@ -176,10 +171,10 @@ pub fn write_spillover(id: &str, content: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Drop spillover files older than `max_age`. Returns the number of
-/// files removed. Non-fatal: directory-missing returns 0; per-file
-/// errors are logged and skipped. Mirrors
-/// [`crate::session_manager::prune_workspace_snapshots`].
+/// 删除早于 `max_age` 的溢出文件。返回已删除的
+/// 文件数量。非致命：目录不存在返回 0；每个文件的
+/// 错误会被记录并跳过。镜像
+/// [`crate::session_manager::prune_workspace_snapshots`]。
 pub fn prune_older_than(max_age: Duration) -> io::Result<usize> {
     let Some(root) = spillover_root() else {
         return Ok(0);
@@ -221,17 +216,17 @@ pub fn prune_older_than(max_age: Duration) -> io::Result<usize> {
     Ok(pruned)
 }
 
-/// Convenience for the common "too long? spill it." pattern. If
-/// `content` is at or below `threshold` bytes, returns `None` and the
-/// caller keeps the inline content. Above the threshold, writes the
-/// full content to the spillover file and returns
-/// `Some((head, path))` where `head` is the leading slice the caller
-/// can show inline. The trailing tail isn't returned — `path` is the
-/// canonical reference.
+/// 常见"太长？溢出它。"模式的便捷函数。如果
+/// `content` 小于或等于 `threshold` 字节，返回 `None`，
+/// 调用者保留内联内容。超过阈值时，将
+/// 完整内容写入溢出文件并返回
+/// `Some((head, path))`，其中 `head` 是调用者可以
+/// 内联显示的头部切片。尾部不返回——`path` 是
+/// 规范引用。
 ///
-/// `head_bytes` controls how much inline content the caller wants to
-/// keep. Pass `threshold` for "preserve as much as fits inline" or
-/// a smaller value (e.g. `4 * 1024`) for "show a peek".
+/// `head_bytes` 控制调用者希望保留多少内联内容。
+/// 传入 `threshold` 表示"尽量保留适合内联的内容"，
+/// 或使用较小的值（例如 `4 * 1024`）表示"显示预览"。
 pub fn maybe_spillover(
     id: &str,
     content: &str,
@@ -242,7 +237,7 @@ pub fn maybe_spillover(
         return Ok(None);
     }
     let path = write_spillover(id, content)?;
-    // Don't slice mid-utf8: walk back to a char boundary if needed.
+    // 不要切在 UTF-8 中间：如果需要，回退到字符边界。
     let cut = head_bytes.min(content.len());
     let cut = (0..=cut)
         .rev()
@@ -251,44 +246,42 @@ pub fn maybe_spillover(
     Ok(Some((content[..cut].to_string(), path)))
 }
 
-/// Inline head retained when [`apply_spillover`] truncates a tool
-/// result. 32 KiB is large enough for the model to keep meaningful
-/// context (a long stack trace, a `git diff` head, a directory
-/// listing of typical depth) without consuming the lion's share of
-/// the per-turn context budget. The full output is preserved on
-/// disk; the model can `read_file` it back if it needs the tail.
+/// 当 [`apply_spillover`] 截断工具结果时保留的内联头部。
+/// 32 KiB 足够让模型保持有意义的上下文（长的堆栈跟踪、
+/// `git diff` 的头部、典型深度的目录列表），
+/// 而不会消耗单轮上下文预算的绝大部分。完整输出保存在
+/// 磁盘上；模型如果之后需要尾部可以 `read_file` 读取回来。
 pub const SPILLOVER_HEAD_BYTES: usize = 32 * 1024;
 
-/// Apply spillover to a tool result in place. If the result's
-/// content exceeds [`SPILLOVER_THRESHOLD_BYTES`], writes the full
-/// content to a sibling file under `~/.codewhale/tool_outputs/`,
-/// replaces `result.content` with a [`SPILLOVER_HEAD_BYTES`] head
-/// plus a footer pointing the model at the spillover file, and
-/// stamps `metadata.spillover_path` so the UI can render its
-/// "full output: …" annotation.
+/// 对工具结果就地应用溢出。如果结果的
+/// 内容超过 [`SPILLOVER_THRESHOLD_BYTES`]，将完整
+/// 内容写入 `~/.codewhale/tool_outputs/` 下的同级文件，
+/// 将 `result.content` 替换为 [`SPILLOVER_HEAD_BYTES`] 的头部
+/// 加上指向溢出文件的尾部，并
+/// 在 `metadata.spillover_path` 中打上标记，以便 UI 可以渲染其
+/// "完整输出：…"注释。
 ///
-/// Returns the spillover path on success, `None` if no spillover
-/// happened (content small enough, error result, write failure).
-/// Failures are logged but never bubble up — a tool that produced a
-/// result shouldn't be marked failed because the spillover writer
-/// couldn't reach disk; we degrade to no-op and the model gets the
-/// original (large) content.
+/// 成功时返回溢出路径，如果未发生溢出则返回 `None`
+/// （内容足够小、错误结果、写入失败）。
+/// 失败会被记录但绝不会向上传递——产生了结果的
+/// 工具不应因为溢出写入器无法写入磁盘而被标记为失败；
+/// 我们降级为无操作，模型获得原始的（大的）内容。
 ///
-/// Error results (`success == false`) are skipped: error messages
-/// are typically short, and turning them into a "see file" pointer
-/// would just hide the error from the model's reasoning.
+/// 错误结果（`success == false`）会被跳过：错误消息
+/// 通常很短，将其变成"查看文件"指针
+/// 只会对模型的推理隐藏错误。
 #[allow(dead_code)]
 pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf> {
     apply_spillover_inner(result, tool_id, None)
 }
 
-/// Apply spillover and emit a session-scoped artifact reference.
+/// 应用溢出并发出会话范围的工件引用。
 ///
-/// The home-level `tool_outputs/<tool-id>.txt` file is still written
-/// so `retrieve_tool_result ref=<tool-id>` keeps working during the
-/// transition. The canonical artifact content is also written under
-/// `~/.codewhale/sessions/<session-id>/artifacts/`, and the inline tool result
-/// becomes a fixed-format artifact reference block.
+/// 主目录级别的 `tool_outputs/<tool-id>.txt` 文件仍然写入，
+/// 以便 `retrieve_tool_result ref=<tool-id>` 在过渡期间保持有效。
+/// 规范工件内容也会写入
+/// `~/.codewhale/sessions/<session-id>/artifacts/`，内联工具结果
+/// 变为固定格式的工件引用块。
 pub fn apply_spillover_with_artifact(
     result: &mut ToolResult,
     tool_id: &str,
@@ -429,10 +422,10 @@ fn apply_spillover_inner(
             obj.insert("spillover_path".into(), serde_json::Value::String(path_str));
         }
     } else {
-        // Pre-existing metadata that wasn't a JSON object (rare,
-        // possibly an array). Replace with an object so we can
-        // attach our key without losing prior data — wrap it under
-        // a `_prior` field so callers that introspect can recover.
+        // 预先存在的元数据不是 JSON 对象（罕见，
+        // 可能是数组）。替换为对象，以便我们能够
+        // 附加键而不丢失先前的数据——将其包装在
+        // `_prior` 字段下，以便内省的调用者可以恢复。
         let prior = std::mem::replace(metadata, serde_json::json!({}));
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert("_prior".into(), prior);
@@ -484,10 +477,10 @@ fn apply_spillover_inner(
         .or(Some(path))
 }
 
-/// Sanitise a tool call id for use as a filename. Keeps ASCII
-/// alphanumerics, `-`, and `_`; rejects `.` to keep `..` traversal
-/// out, rejects empty results. Returns `None` if the input contains
-/// no acceptable characters.
+/// 清理工具调用 id 以用作文件名。保留 ASCII
+/// 字母数字、`-` 和 `_`；拒绝 `.` 以防止 `..` 遍历，
+/// 拒绝空结果。如果输入中不包含
+/// 任何可接受字符则返回 `None`。
 fn sanitise_id(id: &str) -> Option<String> {
     let cleaned: String = id
         .chars()
@@ -500,10 +493,10 @@ fn sanitise_id(id: &str) -> Option<String> {
     }
 }
 
-/// Override the storage roots for tests so they don't pollute the
-/// user's real `~/.codewhale/` directory. This uses explicit test hooks instead
-/// of `$HOME` because Windows home-dir resolution can ignore environment
-/// overrides and return the runner profile directory.
+/// 覆盖测试的存储根目录，使其不会污染
+/// 用户的真实 `~/.codewhale/` 目录。这使用显式的测试钩子而非
+/// `$HOME`，因为 Windows 主目录解析可能会忽略环境
+/// 覆盖而返回运行器配置文件目录。
 #[cfg(test)]
 fn with_test_home<F, R>(home: &Path, f: F) -> R
 where
@@ -525,9 +518,8 @@ where
         }
     }
 
-    // Tests in this module serialize spillover through `TEST_GUARD`; the
-    // artifact guard above protects the session-artifact root shared with
-    // artifacts.rs tests.
+    // 本模块中的测试通过 `TEST_GUARD` 序列化溢出；上面的
+    // 工件保护锁保护与 artifacts.rs 测试共享的会话工件根。
     let prior_spillover =
         set_test_spillover_root(Some(home.join(".codewhale").join(SPILLOVER_DIR_NAME)));
     let prior_artifacts = crate::artifacts::set_test_artifact_sessions_root(Some(
@@ -545,9 +537,9 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Tests in this module serialize through this guard because they mutate
-    /// process-global test storage roots. Without it, cargo's parallel runner
-    /// would observe interleaved overrides.
+    /// 本模块中的测试通过此保护锁序列化，因为它们会改变
+    /// 进程全局的测试存储根目录。没有它，cargo 的并行运行器
+    /// 会观察到交错的覆盖。
     fn setup() -> std::sync::MutexGuard<'static, ()> {
         super::TEST_SPILLOVER_GUARD
             .lock()
@@ -586,10 +578,10 @@ mod tests {
     #[test]
     fn sanitise_id_keeps_safe_chars_and_drops_dangerous() {
         assert_eq!(super::sanitise_id("abc-123_x"), Some("abc-123_x".into()));
-        // `.` is dropped to keep `..` out of the path.
+        // 删除 `.` 以防止 `..` 进入路径。
         assert_eq!(super::sanitise_id("../etc"), Some("etc".into()));
         assert_eq!(super::sanitise_id("/etc/passwd"), Some("etcpasswd".into()));
-        // Empty-after-sanitise → None.
+        // 清理后为空 → None。
         assert!(super::sanitise_id("...").is_none());
         assert!(super::sanitise_id("").is_none());
     }
@@ -603,10 +595,10 @@ mod tests {
             assert!(path.exists(), "{path:?} missing");
             let body = fs::read_to_string(&path).unwrap();
             assert_eq!(body, "hello world");
-            // Directory landed under `<HOME>/.codewhale/tool_outputs/`.
-            // Compare components instead of a substring on `to_string_lossy`
-            // — Windows uses `\` as the separator so a `/` substring match
-            // would falsely fail there.
+            // 目录位于 `<HOME>/.codewhale/tool_outputs/` 下。
+            // 比较路径组件而不是在 `to_string_lossy` 上进行子串匹配
+            // ——Windows 使用 `\` 作为分隔符，因此 `/` 子串匹配
+            // 会在那里错误地失败。
             let components: Vec<&str> = path
                 .components()
                 .filter_map(|c| c.as_os_str().to_str())
@@ -643,14 +635,14 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            // Content larger than the threshold.
+            // 内容大于阈值。
             let big = "A".repeat(2_000);
             let (head, path) = maybe_spillover("call-2", &big, 1_000, 256)
                 .expect("ok")
                 .expect("should have spilled");
-            // Head is bounded.
+            // 头部有界。
             assert_eq!(head.len(), 256);
-            // Full content on disk.
+            // 磁盘上的完整内容。
             let body = fs::read_to_string(&path).unwrap();
             assert_eq!(body.len(), 2_000);
         });
@@ -661,16 +653,16 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            // 4 byte chars; ask for 3 bytes of head → walks back to
-            // the previous char boundary (0).
+            // 4 字节字符；请求 3 字节头部 → 回退到
+            // 前一个字符边界 (0)。
             let s = "🐳🐳🐳🐳"; // 4 × 4-byte codepoints
             assert_eq!(s.len(), 16);
             let (head, _) = maybe_spillover("call-3", s, 1, 3)
                 .expect("ok")
                 .expect("spilled");
-            // 3 isn't a char boundary in this string; walk back → 0.
+            // 3 不是此字符串中的字符边界；回退 → 0。
             assert_eq!(head, "");
-            // Asking for 4 bytes lands on the first char boundary.
+            // 请求 4 字节落在第一个字符边界上。
             let (head, _) = maybe_spillover("call-3b", s, 1, 4)
                 .expect("ok")
                 .expect("spilled");
@@ -683,16 +675,16 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            // Nothing has ever written; root doesn't exist; that's fine.
+            // 从未写入过；根目录不存在；没问题。
             let count = prune_older_than(SPILLOVER_MAX_AGE).expect("ok");
             assert_eq!(count, 0);
         });
     }
 
-    // The mtime backdate uses utimensat (Unix-only). On Windows the
-    // filetime_set_modified helper is a no-op, so the prune wouldn't see
-    // any stale files. Gate the whole test on `cfg(unix)` instead of
-    // testing a no-op path that can't fail meaningfully.
+    // mtime 回退使用 utimensat（仅 Unix）。在 Windows 上，
+    // filetime_set_modified 辅助函数是空操作，因此修剪不会看到
+    // 任何过期文件。将整个测试限制在 `cfg(unix)` 上，而不是
+    // 测试一个无法有意义地失败的空操作路径。
     #[test]
     #[cfg(unix)]
     fn prune_older_than_keeps_fresh_files_drops_stale_ones() {
@@ -702,7 +694,7 @@ mod tests {
             let fresh = write_spillover("fresh", "x").unwrap();
             let stale = write_spillover("stale", "y").unwrap();
 
-            // Backdate `stale` to 30 days ago.
+            // 将 `stale` 的 mtime 回退到 30 天前。
             let thirty_days = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
             filetime_set_modified(&stale, thirty_days);
 
@@ -713,10 +705,10 @@ mod tests {
         });
     }
 
-    /// Set the mtime on a file. The workspace doesn't pull the
-    /// `filetime` crate, so we reach for `utimensat` directly on
-    /// Unix. Windows is a no-op — the prune semantics are the same
-    /// and the per-cycle stress test lives on the Unix path.
+    /// 设置文件的 mtime。工作区不引入 `filetime` crate，
+    /// 因此我们在 Unix 上直接使用 `utimensat`。
+    /// Windows 上是空操作——修剪语义相同，
+    /// 每周期压力测试位于 Unix 路径上。
     #[cfg(unix)]
     fn filetime_set_modified(path: &Path, when: SystemTime) {
         let secs = when
@@ -734,8 +726,7 @@ mod tests {
             },
         ];
         let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: path_c is a valid CString; times is a 2-element array
-        // matching utimensat's signature.
+        // SAFETY: path_c 是有效的 CString；times 是与 utimensat 签名匹配的 2 元素数组。
         let rc = unsafe { libc::utimensat(libc::AT_FDCWD, path_c.as_ptr(), times.as_ptr(), 0) };
         assert_eq!(
             rc,
@@ -745,12 +736,12 @@ mod tests {
         );
     }
 
-    // Windows stub removed in v0.8.8 — the only caller of
-    // `filetime_set_modified` is `prune_older_than_keeps_fresh_files_drops_stale_ones`,
-    // which is now `#[cfg(unix)]` because mtime backdating requires
-    // `utimensat` and a Windows no-op stub can't make the assertion pass
-    // anyway. Keeping the stub triggered `-D dead-code` on Windows builds
-    // (the prune test was the only caller) and broke `Test (windows-latest)`.
+    // Windows 存根已在 v0.8.8 中移除——`filetime_set_modified` 的唯一调用者是
+    // `prune_older_than_keeps_fresh_files_drops_stale_ones`，
+    // 它现在是 `#[cfg(unix)]`，因为 mtime 回退需要
+    // `utimensat`，而且 Windows 的空操作存根无论如何也无法让断言通过。
+    // 保留存根会在 Windows 构建上触发 `-D dead-code`
+    // （修剪测试是唯一的调用者）并破坏 `Test (windows-latest)`。
 
     #[test]
     fn apply_spillover_is_noop_below_threshold() {
@@ -770,8 +761,8 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            // Even very large error messages are passed through —
-            // truncating an error would hide it from the model.
+            // 即使非常大的错误消息也会被传递——
+            // 截断错误会对其模型隐藏错误。
             let big_err = "boom\n".repeat(50_000);
             let mut result = ToolResult::error(big_err.clone());
             let path = apply_spillover(&mut result, "call-err");
@@ -785,12 +776,12 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            // 200 KiB body — well above the 100 KiB threshold.
+            // 200 KiB 内容——远高于 100 KiB 阈值。
             let big = "X".repeat(200 * 1024);
             let mut result = ToolResult::success(big.clone());
             let path = apply_spillover(&mut result, "call-big").expect("should spill");
 
-            // Inline content shrunk to head + footer.
+            // 内联内容缩小为头部 + 尾部。
             assert!(result.content.len() < big.len());
             assert!(
                 result.content.contains("Output truncated:"),
@@ -799,12 +790,12 @@ mod tests {
             );
             assert!(result.content.contains("retrieve_tool_result ref=call-big"));
 
-            // Full bytes are on disk at the returned path.
+            // 完整字节保存在返回路径的磁盘上。
             assert!(path.exists(), "spillover file missing: {path:?}");
             let body = fs::read_to_string(&path).unwrap();
             assert_eq!(body.len(), 200 * 1024);
 
-            // metadata.spillover_path stamped for the UI to find.
+            // metadata.spillover_path 已打上标记供 UI 查找。
             let metadata = result.metadata.expect("metadata stamped");
             let stamped = metadata
                 .get("spillover_path")
@@ -884,14 +875,14 @@ mod tests {
             let path = apply_spillover(&mut result, "call-meta").expect("should spill");
 
             let metadata = result.metadata.expect("metadata present");
-            // Prior keys survive.
+            // 先前的键保留。
             assert_eq!(
                 metadata
                     .get("prior_key")
                     .and_then(serde_json::Value::as_str),
                 Some("prior_value")
             );
-            // New key added alongside.
+            // 新键同时添加。
             assert_eq!(
                 metadata
                     .get("spillover_path")
@@ -903,11 +894,10 @@ mod tests {
 
     #[test]
     fn apply_spillover_wraps_non_object_metadata_under_prior_key() {
-        // Defends against a tool whose `metadata` is something
-        // other than a JSON object (rare — most use the `json!({})`
-        // pattern — but legal per `serde_json::Value`). The
-        // spillover writer must add `spillover_path` without losing
-        // the prior payload.
+        // 防止工具的 `metadata` 是 JSON 对象以外的类型
+        // （罕见——大多数使用 `json!({})` 模式——但根据 `serde_json::Value`
+        // 是合法的）。溢出写入器必须添加 `spillover_path`
+        // 而不丢失先前的载荷。
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
@@ -920,14 +910,14 @@ mod tests {
             let path = apply_spillover(&mut result, "call-arr").expect("should spill");
 
             let metadata = result.metadata.expect("metadata stamped");
-            // Prior payload re-homed under `_prior`.
+            // 先前的载荷迁移到 `_prior` 下。
             let prior = metadata.get("_prior").expect("_prior wrap key present");
             assert_eq!(
                 prior,
                 &serde_json::json!(["unexpected", "array", "payload"]),
                 "prior array should round-trip under _prior"
             );
-            // New key alongside.
+            // 新键同时添加。
             assert_eq!(
                 metadata
                     .get("spillover_path")

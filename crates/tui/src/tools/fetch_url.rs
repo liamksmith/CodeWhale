@@ -1,11 +1,9 @@
-//! Direct-fetch HTTP tool. Complements `web_search` for cases where the user
-//! already knows the URL — a known repo, a blog post, a spec page — and
-//! search is overkill or actively unhelpful.
+//! 直接抓取 HTTP 工具。当用户已知 URL（已知仓库、博客文章、规范页面）时补充 `web_search`
+//! ——此时搜索过于繁琐或反而无益。
 //!
-//! Returns a structured `{url, status, content_type, content, truncated}`
-//! payload. HTML responses are stripped to readable text by default
-//! (`format = "markdown"`); pass `format = "raw"` to keep the bytes intact
-//! when the model wants to do its own parsing.
+//! 返回结构化的 `{url, status, content_type, content, truncated}`
+//! 负载。HTML 响应默认剥离为可读文本（`format = "markdown"`）；
+//! 当模型希望自行解析时传入 `format = "raw"` 以保留原始字节。
 
 use super::handle::query_jsonpath;
 use super::spec::{
@@ -168,8 +166,8 @@ impl ToolSpec for FetchUrlTool {
                 .user_agent(USER_AGENT)
                 .redirect(reqwest::redirect::Policy::none());
 
-            // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
-            // connect to the validated IP directly instead of re-resolving.
+            // 锁定已验证的 IP 以防止 DNS 重绑定（TOCTOU）—— reqwest 将
+            // 直接连接到已验证的 IP，而不是再次解析。
             if let Some((hostname, validated_ip)) = dns_pinning {
                 client_builder =
                     client_builder.resolve(&hostname, std::net::SocketAddr::new(validated_ip, 0));
@@ -251,9 +249,9 @@ impl ToolSpec for FetchUrlTool {
         };
 
         if !status.is_success() {
-            // Don't `Err` on 4xx/5xx — the caller often wants to see the body
-            // (e.g. a JSON error envelope). Mark the result as a failure so the
-            // engine renders it as such.
+            // 不要对 4xx/5xx 返回 `Err` —— 调用方通常希望看到响应体
+            // （例如 JSON 错误信封）。将结果标记为失败以便
+            // 引擎按失败方式渲染。
             return Ok(ToolResult {
                 content: serde_json::to_string_pretty(&response).map_err(|e| {
                     ToolError::execution_failed(format!("failed to serialize response: {e}"))
@@ -268,9 +266,9 @@ impl ToolSpec for FetchUrlTool {
     }
 }
 
-/// Check if an IP address is loopback, private, link-local, cloud-metadata,
-/// multicast, or reserved — all addresses that should not be reachable via
-/// an LLM-initiated fetch_url request (SSRF prevention).
+/// 检查 IP 地址是否为 loopback、private、link-local、cloud-metadata、
+/// multicast 或 reserved —— 所有不应通过 LLM 发起的 fetch_url 请求
+/// 可达的地址（SSRF 防护）。
 fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -280,18 +278,18 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_multicast()
                 || v4.is_broadcast()
                 || v4.is_unspecified()
-                // 100.64.0.0/10 — Carrier-grade NAT (CGNAT / shared address space)
+                // 100.64.0.0/10 —— 运营商级 NAT（CGNAT / 共享地址空间）
                 || matches!(v4.octets(), [100, 64..=127, ..])
-                // 169.254.169.254 — cloud metadata (AWS/GCP/Azure)
+                // 169.254.169.254 —— 云元数据（AWS/GCP/Azure）
                 || *ip == std::net::IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254))
-                // 198.18.0.0/15 — IETF benchmark testing
+                // 198.18.0.0/15 —— IETF 基准测试
                 || matches!(v4.octets(), [198, 18..=19, ..])
-                // 240.0.0.0/4 — reserved (former Class E)
+                // 240.0.0.0/4 —— 保留（原 Class E）
                 || v4.octets()[0] >= 240
         }
         std::net::IpAddr::V6(v6) => {
-            // IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) — unwrap and check as IPv4
-            // to prevent bypass via ::ffff:127.0.0.1 etc.
+            // IPv4 映射的 IPv6 地址（::ffff:a.b.c.d）—— 解包并按 IPv4 检查
+            // 以防止通过 ::ffff:127.0.0.1 等方式绕过。
             if v6.is_unspecified()
                 || matches!(v6.octets(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, ..])
             {
@@ -303,7 +301,7 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
             v6.is_loopback()
                 || v6.is_multicast()
                 || matches!(v6.segments(), [0xfc00..=0xfdff, ..]) // ULA fc00::/7
-                || matches!(v6.segments(), [0xfe80..=0xfebf, ..]) // Link-local fe80::/10
+                || matches!(v6.segments(), [0xfe80..=0xfebf, ..]) // 链路本地 fe80::/10
         }
     }
 }
@@ -325,17 +323,17 @@ async fn validate_fetch_target(
 
     validate_network_policy(&host, context)?;
 
-    // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
-    // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
-    // localhost services, and internal networks.
+    // SSRF 防护：解析主机名并拒绝 private/link-local/loopback IP。
+    // 阻止 LLM 提示的请求访问云元数据（169.254.169.254）、
+    // localhost 服务和内部网络。
     if host == "localhost" || host == "localhost.localdomain" {
         return Err(ToolError::permission_denied(
             "requests to localhost are not allowed",
         ));
     }
-    // Normalize bracketed IPv6 literals before the literal-IP check so they
-    // route through the same restricted-IP policy as unbracketed forms
-    // (GHSA-88gh-2526-gfrr).
+    // 在字面 IP 检查之前规范化带括号的 IPv6 文字，使它们
+    // 与无括号形式走相同的受限 IP 策略路由
+    //（GHSA-88gh-2526-gfrr）。
     let ip_candidate = host
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
@@ -398,12 +396,12 @@ fn validate_dns_resolved_ip(
         return Ok(());
     }
 
-    // Allow the resolved IP past the restricted-IP block if either:
-    //   * it falls inside a configured fake-IP placeholder range (a TUN /
-    //     transparent-proxy setup in `fake-ip` mode resolves every host into a
-    //     reserved range such as `198.18.0.0/15`), or
-    //   * the host is on the explicitly-trusted proxy list.
-    // Real private/loopback/link-local/metadata IPs match neither and stay blocked.
+    // 允许已解析的 IP 通过受限 IP 阻止，只要满足以下任一条件：
+    //   * 它落在配置的 fake-IP 占位范围内（TUN /
+    //     透明代理设置在 `fake-ip` 模式下将每个主机解析为
+    //     保留范围，例如 `198.18.0.0/15`），或
+    //   * 主机在显式信任的代理列表中。
+    // 真正的 private/loopback/link-local/metadata IP 两者都不匹配，保持被阻止。
     if let Some(decider) = decider
         && (decider.is_trusted_fakeip_addr(ip) || decider.trusts_proxy_fakeip_host(host))
     {
@@ -476,9 +474,9 @@ fn project_json_fields(
     Ok(Some(out))
 }
 
-/// Strip `<script>` / `<style>` blocks, drop remaining tags, and collapse
-/// whitespace. Good enough for "let the model read this page" — not a full
-/// HTML-to-Markdown converter.
+/// 剥离 `<script>` / `<style>` 块，删除剩余标签，并折叠
+/// 空白。足以让模型阅读此页面 —— 不是完整的
+/// HTML 转 Markdown 转换器。
 fn html_to_text(html: &str) -> String {
     let no_script = script_re().replace_all(html, "");
     let no_style = style_re().replace_all(&no_script, "");
@@ -490,8 +488,8 @@ fn html_to_text(html: &str) -> String {
         .to_string()
 }
 
-/// Decode the handful of HTML entities we expect to hit in stripped text.
-/// Pulling in `html-escape` for the long tail isn't worth the dep weight.
+/// 解码在剥离文本中可能遇到的少量 HTML 实体。
+/// 为了长尾情况引入 `html-escape` 库不值得其依赖开销。
 fn decode_entities(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -630,12 +628,12 @@ mod tests {
 
     #[test]
     fn rejects_ipv4_mapped_ipv6() {
-        // ::ffff:127.0.0.1 — IPv4-mapped IPv6 loopback bypass
+        // ::ffff:127.0.0.1 —— IPv4 映射的 IPv6 loopback 绕过
         assert!(is_restricted_ip(&"::ffff:127.0.0.1".parse().unwrap()));
         assert!(is_restricted_ip(&"::ffff:10.0.0.1".parse().unwrap()));
         assert!(is_restricted_ip(&"::ffff:169.254.169.254".parse().unwrap()));
         assert!(is_restricted_ip(&"::ffff:192.168.1.1".parse().unwrap()));
-        // :: (unspecified)
+        // ::（未指定）
         assert!(is_restricted_ip(&"::".parse().unwrap()));
     }
 
@@ -691,7 +689,7 @@ mod tests {
         assert!(format!("{err}").contains("restricted address"));
     }
 
-    // GHSA-88gh-2526-gfrr — regression coverage for bracketed IPv6 literals.
+    // GHSA-88gh-2526-gfrr —— 带括号 IPv6 字面量的回归覆盖。
     #[tokio::test]
     async fn rejects_ipv6_literal_loopback() {
         let url = reqwest::Url::parse("http://[::1]/").unwrap();

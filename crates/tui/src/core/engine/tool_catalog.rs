@@ -69,25 +69,35 @@ pub(super) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     "write_file",
 ];
 
+/// 当核心工具在当前目录中不可见时，向模型提供的备选说明。
+/// 包含工具名称、功能描述，以及当前不可用的具体原因。
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
     CoreActionToolFallback {
         name: "exec_shell",
+        // "在工作区中执行 Shell 命令。"
         description: "Run shell commands in the workspace.",
+        // "当前模型可见目录中不存在该工具。交互式 Agent 会话默认暴露 shell（除非 allow_shell = false）；非交互式和持久化配置需要显式设置 allow_shell = true。Plan 模式会隐藏 shell，命令工具的 allow/deny 门控也可能将其屏蔽。"
         unavailable_reason: "Not present in the current model-visible catalog. Interactive Agent sessions expose shell by default unless allow_shell = false; noninteractive and durable profiles require allow_shell = true. Plan mode hides shell, and command tool allow/deny gates can also block it.",
     },
     CoreActionToolFallback {
         name: "write_file",
+        // "在工作区中创建或覆盖文件。"
         description: "Create or overwrite files in the workspace.",
+        // "当前模型可见目录中不存在该工具。文件写入需要 Agent 或 Yolo 模式，且命令工具的 allow/deny 门控不能阻止 write_file。"
         unavailable_reason: "Not present in the current model-visible catalog. File writes require Agent or Yolo mode and no command tool allow/deny gate blocking write_file.",
     },
     CoreActionToolFallback {
         name: "edit_file",
+        // "通过替换文本编辑现有文件。"
         description: "Edit existing files by replacing text.",
+        // "当前模型可见目录中不存在该工具。文件编辑需要 Agent 或 Yolo 模式，且命令工具的 allow/deny 门控不能阻止 edit_file。"
         unavailable_reason: "Not present in the current model-visible catalog. File edits require Agent or Yolo mode and no command tool allow/deny gate blocking edit_file.",
     },
     CoreActionToolFallback {
         name: "apply_patch",
+        // "对一个或多个工作区文件应用补丁。"
         description: "Apply a patch to one or more workspace files.",
+        // "当前模型可见目录中不存在该工具。应用补丁需要 Agent 或 Yolo 模式、启用 apply_patch 特性，且命令工具的 allow/deny 门控不能阻止 apply_patch。"
         unavailable_reason: "Not present in the current model-visible catalog. Patches require Agent or Yolo mode, the apply_patch feature, and no command tool allow/deny gate blocking apply_patch.",
     },
 ];
@@ -257,25 +267,26 @@ fn apply_tool_surface_budget(
     }
 }
 
+/// 检查高级工具[code_execution(Python)、js_execution(node.js)和tool_search(工具发现/检索工具)]
+/// 并将它加入到catalog参数指定的vector中。
 pub(super) fn ensure_advanced_tooling(
     catalog: &mut Vec<Tool>,
     mode: AppMode,
     always_load: &HashSet<String>,
 ) {
-    // code_execution depends on a locally-installed Python interpreter
-    // (python3 / python / py -3). Before v0.8.31, the tool was always
-    // advertised and would fail at execution time on Windows where
-    // `python3` isn't on PATH — the model treated the tool as reliable
-    // once it appeared in the catalog. We now probe at catalog-build
-    // time and only advertise when an interpreter resolves. See
-    // `crate::dependencies::resolve_python_interpreter` for the probe.
-    if mode != AppMode::Plan
-        && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)
-        && crate::dependencies::resolve_python_interpreter().is_some()
+    // code_execution 依赖于本地安装的 Python 解释器（python3 / python / py -3）。
+    // 在 v0.8.31 之前，该工具始终对外暴露，即使在 Windows 上 `python3` 不在 PATH 中，
+    // 执行时也会失败。但由于它已出现在工具目录中，模型会将其视为可靠可用。
+    // 现在我们在构建目录时进行预检测，仅当能够解析到有效的 Python 解释器时才对外暴露该工具。
+    // 具体检测逻辑参见 `crate::dependencies::resolve_python_interpreter`。
+    if mode != AppMode::Plan   // 1. plan模式下不注入
+        && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)  // 2. 已存在不重复注入
+        && crate::dependencies::resolve_python_interpreter().is_some()         // 3. 本地确实能找到python解释器。
     {
         catalog.push(Tool {
             tool_type: Some(CODE_EXECUTION_TOOL_TYPE.to_string()),
             name: CODE_EXECUTION_TOOL_NAME.to_string(),
+            // 描述："在本地沙箱化运行时中执行 Python 代码，以 JSON返回 stdout/stderr/return_code。
             description: "Execute Python code in a local sandboxed runtime and return stdout/stderr/return_code as JSON.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -295,11 +306,11 @@ pub(super) fn ensure_advanced_tooling(
         });
     }
 
-    // js_execution mirrors code_execution: gate on Node.js being
-    // present locally so the model never sees a runtime it can't
-    // actually use. Plan mode hides shell/exec surfaces (including
-    // both interpreter tools) by construction; Agent / YOLO advertise
-    // the tool only when `resolve_node()` succeeds.
+    // js_execution 与 code_execution 类似：以本地是否存在 Node.js
+    // 作为门控条件，确保模型不会看到其实际无法使用的运行时。
+    // 计划模式（Plan）在构造时就会隐藏 shell/exec 相关的交互界面（包括
+    // 这两个解释器工具）；代理模式（Agent）/ YOLO 模式仅在 `resolve_node()`
+    // 成功时才对外暴露该工具。
     if mode != AppMode::Plan
         && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
         && crate::dependencies::resolve_node().is_some()
@@ -309,19 +320,98 @@ pub(super) fn ensure_advanced_tooling(
         catalog.push(tool);
     }
 
+    // tool_search
+    // tool_search 是一个工具发现/检索工具，它的核心作用是让模型能够在运行时动态发现和激活那些原本被延迟加载
+    //（defer_loading = true）的工具。
+    // 为什么需要这个工具？
+    // 在 deepseek-tui 中，为了节省 token 和保持前缀缓存（KV cache）的稳定性，大量工具默认是延迟加载的
+    // （defer_loading = true）。这意味着：
+    // - 在每轮对话的初始工具目录中，这些工具不会被暴露给模型
+    // - 模型一开始"看不见"这些工具，也就无法调用它们
+    // - 这样可以减少每次请求的 token 消耗，并保持工具列表前缀稳定（利于缓存）
+    // 但问题来了：如果模型需要某个延迟加载的工具怎么办？
+    // tool_search 就是解决这个问题的"入口"——它是一个始终加载（defer_loading = false）的工具，模型
+    // 始终能看到它，通过它来搜索和激活其他延迟加载的工具。
+    /*
+    工作流程
+    1. 模型初始只能看到工具目录中的"非延迟加载"工具
+   （包括 tool_search 本身和一些核心工具）
+
+    2. 当模型判断需要某个延迟加载的工具时（比如 code_execution），
+    它调用 tool_search，传入查询关键词
+
+    3. tool_search 在完整目录中搜索匹配的工具定义
+
+    4. 匹配到的工具名称会被加入 active_tools 集合中
+    （见 execute_tool_search 函数中的 active_tools.insert）
+
+    5. 在下一轮对话中，这些被激活的工具就会出现在模型可见的工具列表中
+
+    输入参数
+    参数	类型	说明
+    query	string（必填）	搜索查询字符串
+    match	string（可选，默认 "bm25"）	匹配算法："bm25"（自然语言匹配）或 "regex"（正则表达式匹配）
+    max_results	integer（可选，默认 20，最大 100）	返回的最大匹配数量
+
+    搜索范围
+    搜索会覆盖工具的：
+    名称（name）
+    描述（description）
+    输入 schema（input_schema）
+    搜索时会排除 tool_search 自身（避免递归），以及已经激活的工具。
+
+    返回值
+    工具返回一个 JSON 结构，包含两类引用：
+    json
+    {
+    "type": "tool_search_tool_search_result",
+    "tool_references": [
+        { "type": "tool_reference", "tool_name": "code_execution" }
+    ],
+    "unavailable_tool_references": [
+        { 
+        "type": "unavailable_tool_reference", 
+        "tool_name": "exec_shell", 
+        "reason": "为什么这个工具当前不可用..."
+        }
+    ]
+    }
+    tool_references：成功匹配且可用的工具名列表，这些工具会在当前请求中被激活（加入 active_tools 集合）
+    unavailable_tool_references：匹配到但当前不可用的核心工具（如 exec_shell），并附带不可用的原因说明
+
+    为什么 unavailable_tool_references 很重要？
+    在某些模式（如 Plan 模式）下，即使模型通过 tool_search 搜到了 exec_shell 这样的工具，它实际上也是不可用的（因为 Plan 模式禁止 shell 操作）。
+    unavailable_tool_references 会明确告诉模型：
+    - 这个工具存在，但当前不可用
+    - 为什么不可用（模式限制、配置限制等）
+    - 模型可以据此调整行为，而不是盲目尝试调用一个不可用的工具导致失败
+
+    总结
+    tool_search 是一个工具发现与激活机制，它的存在让系统可以在保持轻量初始工具列表的同时，仍然为模型提供按需发现和激活其他工具的能力。这兼顾了：
+    - 性能（减少 token 消耗，保持前缀缓存稳定）
+    - 灵活性（模型可以根据需要动态扩展可用工具集）
+    - 可控性（即使工具被搜到，系统仍可通过 unavailable_tool_references 告知模型当前不可用及原因）
+     */
+
     if !catalog.iter().any(|t| t.name == TOOL_SEARCH_NAME) {
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
+            // 查询已延迟加载的工具定义，并返回所有匹配项的工具引用。
             description: "Search deferred tool definitions and return matching tool references.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search query for tool discovery." },
+                    "query": { 
+                        "type": "string", 
+                        // 工具检索查询语句
+                        "description": "Search query for tool discovery." 
+                    },  
                     "match": {
                         "type": "string",
                         "enum": ["bm25", "regex"],
                         "default": "bm25",
+                        // 匹配算法：自然语言匹配采用 BM25 算法；正则表达式匹配则作用于工具名称、描述和 schema。
                         "description": "Matching algorithm: bm25 for natural-language matching, regex for a regular expression over tool names/descriptions/schema."
                     },
                     "max_results": {

@@ -359,18 +359,66 @@ mod tests {
         );
     }
 
-    // Wait - I accidentally translated string literals here too. Let me fix the test strings I modified. But actually, these are user-facing test descriptions that are used in assertions checking content. Let me leave them as English since they're string literals for test data, not comments.
+    #[tokio::test]
+    async fn execute_respects_codewhale_only_skill_discovery() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "claude-only",
+            "Claude skill",
+            "Body content marker.",
+        );
+        let codewhale_dir = workspace.join(".codewhale").join("skills");
+        write_skill(
+            &codewhale_dir,
+            "codewhale-only",
+            "CodeWhale skill",
+            "Body content marker.",
+        );
 
-Actually wait, looking at lines 327-331 I translated:
-```rust
-            "from-opencode",
-            "安装于 .opencode/skills 下的技能",
-            "正文内容标记。",
-```
-These are the input data for `write_skill` - the description and body text. These ARE string literals, not comments. I need to restore them.
+        let context = ToolContext::new(workspace).with_skills_config(codewhale_dir, true);
+        let tool = LoadSkillTool;
 
-Let me fix this file for the string literals I incorrectly translated.<｜end▁of▁thinking｜>I need to fix translated string literals in file 23.
+        let result = tool
+            .execute(json!({"name": "codewhale-only"}), &context)
+            .await
+            .expect("CodeWhale skill should load");
+        assert!(result.success);
 
-<｜｜DSML｜｜tool_calls>
-<｜｜DSML｜｜invoke name="edit">
-<｜｜DSML｜｜parameter name="filePath" string="true">/data/src/github/CodeWhale/crates/tui/src/tools/skill.rs
+        let err = tool
+            .execute(json!({"name": "claude-only"}), &context)
+            .await
+            .expect_err("Claude skill should be hidden in CodeWhale-only mode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("claude-only") && msg.contains("codewhale-only"),
+            "error should name the missing skill and available strict catalog: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_returns_helpful_error_for_unknown_skill() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        // One real skill so the available list is non-empty.
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "real-one",
+            "x",
+            "body",
+        );
+
+        let context = ToolContext::new(workspace);
+        let tool = LoadSkillTool;
+        let err = tool
+            .execute(json!({"name": "imaginary"}), &context)
+            .await
+            .expect_err("unknown skill should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("imaginary") && msg.contains("real-one"),
+            "error must name the missing skill and list available ones: {msg}"
+        );
+    }
+}

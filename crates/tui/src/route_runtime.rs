@@ -6,11 +6,19 @@ use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRuntimeRoute {
-    pub(crate) candidate: ReadyRouteCandidate,
-    pub(crate) config: Config,
-    pub(crate) model: String,
+    pub(crate) candidate: ReadyRouteCandidate,   // 路由解析的结果候选
+    pub(crate) config: Config,   // 配置（可能是修改过的副本）
+    pub(crate) model: String,    // 选定的模型名（字符串）
 }
 
+/// 这个函数解析路由候选。参数：
+/// ## parameter
+/// - `provider` 目标API供应商
+/// - `model_selector` 用户指定的模型选择器（可选），比如"--model deepseek-v4-pro"
+/// - `saved_provider_model` 配置文件中保存的供应商模型（可选）
+/// - `base_url_override` 覆盖的base URL
+/// - `context_window_override` 覆盖的上下文窗口大小
+/// 返回 Result<ReadyRouteCandidate, String>——成功时返回路由候选，失败时返回错误字符串。
 pub(crate) fn resolve_route_candidate(
     provider: ApiProvider,
     model_selector: Option<&str>,
@@ -19,7 +27,7 @@ pub(crate) fn resolve_route_candidate(
     context_window_override: Option<u32>,
 ) -> Result<ReadyRouteCandidate, String> {
     let route_request = RouteRequest {
-        explicit_provider: provider.kind(),
+        explicit_provider: provider.kind(),  //  获取供应商的kind（如 "deepseek", "openai" 等字符串标识）
         model_selector: model_selector.map(|model| LogicalModelRef::from(model.to_string())),
         saved_provider_model: saved_provider_model
             .map(|model| WireModelId::from(model.to_string())),
@@ -38,15 +46,23 @@ fn apply_context_window_override(limits: &mut RouteLimits, context_window: Optio
     }
 }
 
+/// 这是主要的入口函数，解析运行时路由。参数：
+/// ## parameters
+/// - `config` 配置引用
+/// - `provider` API供应商
+/// - `model_selector` 可选的模型选择器
 pub(crate) fn resolve_runtime_route(
     config: &Config,
     provider: ApiProvider,
     model_selector: Option<&str>,
 ) -> Result<ResolvedRuntimeRoute, String> {
+    //  准备路由配置（克隆并调整后的配置副本）
     let mut route_config = prepared_route_config(config, provider, model_selector);
+    // 从配置中读取该供应商的已保存模型名
     let saved_provider_model = route_config
         .provider_config_for(provider)
         .and_then(|provider| provider.model.as_deref());
+    // 执行解析，传入供应商、模型选择器、保存的模型、base URL和上下文窗口
     let candidate = resolve_route_candidate(
         provider,
         model_selector,
@@ -54,9 +70,11 @@ pub(crate) fn resolve_runtime_route(
         Some(route_config.deepseek_base_url()),
         route_config.context_window_for_provider_config(provider),
     )?;
+    // 从候选结果中提取模型ID字符串
     let model = candidate.wire_model_id.as_str().to_string();
+    // 将选定的模型写回配置副本
     route_config.provider_config_for_mut(provider).model = Some(model.clone());
-
+    // 返回 ResolvedRuntimeRoute
     Ok(ResolvedRuntimeRoute {
         candidate,
         config: route_config,
@@ -64,11 +82,13 @@ pub(crate) fn resolve_runtime_route(
     })
 }
 
+// 准备路由配置。
 fn prepared_route_config(
     config: &Config,
     provider: ApiProvider,
     model_selector: Option<&str>,
 ) -> Config {
+    // 克隆配置
     let mut route_config = config.clone();
     // 对于内置提供商，印上规范的提供商 ID。对于动态的
     // 自定义身份 (#1519)，原始 `provider = "<name>"` 就是 `[providers.<name>]`
@@ -77,6 +97,7 @@ fn prepared_route_config(
     if provider != ApiProvider::Custom {
         route_config.provider = Some(provider.as_str().to_string());
     }
+    // NvidiaNim供应商特殊处理——如果base_url不包含"integrate.api.nvidia.com"，则设置为默认NIM URL
     if matches!(provider, ApiProvider::NvidiaNim)
         && route_config
             .base_url
@@ -86,6 +107,7 @@ fn prepared_route_config(
     {
         route_config.base_url = Some(DEFAULT_NVIDIA_NIM_BASE_URL.to_string());
     }
+    // Deepseek/DeepseekCN供应商特殊处理——如果base_url属于非Deepseek供应商，则清空base_url
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && route_config
             .base_url
@@ -95,12 +117,15 @@ fn prepared_route_config(
     {
         route_config.base_url = None;
     }
+    // 如果有model_selector，将其写入配置中的对应供应商model字段
     if let Some(model) = model_selector {
         route_config.provider_config_for_mut(provider).model = Some(model.to_string());
     }
     route_config
 }
 
+// 检查给定的base_url是否属于非Deepseek供应商。将URL转为小写，然后检查是否包含已知的
+// 非Deepseek供应商域名。如果匹配任一，返回true。
 fn root_base_url_belongs_to_non_deepseek_provider(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     [
@@ -127,6 +152,7 @@ mod tests {
     use super::*;
     use crate::config::{DEFAULT_TEXT_MODEL, DEFAULT_ZAI_MODEL, ProviderConfig, ProvidersConfig};
 
+    /// 当没有指定 model_selector 时，使用目标供应商的默认模型。
     #[test]
     fn runtime_route_without_model_uses_target_provider_default() {
         let config = Config {
@@ -164,6 +190,8 @@ mod tests {
         );
     }
 
+    // 验证：当配置的供应商是 deepseek，但用户试图用 --model deepseek-v4-pro 直接指定一个非 
+    // Zai 供应商的模型时，应该被拒绝。
     #[test]
     fn runtime_route_rejects_foreign_direct_model_before_config_snapshot() {
         let config = Config {

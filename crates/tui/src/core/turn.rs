@@ -17,7 +17,7 @@ use crate::snapshot::SnapshotRepo;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// 单次轮次的上下文（用户消息 + AI 响应）。
+/// 单次轮次的上下文（1轮次 = 用户消息 + AI 响应）。
 #[derive(Debug)]
 pub struct TurnContext {
     /// 轮次 ID
@@ -193,8 +193,11 @@ pub fn post_turn_snapshot(
 }
 
 fn snapshot_with_label(workspace: &Path, label: &str, cap_bytes: u64) -> Option<String> {
+    // 尝试打开已有的快照仓库，如果不存在就创建一个
     match SnapshotRepo::open_or_init_with_cap(workspace, cap_bytes) {
         Ok(repo) => {
+            // 调用 repo.snapshot(label) 执行快照。成功后 id 是一个 newtype（元组结构体）
+            // id.0 访问第一个（通常是唯一一个）元素，就是 SHA 字符串。包装成 Some。
             let id = match repo.snapshot(label) {
                 Ok(id) => Some(id.0),
                 Err(e) => {

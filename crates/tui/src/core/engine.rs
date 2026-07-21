@@ -256,7 +256,6 @@ fn append_plan_list(out: &mut String, label: &str, values: &[String]) {
 
 // === Types ===
 
-/// Configuration for the engine
 /// 这是引擎的配置结构体，极其重要。
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -264,6 +263,7 @@ pub struct EngineConfig {
     pub model: String,
     /// Route/offering limits for the active provider+model, when the runtime
     /// route resolver had concrete catalog facts.
+    /// 活动提供者+模型的路由/服务限制，当运行时路由解析器具有具体的目录事实时。
     pub active_route_limits: Option<codewhale_config::route::RouteLimits>,
     /// 工作区根目录Workspace root for tool execution and file operations.
     pub workspace: PathBuf,
@@ -271,51 +271,44 @@ pub struct EngineConfig {
     pub allow_shell: bool,
     /// 信任模式（跳过审批）
     pub trust_mode: bool,
-    /// Path to the notes file used by the notes tool.
+    /// notes 工具使用的笔记文件路径。
     pub notes_path: PathBuf,
-    /// Path to the MCP configuration file.
+    /// MCP 配置文件路径。
     pub mcp_config_path: PathBuf,
-    /// Directory containing discoverable skills.
+    /// 包含可发现技能的目录。
     pub skills_dir: PathBuf,
-    /// Restrict skill discovery to CodeWhale-owned roots plus explicit
-    /// `skills_dir` configuration.
+    /// 将技能发现限制为 CodeWhale 拥有的根目录加上显式的 `skills_dir` 配置。
     pub skills_scan_codewhale_only: bool,
-    /// Sources injected as `<instructions source="…">` blocks in the system
-    /// prompt (#454). Each entry is either a disk path (read at render time)
-    /// or an inline string. Loaded in declared order from the user's
-    /// `instructions = [...]` config or constructed by embedders.
+    /// 作为 `<instructions source="…">` 块注入系统提示的源（#454）。
+    /// 每个条目可以是磁盘路径（在渲染时读取）或内联字符串。
+    /// 按用户 `instructions = [...]` 配置的声明顺序加载，或由嵌入器构造。
     ///
-    /// Generalized from `Vec<PathBuf>` so embedders can inject inline content
-    /// without staging a disk file. `From<PathBuf>` impl keeps existing callers
-    /// working with `.into()` at the call site.
+    /// 从 `Vec<PathBuf>` 泛化而来，以便嵌入器可以注入内联内容而无需暂存磁盘文件。
+    /// `From<PathBuf>` impl 保持现有调用者在调用点使用 `.into()` 正常工作。
     pub instructions: Vec<crate::prompts::InstructionSource>,
     pub project_context_pack_enabled: bool,
-    /// When true, the model is instructed to respond in the current locale
-    /// and a post-hoc translation layer replaces remaining English output.
+    /// 当 true 时，模型被指示以当前语言环境响应，并且后处理翻译层替换剩余的英文输出。
     pub translation_enabled: bool,
-    /// Whether user-visible transcript rendering shows thinking blocks.
-    /// Prompt assembly uses this to avoid localizing hidden reasoning.
+    /// 用户可见的转录渲染是否显示思考块。
+    /// 提示组装使用此选项来避免本地化隐藏的推理内容。
     pub show_thinking: bool,
     pub verbosity: Option<String>,
-    /// 每轮最多执行多少步（默认1000）。Maximum number of assistant steps before stopping.
+    /// 每轮最多执行多少步（默认1000）。
     pub max_steps: u32,
-    /// 最大并发子代理数。Maximum number of concurrently active subagents.
+    /// 最大并发子代理数。
     pub max_subagents: usize,
-    /// Maximum queued + running sub-agents admitted for this engine session.
+    /// 此引擎会话允许排队的最大子代理数（排队 + 运行中）。
     pub max_admitted_subagents: usize,
-    /// Number of direct (depth-1) sub-agents that may execute concurrently
-    /// before further launches queue for a launch slot (#3095).
-    /// Resolved from `[subagents] launch_concurrency`.
+    /// 在进一步启动排队等待启动槽之前，可同时执行的直接（深度-1）子代理数量（#3095）。
+    /// 从 `[subagents] launch_concurrency` 解析。
     pub launch_concurrency: usize,
-    /// Whether the model-facing `agent` tool is available after applying
-    /// feature flags and `[subagents]` opt-out controls.
-    /// 子代理功能是否启用
+    /// 在应用功能标志和 `[subagents]` 选择退出控制后，模型面向的 `agent` 工具是否可用。
     pub subagents_enabled: bool,
-    /// 功能开关（哪些工具可用）。Feature flags controlling tool availability.
+    /// 功能开关（哪些工具可用）。
     pub features: Features,
-    /// Deterministic auto-review policy for tool calls.
+    /// 工具调用的确定性自动审查策略。
     pub auto_review_policy: crate::tui::auto_review::AutoReviewPolicy,
-    /// Auto-compaction settings for long conversations.
+    /// 长对话的自动压缩设置。
     pub compaction: CompactionConfig,
     /// 共享的待办列表
     pub todos: SharedTodoList,
@@ -323,113 +316,98 @@ pub struct EngineConfig {
     pub plan_state: SharedPlanState,
     /// 共享的目标状态
     pub goal_state: SharedGoalState,
-    /// Maximum sub-agent recursion depth (default 3). See
-    /// `SubAgentRuntime::max_spawn_depth`. Override via
-    /// `[subagents] max_depth = N` in `~/.codewhale/config.toml`.
-    /// 子代理最大递归深度（默认3层）
+    /// 子代理最大递归深度（默认3层）。参见 `SubAgentRuntime::max_spawn_depth`。
+    /// 可通过 `~/.codewhale/config.toml` 中的 `[subagents] max_depth = N` 覆盖。
     pub max_spawn_depth: u32,
-    /// Optional aggregate token budget for each root sub-agent run.
-    /// Descendant agents inherit the root pool unless a child starts a new
-    /// budget scope with an explicit per-call override.
+    /// 每个根子代理运行的可选聚合 token 预算。
+    /// 后代代理继承根池，除非子代理使用显式的每次调用覆盖启动新的预算范围。
     pub subagent_token_budget: Option<u64>,
-    /// Per-domain network policy decider (#135). Shared across the session so
-    /// session-scoped approvals (`/network allow <host>`) persist for the
-    /// remainder of the run.
+    /// 每个域的网络策略决策器（#135）。在整个会话中共享，
+    /// 以便会话范围的审批（`/network allow <host>`）在运行剩余时间内持续有效。
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
-    /// 是否每轮拍 git 快照。Whether to take side-git workspace snapshots before/after each turn.
+    /// 是否每轮拍 git 快照。
     pub snapshots_enabled: bool,
-    /// Maximum workspace size (in bytes) before snapshots self-disable on
-    /// first init. `0` disables the cap. Resolved from
-    /// `[snapshots] max_workspace_gb` × 1 GB at engine construction.
+    /// 在首次初始化时快照自动禁用前的最大工作区大小（字节）。`0` 禁用上限。
+    /// 在引擎构造时从 `[snapshots] max_workspace_gb` × 1 GB 解析。
     pub snapshots_max_workspace_bytes: u64,
-    /// LSP 诊断配置。Post-edit LSP diagnostics injection (#136). When `None`, the engine
-    /// constructs a disabled manager so the field is always present.
+    /// LSP 诊断配置。编辑后 LSP 诊断注入（#136）。当 `None` 时，引擎
+    /// 构造一个已禁用的管理器，因此该字段始终存在。
     pub lsp_config: Option<crate::lsp::LspConfig>,
-    /// Durable runtime services exposed to model-visible tools.
+    /// 暴露给模型可见工具的持久运行时服务。
     pub runtime_services: RuntimeToolServices,
-    /// Per-role/type sub-agent model overrides already resolved from config.
+    /// 已从配置解析的按角色/类型的子代理模型覆盖。
     pub subagent_model_overrides: HashMap<String, String>,
-    /// Fleet 成员名册.Merged fleet roster (built-ins + `[fleet.profiles]` + workspace agent
-    /// files) shared by model-spawned sub-agents and fleet dispatch
-    /// (#fleet-roster cutover (v0.8.67)). Defaults to built-ins only; the
-    /// engine-config construction sites load the full roster once per session.
+    /// Fleet 成员名册。合并的舰队名册（内置 + `[fleet.profiles]` + 工作区代理文件），
+    /// 由模型生成的子代理和舰队调度共享（#fleet-roster 切换，v0.8.67）。
+    /// 默认为仅内置；引擎配置构造站点每个会话加载一次完整名册。
     pub fleet_roster: std::sync::Arc<crate::fleet::roster::FleetRoster>,
-    /// 记忆功能是否启用。Whether the user-memory feature is enabled (#489). When `true` the
-    /// engine reads `memory_path` on each prompt assembly and prepends a
-    /// `<user_memory>` block to the system prompt.
+    /// 记忆功能是否启用。用户记忆功能是否启用（#489）。当 `true` 时，引擎
+    /// 在每次提示组装时读取 `memory_path`，并在系统提示前添加 `<user_memory>` 块。
     pub memory_enabled: bool,
-    /// When `true`, the legacy `memory.rs` push/inject path is deprecated
-    /// in favour of Moraine MCP recall. `compose_block` returns `None`
-    /// regardless of `memory_enabled`, the `remember` tool is not
-    /// registered, and `# foo` quick-add falls through.
+    /// 当 `true` 时，遗留的 `memory.rs` 推送/注入路径被弃用，
+    /// 改用 Moraine MCP 召回。`compose_block` 返回 `None`，
+    /// 无论 `memory_enabled` 为何值，`remember` 工具不被注册，
+    /// `# foo` 快速添加回退。
     pub moraine_fallback: bool,
-    /// 记忆文件路径。Path to the user memory file (#489). Always populated; only
-    /// consulted when `memory_enabled` is `true`.
+    /// 记忆文件路径。用户记忆文件路径（#489）。始终填充；仅在 `memory_enabled` 为 `true` 时使用。
     pub memory_path: PathBuf,
-    /// Default directory for Xiaomi MiMo speech/TTS tool outputs.
+    /// Xiaomi MiMo 语音/TTS 工具输出的默认目录。
     pub speech_output_dir: Option<PathBuf>,
     pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_status: GoalStatus,
-    /// Tool restriction from custom slash command frontmatter.
-    /// `None` means the current turn may use the normal tool set.
+    /// 来自自定义斜杠命令前置元数据的工具限制。
+    /// `None` 表示当前轮次可以使用正常的工具集。
     pub allowed_tools: Option<Vec<String>>,
-    /// Tool deny-list.  Deny always wins over allow (#3027).
-    /// `None` means no tools are explicitly denied.
+    /// 工具拒绝列表。拒绝始终优先于允许（#3027）。
+    /// `None` 表示没有工具被显式拒绝。
     pub disallowed_tools: Option<Vec<String>>,
-    /// Hook executor for control-plane hooks.
-    /// `ToolCallBefore` hooks may deny a tool call with exit code 2.
+    /// 控制面钩子的钩子执行器。
+    /// `ToolCallBefore` 钩子可以以退出码 2 拒绝工具调用。
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
-    /// 语言标签（如 "zh-Hans"）。Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
-    /// for the `## Environment` block in the system prompt. The
-    /// caller resolves this from `Settings` once at engine
-    /// construction; the engine never touches disk for it.
+    /// 语言标签（如 "zh-Hans"）。已解析的 BCP-47 语言标签（例如 `"en"`、`"zh-Hans"`、`"ja"`），
+    /// 用于系统提示中的 `## Environment` 块。调用者在引擎构造时从 `Settings` 解析一次；
+    /// 引擎永远不会为此访问磁盘。
     pub locale_tag: String,
-    /// When true, force `tool_choice: "required"` and opt compatible function
-    /// schemas into DeepSeek beta strict mode.
+    /// 当 true 时，强制 `tool_choice: "required"` 并将兼容的函数模式加入 DeepSeek beta 严格模式。
     pub strict_tool_mode: bool,
-    /// Workshop / large-tool-output routing (#548). `None` disables routing.
+    /// Workshop / 大型工具输出路由（#548）。`None` 禁用路由。
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
-    /// Which search backend `web_search` should use. Default: DuckDuckGo.
+    /// `web_search` 应使用的搜索后端。默认：DuckDuckGo。
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
-    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
+    /// Tavily、Bocha、Metaso 或 Baidu 的 API 密钥。`None` 用于 Bing 或 DuckDuckGo。
+    /// Metaso 也回退到 `METASO_API_KEY` 环境变量，然后是内置密钥。
+    /// Baidu 也回退到 `BAIDU_SEARCH_API_KEY`。
     pub search_api_key: Option<String>,
-    /// Optional DuckDuckGo-compatible HTML endpoint override.
+    /// 可选的 DuckDuckGo 兼容 HTML 端点覆盖。
     pub search_base_url: Option<String>,
-    /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
-    /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
-    /// once at engine construction, then threaded onto every
-    /// `SubAgentRuntime` the engine builds (#1806, #1808).
+    /// 子代理 `create_message` 请求的每步 DeepSeek API 超时。
+    /// 在引擎构造时从 `[subagents] api_timeout_secs` 解析一次（限制在 1..=1800），
+    /// 然后传递给引擎构建的每个 `SubAgentRuntime`（#1806, #1808）。
     pub subagent_api_timeout: Duration,
-    /// Per-SSE-chunk idle timeout for streamed model responses.
-    /// Resolved from `[tui].stream_chunk_timeout_secs` (or the legacy
-    /// `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS`) and updated live by `/config`.
+    /// 流式模型响应的每个 SSE 块空闲超时。
+    /// 从 `[tui].stream_chunk_timeout_secs`（或遗留的 `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS`）解析，
+    /// 并通过 `/config` 实时更新。
     pub stream_chunk_timeout: Duration,
-    /// No-progress heartbeat timeout for live sub-agents. Used by the manager
-    /// and parent wait loop to auto-cancel stuck children before they exhaust
-    /// the sub-agent slot pool indefinitely (#2614).
+    /// 活动子代理的无进展心跳超时。由管理器和父等待循环用于在卡住的子代理
+    /// 无限耗尽子代理槽池之前自动取消它们（#2614）。
     pub subagent_heartbeat_timeout: Duration,
-    /// Native tools that should stay in the model-visible catalog even when
-    /// they are outside the small default core surface (#2076).
+    /// 即使在小默认核心表面之外，也应保留在模型可见目录中的原生工具（#2076）。
     pub tools_always_load: HashSet<String>,
-    /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
-    /// through bubblewrap instead of relying solely on Landlock (#2184).
-    #[allow(dead_code)] // Wired through ShellManager in follow-up PR
+    /// 当 true 且 Linux 上存在 `/usr/bin/bwrap` 时，通过 bubblewrap 路由 exec_shell，
+    /// 而非仅依赖 Landlock（#2184）。
+    #[allow(dead_code)] // 在后续 PR 中通过 ShellManager 连接
     pub prefer_bwrap: bool,
-    /// Tool override and plugin configuration (`[tools]` table in config.toml).
-    /// Applied to the per-turn tool registry after built-in tools are registered.
-    /// When `None`, no overrides or plugin loading occurs.
+    /// 工具覆盖和插件配置（`config.toml` 中的 `[tools]` 表）。
+    /// 在内置工具注册后应用于每轮工具注册表。
+    /// 当 `None` 时，不进行覆盖或插件加载。
     pub tools: Option<crate::config::ToolsConfig>,
-    /// Whether tools should follow symbolic links. When `true`, symlinked
-    /// directories are traversed by walk-based tools and symlinked paths
-    /// that resolve outside the workspace are still allowed (the symlink
-    /// itself must be inside the workspace). Mirrors the
-    /// `workspace_follow_symlinks` setting.
+    /// 工具是否应遵循符号链接。当 `true` 时，基于遍历的工具会遍历符号链接目录，
+    /// 且解析到工作区外部的符号链接路径仍然被允许（符号链接本身必须在工作区内）。
+    /// 镜像 `workspace_follow_symlinks` 设置。
     pub workspace_follow_symlinks: bool,
-    /// Ask-only permission rules loaded from sibling `permissions.toml`.
+    /// 从兄弟 `permissions.toml` 加载的仅询问权限规则。
     pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
 }
 
@@ -588,7 +566,7 @@ pub struct Engine {
     deepseek_client_error: Option<String>,
     api_key_env_only_recovery: Option<String>,
     session: Session,      // 会话（存储对话历史）
-    subagent_manager: SharedSubAgentManager,
+    subagent_manager: SharedSubAgentManager,     // 子代理管理器
     shell_manager: SharedShellManager,           // Shell 管理器
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,  // MCP 连接池
     api_provider: ApiProvider,                   // 当前 API 提供商
@@ -766,6 +744,9 @@ impl Engine {
     }
 
     /// 每次新的一轮对话开始前，都要重置取消令牌——上一轮的"取消"不应该影响新一轮。
+    /// cancel_token 是 tokio 的取消机制——当用户按 Esc 键时，上一轮的 cancel_token 
+    /// 会被触发，导致正在进行的 API 调用被取消。新轮次开始时必须创建一个全新的 token，
+    /// 否则新轮次一启动就会立即被"取消"。
     fn reset_cancel_token(&mut self) {
         let token = CancellationToken::new();
         self.cancel_token = token.clone();
@@ -2447,27 +2428,35 @@ impl Engine {
             mode == AppMode::Yolo || auto_approve,
             approval_mode,
         );
+        
+        // 如果策略中包含了要给用户看的状态消息（比如"已切换到 Yolo 模式"），就立即通过事件通道发送出去。
         if let Some(status) = input_policy.status.clone() {
             let _ = self.tx_event.send(Event::status(status)).await;
         }
-        // Reset cancel token for fresh turn (in case previous was cancelled)
+        // cancel_token 是 tokio 的取消机制——当用户按 Esc 键时，上一轮的 cancel_token 会被触发，
+        // 导致正在进行的 API 调用被取消。新轮次开始时必须创建一个全新的 token，否则新轮次一启动就会立即被"取消"。
         self.reset_cancel_token();
 
         // Track the complete effective mode policy so mid-turn metadata, `/edit`,
         // idle worker resumptions, and approval gates cannot read a stale policy
         // after the UI changed modes (#3568).
+        // 记录完整的有效模式策略，防止 UI 切换模式后元数据读取到过期策略
         self.apply_runtime_mode_policy(&input_policy);
 
         // Drain stale steer messages from previous turns.
+        // 排空上一轮残留的转向消息.
+        // rx_steer 是一个用于运行时转向（steer）的通道——比如用户在 AI 回复过程中注入新的指令。
+        // 新轮次开始前先把旧消息清空，防止污染。
         while self.rx_steer.try_recv().is_ok() {}
 
         // Create turn context first so start event includes a stable turn id.
+        // 创建 TurnContext，包含一个唯一的 turn id
         let mut turn = TurnContext::new(self.config.max_steps);
-        self.turn_counter = self.turn_counter.saturating_add(1);
+        self.turn_counter = self.turn_counter.saturating_add(1);  // 递增 turn 计数器
 
-        // Emit turn started event IMMEDIATELY so the UI knows the turn is
-        // active. The snapshot below can take 30+ seconds on slow filesystems
-        // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
+        // 立即发送 TurnStarted 事件——让 UI 知道回合已激活
+        // 在 WSL2 等慢文件系统上，快照可能需要 30+ 秒，如果等快照完成再发 TurnStarted，UI 
+        // 会长时间卡在"等待中"的状态。所以引擎先告诉 UI"我开始了"，然后再慢慢做快照。
         let _ = self
             .tx_event
             .send(Event::TurnStarted {
@@ -2475,15 +2464,14 @@ impl Engine {
             })
             .await;
 
-        // Snapshot the workspace BEFORE we touch a single tool. Run the git
-        // work on the blocking pool so the async runtime stays responsive;
-        // failure is non-fatal (the helper logs at WARN).
+        // 在执行任何工具之前对工作区进行快照。将 git 操作放在阻塞线程池中执行，
+        // 以保持异步运行时的响应性；失败是非致命的（辅助函数会以 WARN 级别记录）。
+        // 快照是什么：用 git 记录工作区在 AI 操作前的状态，之后如果 AI 搞砸了，用户可以用 /restore 恢复。
         if self.config.snapshots_enabled {
-            // Clone the user prompt now — `content` is moved into
-            // `user_text_message_with_turn_metadata_for_route` below, so we need
-            // a copy for both pre- and post-turn snapshot labels. The
-            // label carries a truncated first line so `/restore`
-            // listings are human-readable.
+            // 现在克隆用户提示 — `content` 随后会被移动到下面的
+            // `user_text_message_with_turn_metadata_for_route` 中，因此我们需要
+            // 一个副本同时用于轮次前和轮次后的快照标签。该标签会携带截断后的第一行，
+            // 使 `/restore` 列表具有可读性。
             let snapshot_prompt = content.clone();
             let pre_workspace = self.session.workspace.clone();
             let pre_seq = self.turn_counter;
@@ -2494,17 +2482,16 @@ impl Engine {
             .await;
         }
 
-        // A new turn means any leftover retry banner (success cleared
-        // it, failure pinned it) is no longer relevant — reset to idle
-        // so the footer doesn't display a stale failure row across
-        // turns (#499).
+        // 确保 UI 底部的"上次操作失败，正在重试..."横幅不会跨轮次残留。 (#499).
         crate::retry_status::clear();
 
-        // Clone user prompt for post-turn snapshot label before `content`
-        // is moved into `user_text_message_with_turn_metadata_for_route` below.
+        // 是事后快照的标签——因为 content 马上会被移动到消息构造中（move 语义），所以这里提前克隆一份。
         let snapshot_prompt_post = content.clone();
 
-        // Check if we have the appropriate client
+        // 检查是否有合适的客户端
+        // 如果指定了 provider，尝试激活路由；失败则发出错误并返回
+        // 这是第一道防线。如果 API 密钥无效、网络不通、或者模型配置错误，这里就会拦截，不会继续执行后续逻辑。
+        // 注意返回时一定要发送 TurnComplete 事件——UI 在等着这个事件来解除"加载中"状态。
         if let Some(provider) = provider
             && let Err(message) = self.activate_runtime_route(provider, &model)
         {
@@ -2549,12 +2536,18 @@ impl Engine {
             return;
         }
 
+        // 让 working_set 观察用户消息（用于后续的文件推荐、上下文管理）
+        // observe_user_message是上下文智能的一部分——它会分析用户消息中提到哪些文件、哪些路径，之后优先把这些内容保持在上下文中。
         self.session
             .working_set
             .observe_user_message(&content, &self.session.workspace);
+        
+        // 判断是否需要先更新计划再执行
+        // should_force_update_plan_first 检查用户消息是否包含 /plan 或类似的需要先创建/更新计划的指令。
         let force_update_plan_first = should_force_update_plan_first(input_policy.mode, &content);
 
         // Add user message to session
+        // 构造带有 turn 元数据的用户消息
         let user_msg = self.user_text_message_with_turn_metadata_for_route_and_provenance(
             content,
             &model,
@@ -2565,15 +2558,20 @@ impl Engine {
         );
         self.session.add_message(user_msg);
 
+        // 保存旧的 goal 配置，用于比较是否有变化
         let previous_goal_objective = self.config.goal_objective.clone();
         let previous_goal_token_budget = self.config.goal_token_budget;
         let previous_goal_status = self.config.goal_status;
 
+        // 更新当前 model 和 goal 配置
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
         self.config.goal_objective = goal_objective.clone();
         self.config.goal_token_budget = goal_token_budget;
         self.config.goal_status = goal_status;
+
+        // 如果 goal 发生了变化，同步到持久化的 goal_state
+        // normalized_goal_objective 做规范化处理，避免仅空格差异触发不必要的同步
         if normalized_goal_objective(previous_goal_objective.as_deref())
             != normalized_goal_objective(goal_objective.as_deref())
             || previous_goal_token_budget != goal_token_budget
@@ -2595,27 +2593,32 @@ impl Engine {
         self.config.show_thinking = show_thinking;
         self.config.verbosity = verbosity;
 
-        // Refresh stable prompt context.
+        // 刷新系统提示词（因为配置变了），通知 UI 会话已更新（比如会话列表、token 使用量等）。
         self.refresh_system_prompt();
         self.emit_session_updated().await;
 
+        // 这段代码为后续的"工具调用"做准备：
         // Build tool registry and tool list for the current mode
         let todo_list = self.config.todos.clone();
         let plan_state = self.config.plan_state.clone();
 
+        // 构建工具上下文（包含工作区路径、shell 策略等）
         let tool_context = self.build_tool_context(input_policy.mode, input_policy.auto_approve);
-        // Ensure MCP pool is initialized before building the tool registry,
+        // 在building the tool registry前确保 MCP 连接池已初始化
         // so start_mcp_server can be registered when Feature::Mcp is enabled.
         if self.config.features.enabled(Feature::Mcp) {
-            let _ = self.ensure_mcp_pool().await;
+            let _ = self.ensure_mcp_pool().await;  // 连接池用于管理外部工具服务器
         }
+        // 创建工具注册表构建器
         let builder = self
             .build_turn_tool_registry_builder(input_policy.mode, todo_list, plan_state)
             .with_dynamic_tools(&dynamic_tools);
 
+        // 检查子代理功能是否启用
         let subagents_available =
             self.config.subagents_enabled && self.config.features.enabled(Feature::Subagents);
 
+        // 如果子代理可用，捕获当前会话状态用于 fork 新子代理
         let fork_context_for_runtime = if subagents_available {
             let state = StructuredState::capture(
                 input_policy.mode.label(),
@@ -2641,10 +2644,20 @@ impl Engine {
         // envelopes into `Event::SubAgentMailbox` so the UI can route them
         // to the matching in-transcript card. The drainer exits naturally
         // when every cloned sender is dropped at turn-end.
+        // 为子代理创建邮箱系统，用于子代理向父代理发送结构化消息
+        // 这是一个精巧的设计——子代理完成工作后需要向父代理报告，但不能直接写父代理的状态。
+        // 于是通过邮箱（Mailbox）传递消息：
+        // - 子代理写入 mailbox（sender 端）
+        // - drainer 任务从 receiver 端读取，转为 Event::SubAgentMailbox 事件
+        // - UI 收到事件后在对应位置渲染子代理结果卡片
+        // 消息还区分了"尽力而为"（best-effort）和"必须送达"两种——比如子代理的进度更新属于 
+        // best-effort，丢了无所谓；但最终结果必须送达。
         let mailbox_for_runtime = if subagents_available {
+            // 子令牌，父被取消时子也取消
             let cancel_token = self.cancel_token.child_token();
             let (mailbox, mut receiver) = Mailbox::new(cancel_token.clone());
             let tx_event_clone = self.tx_event.clone();
+            // spawn 一个 drainer 任务，持续接收子代理消息并转为 UI 事件
             spawn_supervised(
                 "subagent-mailbox-drainer",
                 std::panic::Location::caller(),
@@ -2655,6 +2668,7 @@ impl Engine {
                             seq: envelope.seq,
                             message: envelope.message,
                         };
+                        // 对"尽力而为"类型消息做频率限制
                         if let Event::SubAgentMailbox { message, .. } = &event
                             && subagent_mailbox_message_is_best_effort(message)
                         {
@@ -2663,14 +2677,16 @@ impl Engine {
                                 message,
                                 Instant::now(),
                             ) {
-                                continue;
+                                continue;  // 频率过高，丢弃
                             }
+                            // try_send：如果通道满了就丢弃（不阻塞）
                             match tx_event_clone.try_send(event) {
                                 Ok(()) => continue,
                                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => continue,
                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                             }
                         }
+                        // 非 best_effort 消息，用 send（会等待）
                         if tx_event_clone.send(event).await.is_err() {
                             break;
                         }
@@ -2682,6 +2698,8 @@ impl Engine {
             None
         };
 
+        // MCP 连接池用于管理与外部 MCP 服务器的连接。这里获取一个可克隆的引用，
+        // 后续传给子代理运行时，让子代理也能使用 MCP 工具。
         let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
             self.ensure_mcp_pool().await.ok()
         } else {
@@ -2689,36 +2707,37 @@ impl Engine {
         };
 
         let mut tool_registry = if subagents_available {
+            // 创建子代理运行时配置
             let runtime = if let Some(client) = self.deepseek_client.clone() {
                 let runtime_allow_shell =
                     self.session.allow_shell && !matches!(input_policy.mode, AppMode::Plan);
                 let runtime_shell_policy =
                     shell_policy_for_mode(input_policy.mode, runtime_allow_shell);
                 let mut rt = SubAgentRuntime::new(
-                    client,
-                    self.session.model.clone(),
-                    tool_context.clone(),
-                    runtime_allow_shell,
-                    Some(self.tx_event.clone()),
-                    Arc::clone(&self.subagent_manager),
+                    client,                               // API 客户端
+                    self.session.model.clone(),           // 模型
+                    tool_context.clone(),                 // 工具上下文
+                    runtime_allow_shell,                  // 是否允许 shell
+                    Some(self.tx_event.clone()), // 事件发送通道
+                    Arc::clone(&self.subagent_manager), // 子代理管理器
                 )
-                .with_role_models(self.subagent_role_models())
-                .with_api_config(self.api_config.clone())
-                .with_fleet_roster(self.config.fleet_roster.clone())
-                .with_auto_model(self.session.auto_model)
-                .with_reasoning_effort(
+                .with_role_models(self.subagent_role_models())   // 角色模型映射
+                .with_api_config(self.api_config.clone())        // API 配置
+                .with_fleet_roster(self.config.fleet_roster.clone())    // Fleet 名册
+                .with_auto_model(self.session.auto_model)        // 自动模型选择
+                .with_reasoning_effort(                                          // 推理深度
                     self.session.reasoning_effort.clone(),
                     self.session.reasoning_effort_auto,
                 )
-                .with_agent_tool_surface_options(
+                .with_agent_tool_surface_options(                                // 工具表面选项
                     self.agent_tool_surface_options(runtime_shell_policy),
                 )
-                .with_max_spawn_depth(self.config.max_spawn_depth)
-                .with_step_api_timeout(self.config.subagent_api_timeout)
-                .with_speech_output_dir(self.config.speech_output_dir.clone())
-                .with_mcp_pool(mcp_pool.clone())
-                .with_todos(self.config.todos.clone())
-                .with_parent_completion_tx(self.tx_subagent_completion.clone())
+                .with_max_spawn_depth(self.config.max_spawn_depth)  // 最大嵌套深度
+                .with_step_api_timeout(self.config.subagent_api_timeout) // API 超时
+                .with_speech_output_dir(self.config.speech_output_dir.clone())  // 语音输出
+                .with_mcp_pool(mcp_pool.clone())   // MCP 连接池
+                .with_todos(self.config.todos.clone())  // Todo 列表
+                .with_parent_completion_tx(self.tx_subagent_completion.clone())   // 父完成通知
                 .with_parent_mode(input_policy.mode);
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(SubAgentType::Plan);
@@ -2740,6 +2759,8 @@ impl Engine {
             } else {
                 None
             };
+            
+            // 用运行时构建带子代理工具的注册表
             if let Some(subagent_runtime) = runtime {
                 Some(
                     builder
@@ -2747,38 +2768,51 @@ impl Engine {
                         .build(tool_context),
                 )
             } else {
+                // 降级策略：如果 API 客户端不可用（比如未配置），工具注册表仍然会构建，只是不包含子代理工具——引擎不会因为缺少子代理功能就崩溃。
+                // 没有 API 客户端则降级为基础工具集
                 tracing::warn!(
                     "Sub-agents enabled but no API client available, falling back to basic tool set"
                 );
                 Some(builder.build(tool_context))
             }
         } else {
+            // 子代理禁用时只构建基础工具集
             Some(builder.build(tool_context))
         };
 
-        // Load plugin tools from the user's tools directory and apply any
-        // config.toml overrides. Explicit overrides win over auto-discovered
-        // scripts with the same tool name.
+        // 插件工具：用户可以把自己写的脚本放在 ~/.codewhale/tools/ 目录下，引擎会自动发现并注册。
+        // 如果 config.toml 中有同名工具的手动配置，手动配置优先。
+        // - 工具目录（Tool Catalog）：这是最终发送给 AI 模型的工具列表。
+        //   不同的模型有不同的工具承载能力（tool_surface_budget），有的模型只能承载 50 个工具定义，有的能承载 200 个。
+        // - 延迟加载（defer_loading）：对于大型工具（如某些 MCP 工具），可以先只发工具名和描述，
+        //   等 AI 真正调用时再加载完整定义。但插件工具是用户明确配置的，不延迟。
+        // - 门控过滤（filter_tool_catalog_for_gates）：根据 allowed_tools（白名单）和 disallowed_tools（黑名单）筛掉不该出现的工具。
+        // - 这里还保存了 tool_catalog_for_event 和 base_url_for_event，在 turn 结束时会随 TurnComplete 事件一起发出。
         let mut plugin_tool_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         if let Some(ref mut tool_registry) = tool_registry {
             plugin_tool_names = configure_plugin_tools(tool_registry, self.config.tools.as_ref());
         }
 
+        // 获取 MCP 工具列表
         let mcp_tools = if self.config.features.enabled(Feature::Mcp) {
             self.mcp_tools().await
         } else {
             Vec::new()
         };
+
         let tools = tool_registry.as_ref().map(|registry| {
+            // 解析模型的工具能力配置
             let capability = crate::model_profile::resolved_capability_profile(
                 self.api_config.api_provider(),
                 &self.config.model,
             );
+            // 如果启用 MCP，强制加载 start_mcp_server 工具
             let mut always_load = self.config.tools_always_load.clone();
             if self.config.features.enabled(Feature::Mcp) {
                 always_load.insert("start_mcp_server".to_string());
             }
+            // 构建工具目录
             let mut catalog = build_model_tool_catalog_with_surface(
                 registry.to_api_tools_with_cache(true),
                 mcp_tools,
@@ -2786,11 +2820,13 @@ impl Engine {
                 &always_load,
                 capability.tool_surface_budget,
             );
+            // plugin_tool_names中的插件工具标记为不延迟加载
             for tool in &mut catalog {
                 if plugin_tool_names.contains(&tool.name) {
                     tool.defer_loading = Some(false);
                 }
             }
+            // 根据白名单/黑名单过滤工具
             filter_tool_catalog_for_gates(
                 &mut catalog,
                 self.config.allowed_tools.as_deref(),
@@ -2798,6 +2834,7 @@ impl Engine {
             );
             catalog
         });
+        // 保存工具目录副本，用于 TurnComplete 事件
         let tool_catalog_for_event = tools.clone();
         let base_url_for_event = self
             .deepseek_client
@@ -2808,6 +2845,13 @@ impl Engine {
         // failed TurnComplete instead of unwinding through `engine.run()` and
         // killing the whole engine-event-loop task — which left the UI stuck
         // on "working" forever with the engine silently dead (#2583, #1269).
+        // 主 turn 循环。捕获 panic，防止引擎事件循环崩溃
+        // 这是函数的核心——handle_deepseek_turn 才是真正执行 AI 对话循环的地方（发送 prompt、
+        // 接收回复、执行工具调用、再发送结果...如此循环直到 AI 完成或达到 max_steps）。
+        // 但更重要的是外层的 catch_unwind。在 Rust 中，panic 会展开（unwind）调用栈。如果不加保护，
+        // 引擎内部的 panic 会直接杀死整个事件循环任务，导致 UI 卡死。 #2583 和 #1269 就是这样的 bug。
+        // 现在用 AssertUnwindSafe + catch_unwind 包裹后，即使内部 panic，引擎也能优雅地返回一个 
+        // TurnOutcomeStatus::Failed，并保存崩溃报告。
         use futures_util::FutureExt as _;
         let turn_result = std::panic::AssertUnwindSafe(self.handle_deepseek_turn(
             &mut turn,
@@ -2835,13 +2879,21 @@ impl Engine {
             }
         };
 
-        // Update session usage
+        // token 用量追踪——turn.usage 包含了本轮消耗的 input_tokens 和 output_tokens。累加到 total_usage 后，
+        // UI 就能显示"本次会话已花费 $X.XX"。goal 用量用于跟踪 /goal 任务是否超出 token 预算。
+        // 把本轮 token 用量累加到会话总用量
         self.session.total_usage.add(&turn.usage);
+        // 记录 goal 的用量
         self.record_goal_usage_for_turn(&turn.usage, turn.elapsed());
 
-        // Emit turn complete event — after all post-turn bookkeeping so
-        // the terminal is immediately responsive when the UI receives it.
+        // TurnComplete 是整个函数最重要的输出事件。UI 收到它后会：
+        // 1. 停止加载动画 
+        // 2. 显示 token 用量和费用 
+        // 3. 如果失败，显示错误信息 
+        // 4. 重新启用输入框
+        // 先发送 goal 更新事件
         self.emit_goal_updated().await;
+        // 发送 TurnComplete 事件
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -2857,6 +2909,9 @@ impl Engine {
         // emitted, so the UI is unblocked and the user can type / select /
         // paste immediately (#234). The git work proceeds on the blocking
         // pool without forcing the engine loop to await it.
+        // 与事前快照不同，事后快照使用 spawn_blocking_supervised（注意没有 .await）——fire-and-forget。
+        // 因为此时 TurnComplete 已经发出，UI 已经解除了阻塞，没必要让用户等待快照完成。
+        // 如果快照失败，有 supervised 任务管理器会记录日志。
         if self.config.snapshots_enabled {
             // `snapshot_prompt_post` was cloned from `content` above,
             // before `content` was moved into the session messages.
@@ -2873,31 +2928,35 @@ impl Engine {
             });
         }
 
-        // ── Cross-turn goal continuation ───────────────────────────────────
-        // If the turn completed successfully and a goal is still Active (and
-        // under any optional budget), re-dispatch a synthetic continuation
-        // message back into the engine's own op channel. This makes `/goal` a
-        // persistent loop that runs until the model self-reports complete or
-        // blocked, the user pauses/clears, or an optional budget is exhausted.
-        // There is no continuation cap. A Failed or Interrupted turn does NOT
-        // continue — Esc cancels the loop by interrupting the turn.
+        // ── 跨轮次 Goal 延续 ───────────────────────────────────
+        //  如果本轮成功完成，且 goal 仍然是 Active 状态(且未超出预算), 则自动发起下一轮。
+        // 这就是 Goal 自动循环机制。当用户通过 /goal "重构整个项目" 设置了一个目标后：
+        // 1. 第一轮执行完成
+        // 2. 引擎检查 goal 是否还是 Active（用户没暂停）+ 是否在预算内
+        // 3. 如果条件满足，自动通过 tx_op 通道发送一个新的 Op::SendMessage
+        // 4. 引擎的 op 处理循环收到后，会再次调用 handle_send_message
+        // 5. 如此循环直到 AI 自我报告完成、用户暂停、或预算用完
+        // 注意几个细节： 
+        // - goal_objective: None：不重复传目标，避免无限嵌套
+        // - provenance: UserInputProvenance::Runtime：标记为运行时发起，这样 UI 可以区分"用户手动发的"和"自动继续的"
+        // - "Failed 或 Interrupted 的 turn 不会继续"——用户按 Esc 中断后，goal 循环就停了
         if status == TurnOutcomeStatus::Completed
             && let Some(continuation) = self.goal_continuation_if_active()
         {
-            // Re-dispatch with the same route/mode/approval settings as
-            // the prior turn. The non-Copy values were moved into
+            // 使用与本轮相同的route/mode/approval配置重新派发消息
+            // The non-Copy values were moved into
             // `self.config` / `self.session` earlier in this function, so
             // we clone them back out here.
             let _ = self
                 .tx_op
                 .send(Op::SendMessage {
-                    content: continuation,
-                    mode,
+                    content: continuation,   // 继续提示（如"继续完成目标"）
+                    mode,                    // 沿用相同模式
                     provider,
                     model: self.session.model.clone(),
-                    goal_objective: None,
+                    goal_objective: None,    // ← 注意：传 None，防止无限嵌套
                     goal_token_budget: None,
-                    goal_status: GoalStatus::Active,
+                    goal_status: GoalStatus::Active,  // ← 保持 Active
                     reasoning_effort: self.session.reasoning_effort.clone(),
                     reasoning_effort_auto,
                     auto_model,
@@ -2911,7 +2970,7 @@ impl Engine {
                     dynamic_tools: dynamic_tools.clone(),
                     hook_executor: self.config.hook_executor.clone(),
                     verbosity: self.config.verbosity.clone(),
-                    provenance: UserInputProvenance::Runtime,
+                    provenance: UserInputProvenance::Runtime,    // ← 标记为"运行时发起"
                 })
                 .await;
         }
@@ -3714,7 +3773,7 @@ fn normalized_goal_objective(value: Option<&str>) -> Option<String> {
 }
 
 /// 把主进程的目标信息同步到共享状态
-/// #argument
+/// # Arguments
 /// * `goal_state` 共享的目标状态（多线程安全）
 /// * `objective` 目标描述文本
 /// * `token_budget` token 预算上限

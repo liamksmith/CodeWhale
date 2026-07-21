@@ -140,7 +140,10 @@ impl TurnAuthority {
     }
 }
 
-/// 根据输入来源收窄权限
+/// 把所有零散的输入参数"熔炼"成一个统一的 InputPolicy 对象。这个策略决定了本轮对话中：
+/// - 工具是否需要审批
+/// - shell 命令是否受限制
+/// - 当前处于什么模式
 #[must_use]
 pub(crate) fn effective_input_policy(
     provenance: UserInputProvenance,

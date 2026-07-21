@@ -152,21 +152,75 @@ pub struct ToolCaller {
 }
 
 /// Tool definition exposed to the model.
+/// 模型拿到工具后如何使用,整个流程大致如下：
+/// 第一步：系统将工具列表“注入”到模型的上下文中,在每次调用模型 API 时，系统会将所有可用的 Tool 定义
+/// （序列化为 JSON）作为请求的一部分发送给模型。模型看到的是一份“我可以使用哪些工具以及如何使用它们”的说明书。
+/// 第二步：模型根据用户输入决定是否调用工具模型收到用户消息后，会结合：用户的问题,对话历史,每个工具的 
+/// name 和 description来决定：是否需要调用工具？调用哪个工具？
+/// 例如，用户问“北京今天天气怎么样？”，模型看到 get_weather 的描述是“获取指定城市的当前天气信息”，就会决定
+/// 调用这个工具。
+/// 第三步：模型生成工具调用请求，如果模型决定调用工具，它不会直接执行代码，而是生成一个结构化的工具调用请求，包含：
+/// name：要调用的工具名称（如 "get_weather"）
+/// arguments：根据 input_schema 生成的参数 JSON（如 {"city": "北京"}）
+/// 这个请求以特殊格式（如 Anthropic 的 tool_use content block）返回给客户端。
+/// 第四步：客户端执行工具并返回结果
+/// 客户端（这里是 codewhale）接收到模型返回的工具调用请求后：
+/// 1.根据 name 找到对应的本地实现函数
+/// 2.用 arguments 作为参数调用该函数
+/// 3.获取执行结果
+/// 4.将结果作为新的消息内容（tool_result）再次发送给模型
+/// 第五步：模型基于工具结果生成最终回复
+/// 模型收到工具执行结果后，结合结果内容生成最终的自然语言回复，返回给用户。
+/// 成员中的name、description、input_schema 是模型理解和使用工具的“三要素”，其余字段主要是系统层面的控制与优化参数。
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Tool {
+    /// 工具的类型标识符。在 Anthropic 的 Claude API 中，通常固定为 "function"，表示这是一个函数调用类型的工具。
+    /// 为什么是 Option：有些 API 版本或场景下不需要显式指定，可以由系统推断。
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
+    /// 必填，工具的唯一名称。模型在调用工具时，会通过这个名称来指定要调用哪个工具。
+    /// 示例："get_weather"、"search_files"、"execute_python"
     pub name: String,
+    /// 必填,工具功能的自然语言描述。这是模型理解工具用途的核心依据。
+    /// 模型会根据这个描述来判断“当前用户的问题是否适合用这个工具来解决”。
+    /// 示例："获取指定城市的当前天气信息"
     pub description: String,
+    /// 必填,工具参数的 JSON Schema 定义。它描述了调用该工具时需要传入哪些参数、各参数的类型、是否必填、取值范围等。
+    /// 作用：模型会根据这个 Schema 来生成符合格式的调用参数；系统也会用它来校验模型生成的参数是否合法。
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "city": { "type": "string", "description": "城市名称" },
+    ///     "unit": { "type": "string", "enum": ["celsius", "fahrenheit"] }
+    ///   },
+    ///   "required": ["city"]
+    /// }
+    /// ```
     pub input_schema: serde_json::Value,
+    /// 允许调用该工具的“调用者”白名单。可用于权限控制，例如只允许某些特定角色或子系统调用。
+    /// 在上下文中可能用于区分工具是由用户显式触发还是由模型自动调用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_callers: Option<Vec<String>>,
+    /// 是否延迟加载该工具。某些工具可能资源消耗较大（如加载大型模型或数据文件），可以标记为延迟加载，直到真正被调用时才初始化。
+    /// 典型场景：工具列表中有 20 个工具，但只有其中 1-2 个会被实际使用，延迟加载可以节省启动时间和内存。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
+    /// 工具的调用示例，通常是一个或多个合法的参数 JSON 对象。
+    /// 帮助模型（尤其是小模型）更好地理解应该如何构造参数，相当于 few-shot 示例。
+    /// 示例：
+    /// ```json
+    /// [{"city": "北京", "unit": "celsius"}, {"city": "纽约"}]
+    /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_examples: Option<Vec<serde_json::Value>>,
+    /// 是否启用严格模式。在严格模式下，模型生成的参数必须完全符合 input_schema 的定义，不能
+    /// 有多余字段或类型不匹配。
+    /// 作用：提高工具调用的可靠性，防止模型“自由发挥”生成不合规的参数。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    /// 缓存控制策略。用于指示 API 是否缓存该工具定义，以节省重复传输的带宽和 token 消耗。
+    /// 背景：在长对话或多轮交互中，工具定义会随每次请求发送给模型，使用缓存可以显著降低开销。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }

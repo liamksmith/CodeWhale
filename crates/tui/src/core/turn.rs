@@ -17,7 +17,7 @@ use crate::snapshot::SnapshotRepo;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// 单次轮次的上下文（用户消息 + AI 响应）。
+/// 单次轮次的上下文（1轮次 = 用户消息 + AI 响应）。
 #[derive(Debug)]
 pub struct TurnContext {
     /// 轮次 ID

@@ -1,9 +1,19 @@
-//! Deferred tool catalog and built-in advanced tool helpers.
+//! 延迟工具目录及内置高级工具辅助模块。
 //!
-//! The streaming turn loop owns when tools are offered or executed. This module
-//! owns the catalog-level policy around deferred loading, tool search, missing
-//! tool suggestions, and the small set of built-in advanced tools that are not
-//! registered by the normal runtime tool registry.
+//! 流式交互轮次循环负责控制工具的提供与执行时机。 本模块
+//! 负责管理目录级别的策略，包括延迟加载、工具搜索、缺失工具建议，
+//! 以及少量未通过常规运行时工具注册表注册的内置高级工具。
+//! 
+//! 该文件是 CodeWhale 工具目录系统的核心，负责以下职责：
+//! 
+//! 1. 定义哪些工具默认激活（DEFAULT_ACTIVE_NATIVE_TOOLS）
+//! 2. 实现延迟加载策略——减少每轮发送给 LLM 的 tool schema 体积，保护 KV 前缀缓存
+//! 3. 注入合成/高级工具（code_execution、js_execution、tool_search）
+//! 4. 工具搜索与发现——BM25 和正则两种匹配引擎
+//! 5. 模糊建议——基于编辑距离的工具名纠错
+//! 6. 一致性校验——cross-check catalog 与 ToolRegistry
+//! 7. 延迟工具水合——首次使用延迟工具时的 schema 反馈
+
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -11,14 +21,14 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::mcp::McpPool;
-use crate::model_profile::ToolSurfaceBudget;
-use crate::models::Tool;
+use crate::mcp::McpPool;                         // 判断一个工具名是否属于 MCP 工具（mcp__* 前缀）
+use crate::model_profile::ToolSurfaceBudget;     // 紧凑模式下进一步缩减工具表面
+use crate::models::Tool;                         // 核心类型
 use crate::tools::spec::{ToolError, ToolResult, optional_str, optional_u64, required_str};
 use crate::tui::app::AppMode;
 
-use crate::dependencies::ExternalTool;
-use crate::regex_cache::compile_user_regex;
+use crate::dependencies::ExternalTool;           // Python/Node 解释器探测
+use crate::regex_cache::compile_user_regex;      // 将用户正则查询编译为 regex::Regex
 
 pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
@@ -32,6 +42,7 @@ const LEGACY_TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
 const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 100;
 
+/// 判断一个工具名是否属于工具搜索家族。包含新旧三个名字，确保遗留调用不会中断。
 pub(super) fn is_tool_search_tool(name: &str) -> bool {
     matches!(
         name,
@@ -39,6 +50,8 @@ pub(super) fn is_tool_search_tool(name: &str) -> bool {
     )
 }
 
+/// 28 个原生核心工具的权威列表。这些工具在所有模式下默认为"活跃"（不被延迟加载）
+/// 列表的顺序无关——它仅用于成员测试（通过 HashSet 加速）。
 pub(super) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     "agent",
     "apply_patch",
@@ -136,13 +149,11 @@ fn cached_fallbacks() -> &'static [CachedFallback] {
     })
 }
 
-/// Membership index over [`DEFAULT_ACTIVE_NATIVE_TOOLS`], built once for the
-/// process lifetime. The array stays the source of truth for *ordered*
-/// iteration (see [`tool_catalog_consistency_issues`] and
-/// `engine::default_active_native_tool_names`); this set only accelerates the
-/// hot membership check in [`should_default_defer_tool`], which runs once per
-/// catalog tool on every catalog rebuild (i.e. per turn) — an O(n·m) linear
-/// scan over the array collapses to O(1) hashed lookups.
+/// 基于 [`DEFAULT_ACTIVE_NATIVE_TOOLS`] 的成员索引，在进程生命周期内构建一次。
+/// 数组保持为*有序*迭代的真实来源（参见 [`tool_catalog_consistency_issues`] 和
+/// `engine::default_active_native_tool_names`）；该集合仅用于加速 [`should_default_defer_tool`]
+/// 中的热点成员检查，该检查在每次目录重建时（即每轮交互）对每个目录工具执行一次 ——
+/// 将原本对数组的 O(n·m) 线性扫描降为 O(1) 的哈希查找。
 static DEFAULT_ACTIVE_NATIVE_TOOLS_SET: std::sync::OnceLock<HashSet<&'static str>> =
     std::sync::OnceLock::new();
 
@@ -151,6 +162,10 @@ fn default_active_native_tools_set() -> &'static HashSet<&'static str> {
         .get_or_init(|| DEFAULT_ACTIVE_NATIVE_TOOLS.iter().copied().collect())
 }
 
+/// 判断一个工具是否应该默认延迟加载。
+/// - 在参数always_load集合中工具的总是不会延迟加载。
+/// - 搜索工具总是不会被延迟加载。
+/// - 在DEFAULT_ACTIVE_NATIVE_TOOLS中的总是不会延迟加载
 pub(super) fn should_default_defer_tool(name: &str, always_load: &HashSet<String>) -> bool {
     if always_load.contains(name) {
         return false;
@@ -160,18 +175,20 @@ pub(super) fn should_default_defer_tool(name: &str, always_load: &HashSet<String
         return false;
     }
 
-    // Membership-only test (no ordering dependency): the side set built from
-    // DEFAULT_ACTIVE_NATIVE_TOOLS returns identical hit/miss results as the
-    // former `.iter().any(...)` linear scan.
+    // 仅成员资格测试（无顺序依赖）：基于 DEFAULT_ACTIVE_NATIVE_TOOLS 构建的辅助集合，
+    // 其命中/未命中结果与原先的 `.iter().any(...)` 线性扫描完全一致。
     !default_active_native_tools_set().contains(name)
 }
 
+/// 遍历原生工具列表，为每个工具设置 defer_loading 标记。
 pub(super) fn apply_native_tool_deferral(catalog: &mut [Tool], always_load: &HashSet<String>) {
     for tool in catalog {
         tool.defer_loading = Some(should_default_defer_tool(&tool.name, always_load));
     }
 }
 
+/// MCP 工具的延迟策略不同。5 个"MCP 元操作"工具（列出资源、读取资源、获取提示）始终保持加载——它们
+/// 是发现其他 MCP 工具的入口。其他 MCP 工具默认延迟。
 fn should_keep_mcp_tool_loaded(name: &str) -> bool {
     matches!(
         name,
@@ -183,6 +200,7 @@ fn should_keep_mcp_tool_loaded(name: &str) -> bool {
     )
 }
 
+/// MCP 工具延迟的特殊规则：Yolo 模式下所有 MCP 工具都加载（不延迟），Agent/Plan 模式下仅保留元操作工具。
 pub(super) fn apply_mcp_tool_deferral(
     catalog: &mut [Tool],
     mode: AppMode,
@@ -198,15 +216,12 @@ pub(super) fn apply_mcp_tool_deferral(
     }
 }
 
-/// Build the model tool catalog from native and MCP tool lists.
+/// 从原生工具列表和 MCP 工具列表构建模型工具目录。
 ///
-/// **Catalog-head stability invariant.** The head of the catalog (all
-/// non-deferred tools) must remain byte-identical across mode toggles
-/// (Plan ↔ Agent ↔ YOLO) for tools that are common to both modes.
-/// Deferred tool activations append to the tail and never reorder the
-/// head. This invariant is critical for DeepSeek's KV prefix cache:
-/// the tools array is part of the immutable prefix, and any byte-level
-/// change in the head forces a full re-prefill on the next turn.
+/// **目录头部稳定性不变量。** 目录的头部（所有非延迟工具）在模式切换（Plan ↔ Agent ↔ YOLO）时，
+/// 对于两种模式共用的工具，必须保持字节级别完全一致。
+/// 延迟工具激活时追加到尾部，且绝不会重排头部。此不变量对 DeepSeek 的 KV 前缀缓存至关重要：
+/// 工具数组是不可变前缀的一部分，头部任何字节级别的变化都会导致下一轮交互触发完整的重预填充。
 #[cfg(test)]
 pub(super) fn build_model_tool_catalog(
     native_tools: Vec<Tool>,
@@ -232,20 +247,23 @@ pub(super) fn build_model_tool_catalog_with_surface(
 ) -> Vec<Tool> {
     apply_native_tool_deferral(&mut native_tools, always_load);
     apply_mcp_tool_deferral(&mut mcp_tools, mode, always_load);
+    // 如紧凑模式，进一步隐藏重工具
     apply_tool_surface_budget(&mut native_tools, surface_budget, always_load);
     apply_tool_surface_budget(&mut mcp_tools, surface_budget, always_load);
-    // Sort each partition by name for prefix-cache stability (#263). The
-    // upstream `to_api_tools()` already sorts the registry's HashMap output;
-    // this catalog is built from caller-supplied Vecs which the test harness
-    // and (future) caller refactors may not pre-sort. Built-ins stay as a
-    // contiguous prefix ahead of MCP tools so adding/removing an MCP tool
-    // never shifts a built-in's position.
+    // 关键：按名称对每个分区进行排序，以保证前缀缓存的稳定性（#263）。
+    // 上游的 `to_api_tools()` 已经对注册表的 HashMap 输出进行了排序；
+    // 但此目录是由调用者提供的 Vec 构建的，测试工具和（未来的）调用者重构可能不会预先排序。
+    // 内置工具作为连续前缀保持在 MCP 工具之前，这样添加或移除 MCP 工具永远不会改变内置工具的位置。
     native_tools.sort_by(|a, b| a.name.cmp(&b.name));
     mcp_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    // 原生工具在前（连续前缀），MCP 在尾。这样增删 MCP 不会 shift 原生工具的位置。
     native_tools.extend(mcp_tools);
     native_tools
 }
 
+/// 仅 ToolSurfaceBudget::Compact 模式下生效。 将catalog中5个"重型"工具也强制延迟加载：
+/// agent、run_tests、run_verifiers、task_create、web_search。
+/// always_load 中的工具不受影响。
 fn apply_tool_surface_budget(
     catalog: &mut [Tool],
     surface_budget: ToolSurfaceBudget,
@@ -291,7 +309,10 @@ pub(super) fn ensure_advanced_tooling(
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "code": { "type": "string", "description": "Python source code to execute." }
+                    "code": { 
+                        "type": "string", 
+                        "description": "Python source code to execute." 
+                    }
                 },
                 "required": ["code"]
             }),
@@ -433,6 +454,9 @@ pub(super) fn ensure_advanced_tooling(
     }
 }
 
+/// 根据输入参数创建初始化活跃工具列表
+/// 1. 非延迟工具 + tool_search 默认为活跃。
+/// 2. 如果所有工具都被延迟了（极端情况），至少激活第一个工具，确保模型至少有工具可用。
 pub(super) fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
     let mut active = HashSet::new();
     for tool in catalog {
@@ -449,12 +473,13 @@ pub(super) fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
     active
 }
 
+// 遍历catalog，寻找名字在active集合中的工具。
+// 并将其中始终加载的工具放前半段，将延迟加载的工具排后半段，合并成一个Vec返回。
 fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
-    // Two-pass for prefix-cache stability (#263). Always-loaded tools come
-    // first in their stable catalog order; tools that started life deferred
-    // and were activated mid-conversation by ToolSearch get appended at the
-    // tail. Otherwise activating a deferred tool shifts every later tool's
-    // byte offset and busts the cached prefix from that point onwards.
+    // 采用两遍遍历以保证前缀缓存的稳定性（#263）。
+    // 始终加载的工具按其稳定的目录顺序排在前面；而最初为延迟状态、在对话中途通过 ToolSearch 激活的工具，
+    // 则追加到尾部。否则，激活一个延迟工具会导致其后所有工具的字节偏移量发生变化，
+    // 从而从该位置起破坏缓存的的前缀。
     let catalog_len = catalog.len();
     let mut head: Vec<Tool> = Vec::with_capacity(catalog_len);
     let mut tail: Vec<Tool> = Vec::with_capacity(catalog_len);
@@ -463,23 +488,25 @@ fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> 
             continue;
         }
         if tool.defer_loading.unwrap_or(false) {
-            tail.push(tool.clone());
+            tail.push(tool.clone());    // 中途被 tool_search 激活的延迟工具，追加到末尾。
         } else {
-            head.push(tool.clone());
+            head.push(tool.clone());    // 始终加载（非延迟）的工具，按目录原始顺序排列。
         }
     }
     head.extend(tail);
     head
 }
 
+/// 当 force_update_plan 为 true 时（引擎检测到明显的"做计划"请求），
+/// 第一轮仅给模型 update_plan 一个工具——缩小工具表面，让模型专注规划。
+/// DeepSeek reasoning 模型不支持显式 tool_choice 强制，所以用这种方法变通实现。
 pub(super) fn active_tools_for_step(
     catalog: &[Tool],
     active: &HashSet<String>,
     force_update_plan: bool,
 ) -> Vec<Tool> {
-    // DeepSeek reasoning models reject explicit named tool_choice forcing here,
-    // so for obvious quick-plan asks we narrow the first-step tool surface to
-    // update_plan instead.
+    // DeepSeek reasoning 模型不支持显式 tool_choice 强制，所以用这种方法变通实现。
+    // 对于明显的快速规划请求，我们将第一步的工具范围收窄为仅 update_plan。
     if force_update_plan {
         let forced: Vec<_> = catalog
             .iter()
@@ -494,6 +521,7 @@ pub(super) fn active_tools_for_step(
     active_tool_list_from_catalog(catalog, active)
 }
 
+/// 构造搜索用的 haystack：工具名 + 描述 + JSON schema 全部转小写后用换行拼接。
 fn tool_search_haystack(tool: &Tool) -> String {
     format!(
         "{}\n{}\n{}",
@@ -503,10 +531,13 @@ fn tool_search_haystack(tool: &Tool) -> String {
     )
 }
 
+/// 简单的线性扫描，检查工具名是否已在目录中。
 fn catalog_contains_tool(catalog: &[Tool], name: &str) -> bool {
     catalog.iter().any(|tool| tool.name == name)
 }
 
+/// 正则搜索不可用的核心操作工具（fallback 列表）。
+/// 先排除已在目录(catalog)中的，再用 regex 匹配 haystack。
 fn unavailable_core_action_tools_with_regex(
     catalog: &[Tool],
     query: &str,
@@ -526,6 +557,11 @@ fn unavailable_core_action_tools_with_regex(
         .collect())
 }
 
+/// BM25-like 搜索不可用的核心操作工具。简化版 BM25：
+/// 
+/// - 每个 term 在 haystack 中匹配得 1 分
+/// - 每个 term 在工具名中匹配得 2 分（名匹配权重更高）
+/// - 按 score 降序，得分相同按名字字母序
 fn unavailable_core_action_tools_with_bm25_like(
     catalog: &[Tool],
     query: &str,
@@ -571,6 +607,7 @@ fn unavailable_core_action_tools_with_bm25_like(
         .collect()
 }
 
+// 在目录(catalog)中按正则搜索工具。
 fn discover_tools_with_regex(
     catalog: &[Tool],
     query: &str,
@@ -581,20 +618,22 @@ fn discover_tools_with_regex(
 
     let mut matches = Vec::new();
     for tool in catalog {
-        if is_tool_search_tool(&tool.name) {
+        if is_tool_search_tool(&tool.name) {    // 跳过 tool_search 自身（不自引）
             continue;
         }
-        let hay = tool_search_haystack(tool);
+        let hay = tool_search_haystack(tool);   // 匹配 tool_search_haystack
         if regex.is_match(&hay) {
             matches.push(tool.name.clone());
         }
-        if matches.len() >= max_results {
+        if matches.len() >= max_results {    // max_results 上限时提前 break
             break;
         }
     }
     Ok(matches)
 }
 
+/// 在目录中按 BM25-like 搜索工具。
+/// 跳过 tool_search 自身。
 fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {
     let terms: Vec<String> = query
         .split_whitespace()
@@ -703,12 +742,48 @@ fn suggest_tool_names(catalog: &[Tool], requested: &str, limit: usize) -> Vec<St
         .collect()
 }
 
+/// 这个函数回答一个问题："这个工具是不是由引擎在目录构建时合成出来的，而不是通过标准 ToolRegistry
+/// 注册的？"
+/// - 注册工具 通过ToolRegistry::register()正式注册，有handler有schema，是一等公民。
+/// - 合成工具 在目录构建时动态构造，行为由特殊路径处理。
+/// 
+/// 它返回 true 的三类工具正好对应三种不经过 ToolRegistry::register() 的注入路径：
+/// |──────────────────────────────┬──────────────────────────────┬──────────────────────────────┐
+/// │ 检查条件                      │ 涵盖的工具                    │ 注入来源                     │ 
+/// ├──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤ 
+/// │ is_tool_search_tool(name)    │ tool_search、`toolsearch     │ ensure_advanced_tooling      │ 
+/// │                              │ tool_regex、tool_search_to   │ 第312-343行内联构造           │
+/// │                              │ ol_bm25`                     │                              │ 
+/// ├──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤
+/// │ `matches!(name,              │ code_execution、`js_execut   │ ensure_advanced_tooling      │  
+/// │ CODE_EXECUTION_TOOL_NAME |   │ ion`                         │ 第272-310行内联构造或从       │ 
+/// │ JS_EXECUTION_TOOL_NAME)`     │                              │ `js_execution_tool_definitio │ 
+/// │                              │                              │ n()` 获取                    │ 
+/// ├──────────────────────────────┼──────────────────────────────┼──────────────────────────────┤ 
+/// │ McpPool::is_mcp_tool(name)   │ 所有 MCP 工具（mcp__*         │ McpPool                      │ 
+/// │                              │ 前缀）                        │ 在目录构建时动态注入，handle  │ 
+/// │                              │                              │ r 在 MCP 客户端侧            │ 
+/// └──────────────────────────────┴──────────────────────────────┴──────────────────────────────┘ 
+/// 它在整个文件中的唯一调用点位于 tool_catalog_consistency_issues 第728行
+/// ``` rust
+/// for tool in catalog { 
+///   if is_synthetic_catalog_tool(&tool.name) {  
+///     continue;   // 跳过——在 ToolRegistry 中，无需交叉检查
+///   }
+/// ...
+/// }
+/// ```
+/// 这里的逻辑是： 合成工具天然不在 ToolRegistry 中，如果对它们做 "catalog 里有没有 handler"
+/// 的检查，会100%误报。跳过它们，只对真正走注册流程的工具做一致性校验。 
 fn is_synthetic_catalog_tool(name: &str) -> bool {
     is_tool_search_tool(name)
         || matches!(name, CODE_EXECUTION_TOOL_NAME | JS_EXECUTION_TOOL_NAME)
         || McpPool::is_mcp_tool(name)
 }
 
+/// 在每次构建工具目录后运行，检测目录（模型看到的工具列表）与注册表（实际有处理函数的工具）之间的
+/// 交叉不一致，确保模型不会被暴露一个不存在的工具，也确保有 handler的核心工具不会意外从模型视野中消失。
+/// 返回值： 字符串列表，每个元素是一条一致性问题描述。空列表表示一切正常。
 pub(super) fn tool_catalog_consistency_issues(
     catalog: &[Tool],
     registry: &crate::tools::ToolRegistry,
@@ -748,15 +823,23 @@ pub(super) fn tool_catalog_consistency_issues(
     issues
 }
 
+/// 模型请求了目录中不存在的工具时的人性化错误消息。
 pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> String {
-    // Dogfood A5 (#4092): models mid-checklist sometimes emit each list entry
-    // as its own tool call named `item`/`todo`/... . Fuzzy suggestions are
-    // actively misleading there ("Did you mean: note, tts?"); name the actual
-    // fix instead.
+    // 自测验证 A5 场景（#4092）：模型在清单中途(mid-checklist )有时会将每个列表条目作为独立的工具调用来发出，
+    // 其名称可能是 `item`/`todo`/…… 等等。模糊建议在这种情况下会产生严重的误导（例如“您是不是想用：note, tts？”）；
+    // 因此直接指明实际的修复方案。
+    //
+    // 特殊处理——如果模型试图调用 item/todo/checklist 等伪工具（模型幻觉，把 checklist 条目当成独立工具调用），
+    // 直接告知正确的用法（用 work_update）。
     if matches!(
         tool_name,
         "item" | "items" | "todo" | "todos" | "checklist" | "checklist_item" | "plan_item"
     ) {
+        /*
+        “工具 '{tool_name}' 在当前工具目录中不可用。\
+        清单条目并非独立的工具调用——请在一次 `work_update` 调用中写入整个列表，\
+        使用 `todos` 数组，其中包含 {{content, status}} 对象。”
+         */
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
              Checklist entries are not separate tool calls — write the whole list \
@@ -764,27 +847,46 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
              {{content, status}} objects."
         );
     }
+    // 1. 调用 suggest_tool_names 获取 3 个模糊建议
     let suggestions = suggest_tool_names(catalog, tool_name, 3);
+    // 2. 判断是否为 shell 工具丢失（is_shell_tool_name），若是则追加 allow_shell 配置提示
     let shell_hint = if is_shell_tool_name(tool_name) {
         Some(shell_tool_allow_shell_hint())
     } else {
         None
     };
+    // 3. 根据有无建议组合四种错误消息
     if suggestions.is_empty() {
+        // 3.1 无建议 + 有 shell hint
         if let Some(shell_hint) = shell_hint {
+            /*
+            “工具 '{tool_name}' 在当前工具目录中不可用。\
+                 {shell_hint}，或使用 {TOOL_SEARCH_NAME} 并附上简短查询。”
+             */
             return format!(
                 "Tool '{tool_name}' is not available in the current tool catalog. \
                  {shell_hint}, or use {TOOL_SEARCH_NAME} with a short query."
             );
         }
+        // 3.2 无建议 + 无 shell hint
+        /*
+        “工具 '{tool_name}' 在当前工具目录中不可用。\
+             请检查模式/特性标志，或使用 {TOOL_SEARCH_NAME} 并附上简短查询。”
+         */
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
              Verify mode/feature flags, or use {TOOL_SEARCH_NAME} with a short query."
         );
     }
 
+    // 3.3 有建议 + 有 shell hint
     let suggestion_text = format!("Did you mean: {}?", suggestions.join(", "));
     if let Some(shell_hint) = shell_hint {
+        /*
+        “工具 '{tool_name}' 在当前工具目录中不可用。\
+             {suggestion_text} {shell_hint}。\
+             你也可以使用 {TOOL_SEARCH_NAME} 来发现可用的工具。”
+         */
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
              {suggestion_text} {shell_hint}. \
@@ -792,13 +894,26 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
         );
     }
 
+    // 3.4 有建议 + 无 shell hint
+    /*
+    “工具 '{tool_name}' 在当前工具目录中不可用。\
+         {suggestion_text} 你也可以使用 {TOOL_SEARCH_NAME} 来发现可用的工具。”
+     */
     format!(
         "Tool '{tool_name}' is not available in the current tool catalog. \
          {suggestion_text} You can also use {TOOL_SEARCH_NAME} to discover tools."
     )
 }
 
+/// 返回 shell 工具缺失时的针对性帮助文本，告知用户用 /config allow_shell true 解决。
 fn shell_tool_allow_shell_hint() -> &'static str {
+    /*
+    “Shell 工具不可用，因为此会话或配置文件禁用了 shell 访问权限，
+     通常是通过顶层配置 `allow_shell = false` 或 Plan 模式所致。
+     交互式 Act 模式默认会暴露 shell 工具，并带有审批门控机制，除非被禁用。
+     运行 `/config allow_shell true` 可为本会话启用，或添加 `--save` 以保留至未来会话；
+     下一轮交互将重新暴露 shell 工具。”
+     */
     "Shell tools are absent because this session or profile disabled shell access, \
      commonly via top-level `allow_shell = false` or Plan mode. \
      Interactive Act mode exposes shell by default with approval gating unless disabled. \
@@ -806,6 +921,7 @@ fn shell_tool_allow_shell_hint() -> &'static str {
      the next turn will expose shell again"
 }
 
+/// 判断是否为 5 个 shell 工具之一。
 fn is_shell_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
@@ -817,6 +933,7 @@ fn is_shell_tool_name(tool_name: &str) -> bool {
     )
 }
 
+/// 测试用函数。检查工具是否延迟加载，若是则插入 active_tools 集合并返回 true。
 #[cfg(test)]
 pub(super) fn maybe_activate_requested_deferred_tool(
     tool_name: &str,
@@ -834,6 +951,14 @@ pub(super) fn maybe_activate_requested_deferred_tool(
     active_tools.insert(tool_name.to_string())
 }
 
+/// 运行时路径。 当模型调用一个延迟工具时：
+/// - 检查：工具在目录中、标记为延迟、且 batch 开始时不在活跃集中
+/// - 若是首次使用，记录到 hydrated_tools_this_batch
+/// - 返回 Some(ToolResult)——包含详细 schema 反馈（不是执行结果！）
+/// 
+/// 在AI智能体（Agent）和编程语境中，hydrate（水合/填充）的核心意思是：
+/// 将“不完整/轻量/序列化”的数据，补充、填充成“完整/可运行/内存中”的对象
+/// 像泡方便面——干面饼（序列化数据） + 热水（运行时上下文） = 一碗能吃的面（活的对象）。
 pub(super) fn maybe_hydrate_requested_deferred_tool(
     tool_name: &str,
     tool_input: &Value,
@@ -851,6 +976,8 @@ pub(super) fn maybe_hydrate_requested_deferred_tool(
     Some(deferred_tool_schema_hydration_result(def, tool_input))
 }
 
+/// 测试包装器，调用 maybe_hydrate_requested_deferred_tool 
+/// 后将水合的工具合并入 active_tools。
 #[cfg(test)]
 pub(super) fn preflight_requested_deferred_tool(
     tool_name: &str,
@@ -871,6 +998,17 @@ pub(super) fn preflight_requested_deferred_tool(
     result
 }
 
+/// 延迟工具首次使用时返回的特殊响应。 这不是执行结果——而是告诉模型：
+/// 1. 工具已加载（"Tool xxx was deferred and has now been loaded."）
+/// 2. 未执行（"The tool was not executed. Retry with the loaded schema."）
+/// 3. 完整 schema 信息：
+///   - 期望字段（含类型和 required 标记）
+///   - 收到的字段列表
+///   - 缺失的必填字段
+///   - 意外字段
+///   - 可能的字段名纠正（见下文 likely_field_corrections）
+/// 返回的 metadata包含结构化诊断：
+/// event: "tool.schema_hydrated"、executed: false、retry_required: true、reason: "deferred_tool_first_use" 等。
 fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> ToolResult {
     let expected = schema_fields(&tool.input_schema);
     let required = schema_required_fields(&tool.input_schema);
@@ -950,12 +1088,14 @@ fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> Too
     }))
 }
 
+/// 工具 schema 字段的简化表示。
 #[derive(Debug, Clone)]
 struct SchemaField {
     name: String,
     kind: String,
 }
 
+/// 从 JSON Schema 的 properties 中提取字段列表，按字段名排序。
 fn schema_fields(schema: &Value) -> Vec<SchemaField> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return Vec::new();
@@ -971,6 +1111,7 @@ fn schema_fields(schema: &Value) -> Vec<SchemaField> {
     fields
 }
 
+/// 从 JSON Schema 的 required 数组提取必填字段名列表。
 fn schema_required_fields(schema: &Value) -> Vec<String> {
     let mut required = schema
         .get("required")
@@ -983,6 +1124,7 @@ fn schema_required_fields(schema: &Value) -> Vec<String> {
     required
 }
 
+/// 构造字段类型的友好标签。如果字段有 enum 约束，显示为 "string (bm25 | regex)" 格式。
 fn schema_type_label(spec: &Value) -> String {
     let Some(kind) = spec.get("type").and_then(Value::as_str) else {
         return "value".to_string();
@@ -996,6 +1138,7 @@ fn schema_type_label(spec: &Value) -> String {
     kind.to_string()
 }
 
+/// 从模型提供的 JSON 输入中提取所有字段名，排序后返回。
 fn received_field_names(input: &Value) -> Vec<String> {
     let mut fields = input
         .as_object()
@@ -1005,6 +1148,7 @@ fn received_field_names(input: &Value) -> Vec<String> {
     fields
 }
 
+/// 智能字段名纠正系统。 分析模型传入的字段名，推断它可能想表达什么 
 fn likely_field_corrections(
     received: &[String],
     expected: &[SchemaField],
@@ -1035,6 +1179,7 @@ fn likely_field_corrections(
     // RLM source fields are easy to misname (#2659). rlm_open takes exactly one
     // of file_path / content / url / session_object; nudge common wrong names
     // toward those.
+    // RLM 字段纠正特别详细——模型容易用 prompt、file、path、text、body、source 等非标准名称，逐个提示正确字段。
     if tool_name == "rlm_open" {
         for wrong in [
             "prompt",
@@ -1058,23 +1203,28 @@ fn likely_field_corrections(
     corrections
 }
 
+/// tool_search 工具的运行时执行逻辑。
 pub(super) fn execute_tool_search(
     tool_name: &str,
     input: &serde_json::Value,
     catalog: &[Tool],
     active_tools: &mut HashSet<String>,
 ) -> Result<ToolResult, ToolError> {
+    // 提取必填参数 query
     let query = required_str(input, "query")?;
+    // 确定匹配算法：遗留工具名硬编码算法，新版从 match 参数读取，默认 "bm25"
     let match_kind = match tool_name {
         LEGACY_TOOL_SEARCH_REGEX_NAME => "regex",
         LEGACY_TOOL_SEARCH_BM25_NAME => "bm25",
         _ => optional_str(input, "match").unwrap_or("bm25"),
     };
+    // 验证 match 算法仅允许 bm25 或 regex
     if !matches!(match_kind, "bm25" | "regex") {
         return Err(ToolError::invalid_input(format!(
             "Unsupported match algorithm '{match_kind}'. Expected one of: bm25, regex"
         )));
     }
+    // 解析 max_results（默认 20，clamp 到 1..100）
     let max_results = usize::try_from(optional_u64(
         input,
         "max_results",
@@ -1082,11 +1232,13 @@ pub(super) fn execute_tool_search(
     ))
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
+    // 寻找工具
     let discovered = if match_kind == "regex" {
         discover_tools_with_regex(catalog, query, max_results)?
     } else {
         discover_tools_with_bm25_like(catalog, query, max_results)
     };
+    // 剩余名额搜索不可用核心工具（unavailable_core_action_tools_*）
     let remaining_results = max_results.saturating_sub(discovered.len());
     let unavailable = if match_kind == "regex" {
         unavailable_core_action_tools_with_regex(catalog, query, remaining_results)?
@@ -1094,10 +1246,12 @@ pub(super) fn execute_tool_search(
         unavailable_core_action_tools_with_bm25_like(catalog, query, remaining_results)
     };
 
+    // 副作用： 将发现的工具名插入 active_tools——激活延迟工具
     for name in &discovered {
         active_tools.insert(name.clone());
     }
 
+    // 构造响应：tool_references（可用的）+ unavailable_tool_references（存在但不可用的）
     let references = discovered
         .iter()
         .map(|name| json!({"type": "tool_reference", "tool_name": name}))
@@ -1129,34 +1283,33 @@ pub(super) fn execute_tool_search(
     })
 }
 
+/// Python 代码执行工具的运行时实现。
 pub(super) async fn execute_code_execution_tool(
     input: &serde_json::Value,
     workspace: &Path,
 ) -> Result<ToolResult, ToolError> {
+    // 提取 code
     let code = required_str(input, "code")?;
 
-    // Resolve the locally-installed Python interpreter we cached at
-    // catalog-build time. If it's absent now (somehow registered but
-    // disappeared between startup and this call — concurrent uninstall,
-    // PATH change, etc.) the ExternalTool::tokio_command() will return
-    // None and we fail fast with a clear message.
+    // 解析在目录构建时缓存的本地已安装 Python 解释器。
+    // 如果此时它不存在（某些情况下已注册但在启动到此调用之间消失了——并发卸载、
+    // PATH 变更等），ExternalTool::tokio_command() 将返回 None，我们会快速失败并给出明确消息。
     //
-    // Write the code to a temp file and execute it as a script rather
-    // than passing it via `-c "<code>"`. Reasons:
-    //   * `-c` has length limits (argv) on Windows.
-    //   * Multiline code with quote nesting is brittle through `-c`.
-    //   * Tracebacks reference a real filename instead of `<string>`,
-    //     so the model can interpret line numbers correctly.
-    // Tempfile lives only for the duration of this execution; Drop
-    // removes it. We use `.py` so any shebang / encoding-sniffer
-    // logic in the interpreter behaves normally.
+    // 将代码写入临时文件并将其作为脚本执行，而不是通过 `-c "<code>"` 传递。原因如下：
+    //   * `-c` 在 Windows 上存在长度限制（argv 限制）。
+    //   * 通过 `-c` 传递带引号嵌套的多行代码容易出现解析错误。
+    //   * 回溯信息中会引用真实文件名而非 `<string>`，因此模型能够正确解读行号。
+    // 临时文件仅在此次执行期间存活；Drop 时会将其移除。我们使用 `.py` 扩展名，
+    // 以便解释器中的任何 shebang 或编码检测逻辑能够正常运作。
+    //
+    // 创建临时目录、写入脚本
     let temp_dir = tempfile::tempdir()
         .map_err(|e| ToolError::execution_failed(format!("tempdir failed: {e}")))?;
     let script_path = temp_dir.path().join("code_execution.py");
     tokio::fs::write(&script_path, code)
         .await
         .map_err(|e| ToolError::execution_failed(format!("tempfile write failed: {e}")))?;
-
+    // 构造命令 python <script_path> + current_dir(workspace)
     let mut cmd = crate::dependencies::Python::tokio_command().ok_or_else(|| {
         ToolError::execution_failed(
             "code_execution: Python interpreter became unavailable".to_string(),
@@ -1164,6 +1317,7 @@ pub(super) async fn execute_code_execution_tool(
     })?;
     cmd.arg(&script_path).current_dir(workspace);
 
+    // 收集输出: stdout、stderr、return_code
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
         .await
         .map_err(|_| ToolError::Timeout { seconds: 120 })
@@ -1173,6 +1327,8 @@ pub(super) async fn execute_code_execution_tool(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let return_code = output.status.code().unwrap_or(-1);
     let success = output.status.success();
+    
+    // 构造响应: JSON 格式的结果，含 type: "code_execution_result"
     let payload = json!({
         "type": "code_execution_result",
         "stdout": stdout,

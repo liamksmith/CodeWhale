@@ -295,6 +295,7 @@ impl Engine {
                 );
             }
         }
+        // 取活跃工具(active tools)
         let mut active_tool_names = initial_active_tools(&tool_catalog);
         active_tool_names.extend(
             dynamic_active_tools

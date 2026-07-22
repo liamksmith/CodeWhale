@@ -3710,13 +3710,13 @@ fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBu
     default_plugin_tools_dir()
 }
 
+/// 加载插件工具目录下的所有工具
+/// 应用 tool overrides（禁用/替换原生工具）
+/// 返回新加载的工具名集合
 fn configure_plugin_tools(
     tool_registry: &mut crate::tools::ToolRegistry,
     tools_config: Option<&crate::config::ToolsConfig>,
 ) -> std::collections::HashSet<String> {
-    // 加载插件工具目录下的所有工具
-    // 应用 tool overrides（禁用/替换原生工具）
-    // 返回新加载的工具名集合
     let names_before: std::collections::HashSet<String> = tool_registry
         .names()
         .into_iter()

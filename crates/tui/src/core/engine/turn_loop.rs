@@ -201,9 +201,21 @@ impl Engine {
             .unwrap_or_default()
     }
 
+    /// ## Arguments
+    /// - status_label 调用者传入的上下文标签，例如 "queued"，用于在事件消息中标识该批 completion 的来源时机。
+    /// ## Return
+    /// 返回 `usize` — 本次排空处理了多少个子代理的完成事件。
     async fn drain_subagent_completion_events(&mut self, status_label: &str) -> usize {
+        // - 阶段一：通过通道排空
+        // completions 是最终要被处理的完成事件列表
         let mut completions: Vec<crate::tools::subagent::SubAgentCompletion> = Vec::new();
+        // rx_subagent_completion 是一个UnboundedReceiver<SubAgentCompletion>
+        // （无界通道），子代理完成时通过 tx_subagent_completion 发送事件。
         while let Ok(completion) = self.rx_subagent_completion.try_recv() {
+            // delivered_subagent_completion_ids是一个 HashSet<String>，记录哪些 agent_id 的完成事件已经被处理过了。
+            // insert返回 false 表示该 agent_id 已经在之前被处理过，跳过去重。
+            // drain_subagent_completion_events 可能在多个地方被调用（turn 循环中、turn开始前等），
+            // 同一个子代理完成事件可能被多次排空，这保证了幂等性——每个子代理的结果只被注入会话一次。
             if self
                 .delivered_subagent_completion_ids
                 .insert(completion.agent_id.clone())
@@ -211,7 +223,14 @@ impl Engine {
                 completions.push(completion);
             }
         }
-
+        // - 阶段二：从管理器补全遗漏项
+        // SubAgentManager 是管理所有子代理生命周期状态的组件。
+        // terminal_results_excluding返回所有已经终结（terminal）但 agent_id 尚未出现在
+        // `delivered_ids` 中的子代理结果
+        // - 为什么需要这一步？ 子代理完成事件通过 rx_subagent_completion 通道发送。但有时
+        // 子代理可能在引擎还未开始排空通道前就已经完成并终结了——通道的消息可能丢失（例如通道
+        // 满了、或者事件在排空前已被丢弃）。这一步直接从 SubAgentManager 的 权威状态中查询，
+        // 作为兜底保障，防止漏掉任何已终止但未被通道投递的子代理。
         let synthesized = {
             let manager = self.subagent_manager.read().await;
             manager.terminal_results_excluding(&self.delivered_subagent_completion_ids)
@@ -227,15 +246,22 @@ impl Engine {
             }
         }
 
+        // 阶段三：无事件时提前返回
         let count = completions.len();
         if count == 0 {
             return 0;
         }
 
+        // 阶段四：注入会话历史
+        // - 遍历所有收集到的 completion，将每个调用 subagent_completion_runtime_message 
+        //   构造一个 Message，然后通过 self.add_session_message() 加入到会话历史中。
         for completion in completions {
             self.add_session_message(subagent_completion_runtime_message(&completion.payload))
                 .await;
         }
+        // 传入的status_label作为发往UI层消息的字符串前缀。
+        // e.g assume status_label = "queued" and count = 2, then message is：
+        // "Resuming turn with 2 queued sub-agent completion(s)"
         let prefix = if status_label.is_empty() {
             String::new()
         } else {
@@ -304,27 +330,44 @@ impl Engine {
         );
         let mut goal_continuations_this_turn = 0u32;
 
-        // Outer stream-retry counter: when the chunked-transfer connection
-        // dies mid-stream and either nothing useful was streamed (#103
-        // Phase 3) or the host slept mid-turn (#2990), we silently re-issue
-        // the SAME request up to MAX_STREAM_RETRIES times before surfacing
-        // the failure to the user.
+        // 外层流式重试计数器：当分块传输连接在流传输中途断开，
+        // 且要么没有流式传输任何有用内容（#103 Phase 3），
+        // 要么主机在交互中途进入休眠状态（#2990）时，
+        // 我们会在将失败暴露给用户之前，静默地重新发起相同的请求，
+        // 最多重试 MAX_STREAM_RETRIES 次。
         let mut stream_retry_attempts: u32 = 0;
 
         loop {
+            // 取消检查
             if self.cancel_token.is_cancelled() {
                 let _ = self.tx_event.send(Event::status("Request cancelled")).await;
                 return (TurnOutcomeStatus::Interrupted, None);
             }
 
+            // 关于steer rx/tx
+            // 当引擎正忙于处理上一轮（`app.is_loading == true`）时，用户在 TUI
+            // 中输入新消息并按下 Enter（或 Ctrl+Enter 强制 steer），代码会调用
+            // steer_user_message() → engine_handle.steer(content)
+            // ，将用户的文本通过该通道注入到引擎的轮转循环中。
+            // "Steer input"（转向输入） 就是用户在当前轮次正在进行中时，额外注入的文本指令。例如:
+            // - 用户在 AI 还在回复时输入 "调整方向，先检查 src/lib.rs"，按 Enter ——
+            //   这不会开启新轮次，而是作为 steer 消息注入当前正在运行的轮次循环中。
+            // - 测试用例中可以看到具体的例子："adjust the active turn\nthen continue"、"please
+            //   attend to your sub agents"、"edited queued follow-up"。
             while let Ok(steer) = self.rx_steer.try_recv() {
                 let steer = steer.trim().to_string();
                 if steer.is_empty() {
                     continue;
                 }
+                // working_set: 它本质上是一个智能文件追踪器，记录了当前会话中哪些文件路径被用户或
+                // 工具"提及"过，以及它们的元数据（是否存在、是否目录、最后访问轮次等）。
+                // 这在上下文管理中用于决定哪些文件应该被纳入工作集摘要，发送给LLM。
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
+
+                // user_text_message_with_turn_metadata:
+                // 将纯文本包装成一个带有 `<turn_meta>` 元数据块的 `Message`，准备加入会话历史
                 self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
                     .await;
                 let _ = self
@@ -336,17 +379,16 @@ impl Engine {
                     .await;
             }
 
-            // Child agents can finish while the parent model is still taking
-            // tool steps. Surface queued completions before the next provider
-            // request so the parent can use them immediately instead of
-            // discovering them only when it eventually emits no more tools or
-            // the idle handler starts a separate follow-up turn.
+            // 子智能体可能在父模型仍在执行工具步骤时完成。
+            // 在发起下一次提供者请求之前，将队列中的完成结果呈现出来，
+            // 以便父智能体能够立即使用它们，而不是等到它最终不再发出工具调用，
+            // 或空闲处理器启动单独的后续轮次时才被发现。
             self.drain_subagent_completion_events("queued").await;
 
-            // Ensure system prompt is up to date with latest session states
+            // 确保系统提示与最新的会话状态保持同步。
             self.refresh_system_prompt();
 
-            if turn.at_max_steps() {
+            if turn.at_max_steps() {   // 步数检查
                 let _ = self
                     .tx_event
                     .send(Event::status("Reached maximum steps"))
@@ -2781,15 +2823,24 @@ sooner. Stop immediately: emit zero tool calls and end the turn.\n\
     }
 }
 
+/// 构造一个 Messag
+/// ``` json
+///   Message {
+///       role: "user",  // 注意是 "user" 而非 "system"
+///       content: [
+///          ContentBlock::Text { text: "<codewhale:runtime_event>子代理完成摘要...</codewhale:runtime_event>" },
+///          ContentBlock::Text { text: "<turn_meta>Input provenance: sub_agent_handoff\nInput authority: non_authoritative</turn_meta>" },
+///       ],
+///   }
+/// ```
 fn subagent_completion_runtime_message(payload: &str) -> Message {
-    // Role is "user", not "system": some OpenAI-compatible backends apply a
-    // strict chat template (e.g. vLLM serving Qwen3) that requires any system
-    // message to be messages[0]. A system message appended mid-conversation
+    // role: "user"` 而非 "system": 部分 OpenAI 兼容后端（如
+    // vLLM 部署的 Qwen3）有严格的 chat template 要求——system 消息必须出现在 messages[0]
+    // 。在对话中间插入一条 system 消息会导致 400 BadRequest。
     // makes the template raise "System message must be at the beginning",
-    // which surfaces as a 400 BadRequest and breaks the whole sub-agent
-    // hand-off in the parent turn. The `visibility="internal"` tag already
-    // tells the model this is a runtime event rather than user input, so the
-    // role carries no semantic weight here — only template-compatibility cost.
+    // and breaks the whole sub-agent hand-off in the parent turn. 
+    // 由于消息内容已经通过visibility="internal" 
+    // 标签告诉模型这是运行时事件而非真实用户输入， role字段只是兼容性成本，语义由标签承载。
     Message {
         role: "user".to_string(),
         content: vec![

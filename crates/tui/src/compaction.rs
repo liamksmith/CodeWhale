@@ -1560,6 +1560,10 @@ fn extract_path_from_input(input: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// 将基础 prompt 和压缩摘要合并
+/// 为什么要合并？ 当会话被 /compact 压缩后，早期的对话历史被浓缩成一个摘要块。
+/// compaction_summary_prompt包含这个摘要，后面跟一些用于上下文恢复的提示词
+/// （如读回关键文件等指令）。合并后 LLM既能看到完整的 system prompt，又能看到压缩的会话摘要。
 pub fn merge_system_prompts(
     original: Option<&SystemPrompt>,
     summary: Option<SystemPrompt>,

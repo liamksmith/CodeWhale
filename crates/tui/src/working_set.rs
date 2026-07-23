@@ -856,8 +856,10 @@ impl WorkingSet {
 
     /// Observe a user message and update the working set.
     pub fn observe_user_message(&mut self, text: &str, workspace: &Path) {
-        self.next_turn();
-        let paths = extract_paths_from_text(text);
+        self.next_turn();  // // 递增轮次计数器
+        let paths = extract_paths_from_text(text);  // 从文本中提取文件路径
+        // 将这些路径录入工作集，标记来源为WorkingSetSource::UserMessage。
+        // 后续生成 summary_block时，会把这些近期被提及的文件路径包含进 <turn_meta> 中，让 LLM 知道用户的兴趣点。
         self.record_candidates(paths, workspace, WorkingSetSource::UserMessage);
     }
 
@@ -1353,6 +1355,8 @@ const COMMON_EXTENSIONS: &[&str] = &[
     "c", "cc", "cpp", "h", "hpp", "sh", "bash", "zsh", "sql", "html", "css", "scss",
 ];
 
+/// 使用正则表达式从用户文本中解析出看起来像文件路径的 token（包含 / 或 \ 分隔符的 token，或者带有常见扩展名如
+/// .rs、.py、.toml 等的 token）。
 fn extract_paths_from_text(text: &str) -> Vec<String> {
     if text.trim().is_empty() {
         return Vec::new();

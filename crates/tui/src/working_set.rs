@@ -1,10 +1,17 @@
-//! Repo-aware working set tracking and prompt context packing.
+//! 仓库感知的工作集跟踪与提示上下文打包模块。
 //!
-//! The goal of this module is to keep a small, high-signal list of
-//! "active" paths that the assistant should prioritize. It observes
-//! user messages and tool calls, extracts likely paths, and produces:
-//! - a compact working-set summary block for the system prompt
-//! - pinned message indices that compaction should preserve
+//! 本模块的目标是维护一个精简且高信息量的“活跃”路径列表，供助手优先关注。
+//! 它观察用户消息和工具调用，提取可能的路径，并生成：
+//! - 用于系统提示的紧凑工作集摘要块
+//! - 压缩时应保留的固定消息索引
+//! 
+//! 这是在一个~/.codewhale/.session/目录下某个文件中关于本文件内容章节的示例
+//! ## Repo Working Set
+//! Workspace: D:\\tmp\\source\\CodeWhale
+//! Key files: Cargo.toml, AGENTS.md, CLAUDE.md, package.json
+//! Top-level dirs: assets, benchmark_results, crates, deploy, docs, extensions, fleets, integrations
+//! When in doubt, use tools to verify and keep changes focused on the working set.
+//! Git workspace: main | 1 modified
 
 use crate::models::{ContentBlock, Message};
 use crate::workspace_discovery::{
@@ -20,42 +27,48 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Repo-aware resolver for `@`-mentions and file pickers.
+/// 用于 `@` 提及和文件选择器的仓库感知解析器。
 ///
-/// `cwd` is captured at construction; if the host's current directory changes
-/// during a session, build a fresh `Workspace`. Fuzzy lookups are backed by a
-/// lazy basename → paths index built once on first miss and reused for the
-/// rest of the session — without it, every mis-typed mention triggered a full
-/// `WalkBuilder` traversal up to the configured completion depth.
+/// `cwd` 在构造时捕获；如果宿主当前目录在会话期间发生变化，则构建一个新的 `Workspace`。
+/// 模糊查找由惰性文件名 → 路径索引支持，该索引在首次未命中时构建一次，并在会话剩余时间内复用——
+/// 没有它，每一个拼写错误的提及都会触发一次完整的 `WalkBuilder` 遍历，直至配置的补全深度。
 #[derive(Debug)]
 pub struct Workspace {
-    pub root: PathBuf,
-    cwd: Option<PathBuf>,
-    file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,
-    completion_walk_depth: Option<usize>,
-    /// Follow symbolic links during file discovery walks. When `true`,
-    /// symlinked directories are traversed, enabling multi-project workspaces
-    /// where project directories are symlinked into a hub directory.
-    follow_links: bool,
+    pub root: PathBuf,              // 工作区根目录
+    cwd: Option<PathBuf>,              // 当前工作目录（可能不同于 root）
+    file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,   // 惰性文件名索引。保证只在第一次模糊匹配失败时才构建一次，然后在整个会话中复用。这是一个关键性能优化：没有它，每次拼写错误的提及都会触发一次完整的目录遍历。
+    completion_walk_depth: Option<usize>,   // 自动补全遍历深度限制
+    /// 在文件发现遍历过程中是否跟随符号链接。当为 `true` 时，
+    /// 会遍历符号链接指向的目录，从而支持多项目工作空间，
+    /// 即项目目录通过符号链接链接到一个中心目录中。
+    follow_links: bool,   // 是否跟随符号链接
 }
 
+/// 在 `Workspace::completions()` 的两次遍历（CWD + workspace root）间共享的搜索上下文。
+/// 通过 `prefix_hits`（前缀匹配，高优先级）和 `substring_hits`（子串匹配，低优先级）
+/// 两个 bucket 收集候选路径，并借助 `seen` 集合按绝对路径去重。
 struct SearchContext<'a> {
-    needle: &'a str,
-    limit: usize,
-    prefix_hits: &'a mut Vec<String>,
-    substring_hits: &'a mut Vec<String>,
-    seen: &'a mut HashSet<PathBuf>,
+    needle: &'a str,                        // 搜索关键词（小写）
+    limit: usize,                           // 结果数量上限
+    prefix_hits: &'a mut Vec<String>,       // 前缀匹配结果
+    substring_hits: &'a mut Vec<String>,    // 子串匹配结果
+    seen: &'a mut HashSet<PathBuf>,         // 已见的绝对路径（用于去重）
 }
 
 impl SearchContext<'_> {
-    fn is_full(&self) -> bool {
+    /// 判断是否已达到结果上限
+    fn is_full(&self) -> bool { 
         self.prefix_hits.len() + self.substring_hits.len() >= self.limit
     }
 
+    /// 将路径标记为"已见过"，返回 true 表示首次见到
     fn remember(&mut self, path: PathBuf) -> bool {
         self.seen.insert(path)
     }
 
+    /// 将候选路径分类加入前缀命中和子串命中列表：
+    /// 如果 needle 为空或候选以小写 needle 开头 → 前缀命中（优先级高）
+    /// 如果候选包含 needle → 子串命中（优先级低）
     fn push_match(&mut self, candidate: String) {
         let lower = candidate.to_lowercase();
         if self.needle.is_empty() || lower.starts_with(self.needle) {
@@ -67,30 +80,28 @@ impl SearchContext<'_> {
 }
 
 impl Workspace {
-    /// Construct a workspace anchored at `root`, capturing the process CWD as
-    /// the secondary resolution pass. Convenience entry point intended for
-    /// callers that don't already have a CWD on hand; the App routes through
-    /// [`Workspace::with_cwd`] with its own captured launch directory.
+    /// 构建一个锚定于 `root` 的工作空间，并将进程的当前工作目录（CWD）作为次级解析路径捕获。
+    /// 这是一个便捷入口点，适用于调用者尚未持有 CWD 的情况；App 会通过 [`Workspace::with_cwd`]
+    /// 并使用其自身捕获的启动目录进行路由。
     #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
     pub fn new(root: PathBuf) -> Self {
         Self::with_cwd(root, std::env::current_dir().ok())
     }
 
-    /// Construct with an explicit cwd. Used by tests that need deterministic
-    /// resolution against a known directory without depending on (and
-    /// mutating) the process's real working directory.
+    /// 使用显式的 cwd 进行构造。用于需要针对已知目录进行确定性解析的测试，
+    /// 而不依赖于（或修改）进程的实际工作目录。
     pub fn with_cwd(root: PathBuf, cwd: Option<PathBuf>) -> Self {
         Self::with_cwd_and_depth(root, cwd, DEFAULT_COMPLETIONS_WALK_DEPTH)
     }
 
-    /// Construct with an explicit completion walk depth. A depth of `0`
-    /// disables the depth limit for users with deeply nested workspaces.
+    /// 使用显式的补全遍历深度进行构造。深度为 `0` 表示
+    /// 为具有深层嵌套工作空间的用户禁用深度限制。
     pub fn with_cwd_and_depth(root: PathBuf, cwd: Option<PathBuf>, walk_depth: usize) -> Self {
         Self::with_cwd_depth_and_follow_links(root, cwd, walk_depth, false)
     }
 
-    /// Construct with an explicit completion walk depth and symlink-following
-    /// preference. See [`Workspace::follow_links`].
+    /// 使用显式的补全遍历深度和符号链接跟随偏好进行构造。
+    /// 参见 [`Workspace::follow_links`]。
     pub fn with_cwd_depth_and_follow_links(
         root: PathBuf,
         cwd: Option<PathBuf>,
@@ -106,7 +117,7 @@ impl Workspace {
         }
     }
 
-    /// Two-pass resolution: workspace, then cwd, then fuzzy fallback.
+    /// 解析路径。两遍解析：先工作空间，再当前工作目录，最后模糊匹配回退。
     pub fn resolve(&self, raw_path: &str) -> Result<PathBuf, PathBuf> {
         let path = expand_mention_home(raw_path);
         if path.is_absolute() {
@@ -135,6 +146,9 @@ impl Workspace {
         Err(ws_path)
     }
 
+    /// 通过惰性构建的 basename → 路径列表索引进行模糊文件名匹配。
+    /// 取 path 的 file_name，转小写后在索引中查找；返回第一个匹配的完整路径。
+    /// 索引在首次调用时构建（`OnceLock`），后续复用
     fn fuzzy_resolve(&self, path: &Path) -> Option<PathBuf> {
         let needle = path.file_name()?.to_string_lossy().to_lowercase();
         if needle.is_empty() {
@@ -145,6 +159,8 @@ impl Workspace {
         index.get(&needle).and_then(|paths| paths.first()).cloned()
     }
 
+    /// 构建文件名索引。遍历工作区所有文件，建立 basename → [完整路径列表] 的映射。
+    /// 这层索引使得模糊匹配（如 resolve("main.rs")）不需要重复遍历磁盘。
     fn build_file_index(&self) -> HashMap<String, Vec<PathBuf>> {
         let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut total: usize = 0;
@@ -238,20 +254,17 @@ impl Workspace {
         index
     }
 
-    /// Walk the workspace (and the recorded `cwd` when it diverges) and
-    /// return relative paths whose representation matches `partial`.
+    /// 文件/路径的自动补全方法。
+    /// 遍历工作空间（以及当它偏离时记录下的 `cwd`），并返回表示形式与 `partial` 匹配的相对路径。
     ///
-    /// Ranking: a candidate matches when its case-insensitive display string
-    /// starts with `partial` (prefix hit) or contains it as a substring; prefix
-    /// hits sort first so `docs/de` lands `docs/deepseek_v4.pdf` ahead of any
-    /// path that merely shares those bytes.
+    /// 排序规则：当候选路径的不区分大小写的显示字符串以 `partial` 开头（前缀匹配）或包含它作为子串时，该候选路径匹配；
+    /// 前缀匹配优先排序，因此 `docs/de` 会让 `docs/deepseek_v4.pdf` 排在任何仅包含这些字节的路径之前。
     ///
-    /// Display strings are workspace-relative for files under `root`, and
-    /// cwd-relative for files only under the recorded `cwd` — so what the user
-    /// Tab-completes matches what their shell would have shown them.
+    /// 显示字符串在 `root` 下的文件以工作空间为相对路径，仅在记录的 `cwd` 下的文件以 cwd 为相对路径——
+    /// 因此用户 Tab 补全的内容与他们 shell 中显示的内容一致。
     ///
-    /// Honors `.gitignore`, `.git/info/exclude`, `.ignore`, and
-    /// `.deepseekignore`. Capped at `limit` results.
+    /// 遵循 `.gitignore`、`.git/info/exclude`、`.ignore` 和 `.deepseekignore`。
+    /// 结果数量限制为 `limit` 个。
     #[must_use]
     pub fn completions(&self, partial: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
@@ -280,6 +293,7 @@ impl Workspace {
                 .map(|c| c != self.root.as_path())
                 .unwrap_or(false);
             if cwd_diverges && let Some(cwd) = self.cwd.as_deref() {
+                // 第一步：遍历 CWD 目录
                 walk_for_completions(
                     cwd,
                     cwd,
@@ -287,6 +301,7 @@ impl Workspace {
                     self.completion_walk_depth,
                     self.follow_links,
                 );
+                // 同时加载本地引用（./ ../ 开头的路径）
                 add_local_reference_completions(
                     cwd,
                     cwd,
@@ -295,6 +310,8 @@ impl Workspace {
                     self.follow_links,
                 );
             }
+
+            // 第二步：遍历 workspace root
             walk_for_completions(
                 &self.root,
                 &self.root,
@@ -318,15 +335,15 @@ impl Workspace {
         prefix_hits
     }
 
-    /// One full completion walk with no needle: every discoverable display
-    /// string from the workspace walk plus the divergent-cwd walk (and the
-    /// always-discoverable AI dot-directories), deduped, in walk order.
-    /// Pair with [`rank_completion_candidates`] so the composer can filter
-    /// per keystroke without re-walking the filesystem (#3757).
+    /// 用于 UI 预加载完整路径列表，这样用户在键盘敲击时可以即时过滤而无需重新遍历文件系统。<br>
+    /// 执行一次完整的补全遍历，不带匹配关键字（needle）：包含工作空间遍历中的所有可发现显示字符串，
+    /// 加上偏离的 cwd 遍历（以及始终可发现的 AI 点目录）中的内容，
+    /// 去重后按遍历顺序排列。
+    /// 与 [`rank_completion_candidates`] 配对使用，以便编辑器（composer）可以在每次按键时进行过滤，
+    /// 而无需重新遍历文件系统（#3757）。
     ///
-    /// Needle-gated local path-reference completions are NOT included;
-    /// callers must fall back to [`Workspace::completions`] for path-like
-    /// needles (starting with `.` or containing a separator).
+    /// 注意：不包含受关键字门控的本地路径引用补全；
+    /// 调用者必须回退到 [`Workspace::completions`] 来处理类似路径的关键字（以 `.` 开头或包含分隔符）。
     #[must_use]
     pub fn completion_candidates(&self) -> Vec<String> {
         let mut prefix_hits: Vec<String> = Vec::new();
@@ -366,12 +383,13 @@ impl Workspace {
         prefix_hits
     }
 
-    /// Deterministic directory-browser completions for `@` mentions.
+    /// 专为文件浏览器模式设计，用于 `@` 提及的确定性目录浏览器补全。
     ///
-    /// Unlike [`Workspace::completions`], this mode does not fuzzy-rank across
-    /// the full workspace. It locks onto the directory part of `partial` and
-    /// returns only that directory's immediate children in case-insensitive
-    /// alphabetical order.
+    /// 与 [`Workspace::completions`] 不同，此模式不会在整个工作空间中进行模糊排名。
+    /// 它会锁定 `partial` 中的目录部分，并仅以不区分大小写的字母顺序返回该目录的直接子项。
+    /// 
+    /// 拒绝路径逃逸：如果 needle 包含 ../ 或从当前目录向外逃逸，浏览器模式会拒绝列出工作区
+    /// 以外的文件。这是安全措施，防止用户意外访问工作区外的敏感文件。
     #[must_use]
     pub fn browser_completions(&self, partial: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
@@ -440,6 +458,9 @@ impl Workspace {
     }
 }
 
+/// 解析浏览器补全所需的目录部分，过滤掉不安全组件。
+/// 拒绝 `ParentDir`（`..` 路径逃逸）、`RootDir` 和 `Prefix` 组件，
+/// 仅保留 `CurDir`（`.`）和 `Normal` 组件作为安全的补全根目录。
 fn browser_completion_dir_part(dir_part: &str) -> Option<PathBuf> {
     let mut safe = PathBuf::new();
     for component in Path::new(dir_part).components() {
@@ -452,34 +473,35 @@ fn browser_completion_dir_part(dir_part: &str) -> Option<PathBuf> {
     Some(safe)
 }
 
-/// Default directory depth walked when surfacing file-mention completions.
-/// Set high enough that conventionally nested source trees (Java/.NET/web
-/// projects routinely reach 7-9 levels) stay reachable, while a `0` override
-/// removes the limit entirely. Keeps Tab snappy in deep monorepos via the
-/// `.gitignore`-aware walk and per-keypress candidate caps (#2488).
+/// 在呈现文件提及补全时遍历的默认目录深度。
+/// 设置得足够高，以便常规嵌套的源代码树（Java/.NET/Web 项目通常达到 7-9 层）保持可访问，
+/// 而覆盖为 `0` 则完全移除限制。
+/// 通过感知 `.gitignore` 的遍历和每次按键的候选结果数量限制（#2488），
+/// 在深度单仓库中保持 Tab 补全的快速响应。
 pub const DEFAULT_COMPLETIONS_WALK_DEPTH: usize = 10;
 
+/// 将用户配置的补全遍历深度转换为 `Option<usize>`。
+/// `0` 表示无限制（对应 `None`），正值表示受限深度（对应 `Some(depth)`）
 fn normalize_completion_walk_depth(depth: usize) -> Option<usize> {
     if depth == 0 { None } else { Some(depth) }
 }
 
+/// 计算子遍历的补全深度：父深度减 1。
+/// 用于 `walk_always_discoverable_dirs`，因为已进入点目录内部，需要减去一级深度。
 fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
     depth.map(|depth| depth.saturating_sub(1))
 }
 
-/// Hard cap on the number of `(file or directory)` entries indexed by
-/// [`Workspace::build_file_index`]. The fuzzy-resolve index is a
-/// convenience for [`Workspace::fuzzy_resolve`]; missing entries fall
-/// back to literal-path resolution. Capping here keeps the first
-/// `fuzzy_resolve` call bounded on huge workspaces (#697 reported a
-/// ~10s hang on the first turn). For typical projects 50K is well
-/// above the actual entry count and the cap is a no-op.
+/// [`Workspace::build_file_index`] 索引的 `（文件或目录）` 条目的硬上限。
+/// 模糊解析索引是 [`Workspace::fuzzy_resolve`] 的便捷辅助；缺失的条目会回退到字面路径解析。
+/// 在此设置上限可确保首次 `fuzzy_resolve` 调用在大型工作空间中保持有界（#697 报告首次轮次约 10 秒的卡顿）。
+/// 对于典型项目，50K 远高于实际条目数，此上限不会产生任何影响。
 const FILE_INDEX_MAX_ENTRIES: usize = 50_000;
 
-/// Configure a `WalkBuilder` for workspace discovery: hidden files,
-/// depth-limited, custom `.deepseekignore` honored, and gitignore overrides
-/// for AI-tool dot-directories so `@`-completion finds them even when
-/// they're gitignored. Symlink following is controlled by `follow_links`.
+/// 为工作空间发现配置一个 `WalkBuilder`：
+/// 包括隐藏文件、深度限制、遵循自定义的 `.deepseekignore`，
+/// 以及针对 AI 工具点目录的 gitignore 覆盖，以便 `@` 补全即使在这些目录被 git 忽略时也能找到它们。
+/// 符号链接跟随由 `follow_links` 控制。
 fn discovery_walk_builder(
     root: &Path,
     max_depth: Option<usize>,
@@ -494,9 +516,9 @@ fn discovery_walk_builder(
     builder
 }
 
-/// Walk the AI-tool dot-directories (`.deepseek/`, `.cursor/`, `.claude/`,
-/// `.agents/`) with gitignore disabled so their contents are discoverable
-/// even when the project's `.gitignore` / `.ignore` excludes them.
+/// 遍历 AI 工具点目录（`.deepseek/`、`.cursor/`、`.claude/`、`.agents/`），
+/// 并禁用 gitignore 规则，以便即使项目的 `.gitignore` / `.ignore` 排除了这些目录，
+/// 其内容依然可被发现。
 fn walk_always_discoverable_dirs(
     walk_root: &Path,
     display_root: &Path,
@@ -507,23 +529,23 @@ fn walk_always_discoverable_dirs(
     for dir_name in DISCOVERY_ALWAYS_DIRS {
         let dot_dir = walk_root.join(dir_name);
         if !dot_dir.is_dir() {
-            continue;
+            continue;       // 目录不存在就跳过
         }
         let mut builder = WalkBuilder::new(&dot_dir);
         builder
-            .hidden(true)
+            .hidden(true)   // 显示隐藏文件
             .follow_links(follow_links)
-            .git_ignore(false)
-            .ignore(false);
+            .git_ignore(false)  // ⭐ 关键：忽略 .gitignore
+            .ignore(false);                  // ⭐ 关键：忽略 .ignore
         if let Some(depth) = max_depth {
-            builder.max_depth(Some(depth.saturating_sub(1)));
+            builder.max_depth(Some(depth.saturating_sub(1)));   // 深度减1（因为已进入点目录）
         }
         for entry in builder.build().flatten() {
             if ctx.is_full() {
                 break;
             }
             let path = entry.path();
-            // Exclude machine-generated bulk (e.g. .deepseek/snapshots/)
+            // 排除机器生成的大文件（如 .deepseek/snapshots/）
             // even though gitignore is disabled for this walk.
             if path_is_excluded_from_discovery(walk_root, path) {
                 continue;
@@ -537,7 +559,7 @@ fn walk_always_discoverable_dirs(
             }
             let abs = path.to_path_buf();
             if !ctx.remember(abs) {
-                continue;
+                continue;       // 与主遍历去重
             }
             let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
             let candidate = if is_dir {
@@ -550,49 +572,87 @@ fn walk_always_discoverable_dirs(
     }
 }
 
+// 它是一个感知 gitignore、有深度限制、支持提前终止、跨双重遍历去重、且确保 AI 工具目录始终可发现的智能目录遍历器。
 fn walk_for_completions(
-    walk_root: &Path,
-    display_root: &Path,
-    ctx: &mut SearchContext<'_>,
-    max_depth: Option<usize>,
-    follow_links: bool,
+    walk_root: &Path,               // 实际遍历的根目录
+    display_root: &Path,            // 显示路径时的根目录（用于计算相对路径）
+    ctx: &mut SearchContext<'_>,    // 保存搜索状态（匹配结果、去重集合、上限）
+    max_depth: Option<usize>,       // 可选的最大遍历深度
+    follow_links: bool,             // 是否跟随符号链接
 ) {
+    // 参数设计的关键洞察——为什么需要两个 root？
+    // - walk_root：实际文件系统遍历的起点
+    // - display_root：计算相对路径显示的根
+    // 这是为了处理 CWD 与工作区 root 不同 的场景。假设：
+    // - 工作区 root = C:\project
+    // - 用户 CWD = C:\project\src\sub
+    // 当遍历 src/sub 目录时，walk_root 是 src/sub，但 display_root 需要是共同的根 才能算出正确的相对路径。
+    // 这个分离使得 completions() 可以先遍历 CWD（以用户看到的方式显示），再遍历 workspace root，而不会导致路径显示混乱
+
+    // 创建遍历器并迭代
     let builder = discovery_walk_builder(walk_root, max_depth, follow_links);
 
+    // builder.build() 返回 Walk 迭代器。flatten() 用于跳过 Result::Err
+    // （如权限拒绝的目录），只保留 Result::Ok 的 DirEntry。
+    // 
+    // 这是 ignore crate 的惯用用法——Walk在内部通过多线程并行遍历目录树，但对使用者暴露的接口是同步迭代器。
     for entry in builder.build().flatten() {
         if ctx.is_full() {
-            break;
+            break;   // 不需要遍历完整的工作区，拿到足够的候选结果就停。
         }
+
+        // 计算相对路径。strip_prefix 如果失败（路径不在 display_root 下）就跳过。
+        // 这在 CWD 遍历和 workspace 遍历时都会发生——只有双方都能正确计算相对路径的文件才会被显示。
         let path = entry.path();
         let Ok(rel) = path.strip_prefix(display_root) else {
             continue;
         };
+        
+        // 跨平台路径统一。在 Windows 上将反斜杠 \\ 替换为正斜杠 /
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if rel_str.is_empty() {
-            continue;
+            continue;       // 跳过根路径本身（当 display_root == walk_root 时可能会发生）。
         }
-        // Dedup across the (cwd, workspace) double-walk by absolute path; we
-        // want the cwd-relative display when both walks see the same file.
+
+        // 跨双重遍历去重。ctx.remember(abs) 返回 false
+        // 表示这个文件的绝对路径已经见过（在之前的 CWD 遍历中已经处理过）。去重的逻辑是：
+        // - 以绝对路径为键，而非相对路径
+        // - 这样当 CWD 遍历和 workspace 遍历看到同一个文件时，只有第一次出现被保留（CWD 遍历优先）
+        // - 当两者看到同一个文件时，优先用 CWD 相对路径的显示方式
+        // 这是 completions() 函数调用 walk_for_completions 两次（CWD 一次、workspace 一次）时保持正确的关键。
         let abs = path.to_path_buf();
         if !ctx.remember(abs) {
             continue;
         }
+
+        // 目录附加 `/` 后缀。如果条目是目录，路径末尾加斜杠（如 src/），方便用户区分文件和目录。
         let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
         let candidate = if is_dir {
             format!("{rel_str}/")
         } else {
             rel_str.clone()
         };
+
+        // 将候选路径传递给 SearchContext 的 push_match 方法，该方法根据 needle前缀命中或子串命中进行分类。
         ctx.push_match(candidate);
     }
 
+    // 补充遍历 AI 工具目录
+    // 关键细节：标准遍历遵守 .gitignore，所以如果项目 .gitignore 中写了 .deepseek/ ，标准遍历就找不到
+    // 里面的文件。这个补充遍历专门禁用 gitignore，确保 .deepseek/commands/、.cursor/rules/ 等始终可以被 @ 补全找到。
     // Also walk the AI-tool dot-directories with gitignore disabled so
     // `.deepseek/`, `.cursor/`, etc. are always discoverable.
     walk_always_discoverable_dirs(walk_root, display_root, ctx, max_depth, follow_links);
 }
 
+/// 本地引用路径扫描的硬上限（4096 个路径）。
+/// 防止 `add_local_reference_completions` 在巨型仓库或无 .gitignore 的项目中遍历过多文件。
+/// 详见 #1921（WSL2 上 `/mnt/c/` 工作区的 UI 线程卡顿）
 const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
 
+/// 参数签名与 `walk_for_completions` 完全相同，但意图不同：
+/// - walk_for_completions：遍历工作区内所有文件
+/// - add_local_reference_completions：专门处理以 `.` 或路径分隔符开头的本地引用路径（./ 、../、src/ 等形态）
 fn add_local_reference_completions(
     root: &Path,
     display_root: &Path,
@@ -604,16 +664,22 @@ fn add_local_reference_completions(
         return;
     }
 
+    // 从 local_reference_paths 获取所有路径。注意上限 LOCAL_REFERENCE_SCAN_LIMIT = 4096
+    // 最多扫描 4096 个路径，防止巨型仓库导致卡顿。
     for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT, max_depth, follow_links) {
         if ctx.is_full() {
-            break;
+            break;  // 一旦 SearchContext 中收集的候选结果已满（prefix_hits + substring_hits >= limit），立即停止迭代。
         }
+
+        // 计算显示用相对路径。如果路径不在 display_root 下（不可能发生，但防御性编程），跳过。
         let Ok(rel) = path.strip_prefix(display_root) else {
             continue;
         };
+
+        // 跨平台路径统一。Windows 反斜杠 \\ 转正斜杠 /。
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if rel_str.is_empty() || !ctx.remember(path.clone()) {
-            continue;
+            continue;   // 路径就是 root 本身（跳过根目录）或在之前的 CWD 或 workspace 遍历中已经出现过
         }
         ctx.push_match(rel_str);
     }
@@ -652,39 +718,42 @@ pub fn rank_completion_candidates(
 
 fn should_try_local_reference_completion(needle: &str) -> bool {
     if needle.is_empty() {
-        return false;
+        return false;   // 空 needle → 不需要本地引用
     }
-    // A bare separator or dot isn't an actionable path yet. Without this
-    // guard, a single `@/` keystroke triggers a `LOCAL_REFERENCE_SCAN_LIMIT`
-    // (4096-path) walk on the UI thread for #1921 — on WSL2 with a
-    // `/mnt/c/...` workspace each entry crosses Windows-host I/O and the
-    // composer appears frozen for seconds to minutes.
+    //  #1921 裸分隔符或裸点不是可操作的路径。没有这个保护，
+    // 一个 @/ 按键就会触发 LOCAL_REFERENCE_SCAN_LIMIT (4096 个路径)
+    // 的 UI 线程遍历（#1921）——在 WSL2 中 /mnt/c/... 工作区
+    // 的每个条目都穿透 Windows 宿主机 I/O，编辑器会卡顿数秒到数分钟。
     if matches!(needle, "/" | "\\" | "." | "..") {
         return false;
     }
     needle.starts_with('.') || needle.contains('/') || needle.contains('\\')
 }
 
+/// 遍历工作区获取本地引用路径列表（禁用 gitignore，上限 4096）。
+/// 使用 `.deepseekignore` 和 `should_skip_unignored_discovery_entry` 双重过滤。
+/// 配合 `should_try_local_reference_completion` 使用，避免不必要的性能开销。
 fn local_reference_paths(
     root: &Path,
-    limit: usize,
+    limit: usize,       // 扫描上限（传进来的是 4096）
     max_depth: Option<usize>,
     follow_links: bool,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut builder = WalkBuilder::new(root);
     builder
-        .hidden(false)
+        .hidden(false)  // 不显示隐藏文件; 本地引用补全的目的是文件名补全，用户在路径中输入的 .是为了导航（./、../），而不是为了查找隐藏文件。隐藏文件（如 .env、.git/config ）在常规文件列表中没有意义，而且 .git/ 内的文件特别多，隐藏它们避免了大量无用遍历。
         .follow_links(follow_links)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false);
+        .git_ignore(false)  // 不遵守 .gitignore
+        .git_global(false)  // 不遵守全局 .gitignore
+        .git_exclude(false);  // 不遵守 .git/info/exclude
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
     }
     let _ = builder.add_custom_ignore_filename(".deepseekignore");
     let root_for_filter = root.to_path_buf();
     builder.filter_entry(move |entry| {
+        // 用于过滤掉虽未被 gitignore 但也不该出现在补全中的路径（如 .deepseek/snapshots/ 中的快照文件）。
         !should_skip_unignored_discovery_entry(&root_for_filter, entry.path())
     });
 
@@ -720,6 +789,8 @@ impl Clone for Workspace {
     }
 }
 
+/// 展开 `@~` 和 `@~/...` 提及为用户的 home 目录路径。
+/// 读取 `$HOME` 环境变量，仅用于 `Workspace::resolve()` 的路径解析入口。
 fn expand_mention_home(path: &str) -> PathBuf {
     if path == "~"
         && let Some(home) = std::env::var_os("HOME")
@@ -734,9 +805,8 @@ fn expand_mention_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Truncate `s` to at most `max_bytes`, snapping down to a UTF-8 char
-/// boundary so the result is always valid. Returns the slice and whether any
-/// truncation happened.
+/// 将 `s` 截断至最多 `max_bytes`，并向下对齐到 UTF-8 字符边界，
+/// 以确保结果始终有效。返回截断后的切片以及是否发生了截断。
 fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> (&str, bool) {
     if s.len() <= max_bytes {
         return (s, false);
@@ -748,42 +818,51 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> (&str, bool) {
     (&s[..end], true)
 }
 
-/// Configuration for working-set tracking.
+/// 工作集跟踪的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkingSetConfig {
-    /// Maximum number of entries to keep.
+    /// 保留的最大条目数。
     pub max_entries: usize,
-    /// Maximum number of paths to pin during compaction.
+    /// 压缩期间固定保留的最大路径数。
     pub max_pinned_paths: usize,
-    /// Maximum characters to scan per text block when pinning messages.
+    /// 固定消息时，每个文本块扫描的最大字符数。
     pub max_scan_chars: usize,
-    /// Maximum entries to show in the system prompt block.
+    /// 系统提示块中显示的最大条目数。
     pub max_prompt_entries: usize,
-    /// Cache-maximal context mode (#528): when enabled, the working-set block
-    /// materializes the full current contents of the top active files into the
-    /// system prompt (deterministic order, size-bounded) instead of only a
-    /// path list. The contents stay byte-stable while the files are unchanged,
-    /// so DeepSeek's KV prefix cache keeps hitting; editing a file cache-misses
-    /// from that file's block onward. Off by default — existing behavior is the
-    /// path list only.
+    /// 缓存最大化上下文模式（#528）：启用时，工作集块会将当前顶部活跃文件的完整内容
+    /// 具体化到系统提示中（确定性顺序，大小受限），而不仅仅是路径列表。
+    /// 当文件未更改时，这些内容保持字节稳定，因此 DeepSeek 的 KV 前缀缓存可以持续命中；
+    /// 编辑文件会导致从该文件块开始之后的缓存失效。默认关闭 —— 现有行为仅为路径列表。
     #[serde(default)]
     pub cache_maximal: bool,
-    /// Per-file byte cap for materialized contents in cache-maximal mode.
+    /// 缓存最大化模式下，具体化内容的单文件字节数上限。
     #[serde(default = "default_max_resident_file_bytes")]
     pub max_resident_file_bytes: usize,
-    /// Total byte cap across all materialized files in cache-maximal mode.
+    /// 缓存最大化模式下，所有具体化文件的总字节数上限。
     #[serde(default = "default_max_total_resident_bytes")]
     pub max_total_resident_bytes: usize,
 }
 
+/// `WorkingSetConfig::max_resident_file_bytes` 的默认值：24,000 字节（约 23.4 KB）。
+/// 被 serde 的 `#[serde(default = "...")]` 属性引用。
 fn default_max_resident_file_bytes() -> usize {
     24_000
 }
 
+/// `WorkingSetConfig::max_total_resident_bytes` 的默认值：96,000 字节（约 93.75 KB）。
+/// 被 serde 的 `#[serde(default = "...")]` 属性引用。
 fn default_max_total_resident_bytes() -> usize {
     96_000
 }
 
+/// `WorkingSetConfig` 的默认值。
+/// - `max_entries`: 16 —— 工作集最大条目数（保守值，避免提示词膨胀）
+/// - `max_pinned_paths`: 8 —— 压缩时保留的路径数
+/// - `max_scan_chars`: 2000 —— 钉住消息时扫描的字符上限
+/// - `max_prompt_entries`: 8 —— 提示词摘要块中显示的条目数
+/// - `cache_maximal`: false —— 默认不启用缓存最大化模式
+/// - max_resident_file_bytes: 24_000 —— 单文件缓存上限
+/// - max_total_resident_bytes: 96_000 —— 总缓存上限
 impl Default for WorkingSetConfig {
     fn default() -> Self {
         Self {
@@ -798,39 +877,43 @@ impl Default for WorkingSetConfig {
     }
 }
 
-/// The source that most recently updated an entry.
+/// 标记路径最后一次被更新的来源。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkingSetSource {
-    UserMessage,
-    ToolInput,
-    ToolOutput,
-    Rebuild,
+    UserMessage,    // 用户消息中提到
+    ToolInput,      // 工具调用的输入参数中引用
+    ToolOutput,     // 工具的输出结果中提到
+    Rebuild,        // 从已有消息重新构建时恢复
 }
 
 /// A single working-set entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkingSetEntry {
-    /// Workspace-relative path string.
+    /// 工作区相对路径
     pub path: String,
-    /// Whether the path is a directory (best-effort).
+    /// 是否是目录(best-effort).如果文件后来被删除，这个值可能过时，所以叫"best-effort"
     pub is_dir: bool,
-    /// Whether the path exists on disk (best-effort).
+    /// 磁盘上是否存在(best-effort: 文件可能在被记录后被删除).
     pub exists: bool,
-    /// Number of times this path was observed.
+    /// 被观察到的次数(这是评分的主要因子（`touches * 4`）)
     pub touches: u32,
-    /// The last observed turn index.
+    /// 最后被引用的轮次编号.新鲜度字段段。`WorkingSet.turn` 的当前值。用于计算recency_bonus（最近性加分）
     pub last_turn: u64,
-    /// The last update source.
+    /// 最后更新的来源(仅用于调试/追踪，不参与评分逻辑)
     pub last_source: WorkingSetSource,
 }
 
 impl WorkingSetEntry {
+    /// 创建一个新的工作集条目。
+    /// 
+    /// `touches` 初始化为 **1**，使路径首次出现即计为一次有效引用，
+    /// 避免因 `touches = 0` 而立即被 `prune()` 淘汰。
     fn new(path: String, exists: bool, is_dir: bool, turn: u64, source: WorkingSetSource) -> Self {
         Self {
             path,
             is_dir,
             exists,
-            touches: 1,
+            touches: 1,     // 首次记录就计为一次引用
             last_turn: turn,
             last_source: source,
         }
@@ -840,11 +923,13 @@ impl WorkingSetEntry {
 /// Repo-aware working-set state.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkingSet {
-    /// Tracking configuration.
+    /// Tracking 配置参数.
     pub config: WorkingSetConfig,
-    /// Monotonic turn counter (increments on user messages).
+    /// 单调递增的轮次计数器 (increments on user messages).
+    /// `turn` 只在 observe_user_message() 中递增（通过 next_turn()），而observe_tool_call() 不会递增。这意味着
+    /// 一轮用户消息（可能包含多次工具调用）共享同一个 turn 编号,即一个用户问题 + N次工具调用都在同一轮。
     pub turn: u64,
-    /// Path entries keyed by workspace-relative path.
+    /// map_pair: {路径, 条目}, Path entries keyed by workspace-relative path.
     pub entries: HashMap<String, WorkingSetEntry>,
 }
 
@@ -854,16 +939,19 @@ impl WorkingSet {
         self.turn = self.turn.saturating_add(1);
     }
 
-    /// Observe a user message and update the working set.
+    /// 观察用户消息 and update the working set.
     pub fn observe_user_message(&mut self, text: &str, workspace: &Path) {
-        self.next_turn();  // // 递增轮次计数器
-        let paths = extract_paths_from_text(text);  // 从文本中提取文件路径
+        // 递增轮次计数器
+        self.next_turn();
+        // 从文本中提取文件路径（用正则匹配从消息文本中提取疑似路径的字符串）
+        let paths = extract_paths_from_text(text); 
         // 将这些路径录入工作集，标记来源为WorkingSetSource::UserMessage。
         // 后续生成 summary_block时，会把这些近期被提及的文件路径包含进 <turn_meta> 中，让 LLM 知道用户的兴趣点。
         self.record_candidates(paths, workspace, WorkingSetSource::UserMessage);
     }
 
-    /// Observe a tool call (input and optional output).
+    /// 观察工具调用 (input and optional output).
+    /// 和observe_user_message的差异：不调用 `next_turn()`一轮用户消息可以触发多次工具调用，所有这些调用共享同一个 self.turn 值。
     pub fn observe_tool_call(
         &mut self,
         tool_name: &str,
@@ -871,25 +959,27 @@ impl WorkingSet {
         output: Option<&str>,
         workspace: &Path,
     ) {
+        // 输入：递归遍历JSON，寻找path-like的key和value
         let input_candidates = extract_paths_from_value(input, Some(tool_name));
         self.record_candidates(input_candidates, workspace, WorkingSetSource::ToolInput);
 
         if let Some(text) = output {
+            //  输出：使用正则匹配从输出文本中提取
             let output_candidates = extract_paths_from_text(text);
             self.record_candidates(output_candidates, workspace, WorkingSetSource::ToolOutput);
         }
     }
 
-    /// Rebuild the working set from existing messages (best effort).
+    /// 从已有消息重建(best effort).
     ///
     /// This is used when syncing a resumed session.
     pub fn rebuild_from_messages(&mut self, messages: &[Message], workspace: &Path) {
-        self.entries.clear();
-        self.turn = 0;
+        self.entries.clear();       // 清空现有条目
+        self.turn = 0;              // 重置轮次
 
         for message in messages {
             if message.role == "user" {
-                self.next_turn();
+                self.next_turn();   // 每遇到一条用户消息就递增轮次
             }
             let candidates = extract_paths_from_message(message);
             if candidates.is_empty() {
@@ -899,28 +989,38 @@ impl WorkingSet {
         }
     }
 
-    /// Render a compact working-set block for the system prompt.
+    /// 生成最终提示词摘要块,为系统提示渲染一个紧凑的工作集块。
     ///
-    /// Byte-stable across `next_turn()` calls when no new paths are observed
-    /// (#280): the rendered lines drop the turn-relative `touches` and
-    /// `last seen N turn(s) ago` fields, and the order is taken from
-    /// `sorted_for_prompt` (turn-agnostic) instead of `sorted_entries`.
-    /// The block lands in the system prompt before the historical
-    /// conversation; any byte that drifts here cache-misses everything that
-    /// follows in DeepSeek's KV prefix cache.
+    /// 当没有观察到新路径时，在连续的 `next_turn()` 调用间保持字节稳定（#280）：
+    /// 渲染的行会省略与轮次相关的 `touches` 和 `last seen N turn(s) ago` 字段，
+    /// 且顺序取自 `sorted_for_prompt`（与轮次无关）而非 `sorted_entries`。
+    /// 该块位于系统提示中历史对话之前；此处任何字节的变化都会导致 DeepSeek KV 前缀缓存中其后的所有内容发生缓存未命中。
     pub fn summary_block(&self, workspace: &Path) -> Option<String> {
         let prompt_entries: Vec<&WorkingSetEntry> = self
-            .sorted_for_prompt()
+            .sorted_for_prompt()        // 按 touches 降序
             .into_iter()
-            .take(self.config.max_prompt_entries)
+            .take(self.config.max_prompt_entries)   // 取前 N 个(默认8)
             .collect();
 
+        // Key files(etc. "Cargo.toml","README.md" ... 固定的集合)
+        // Top-dirs
         let repo_summary = summarize_repo_root(workspace);
 
         if repo_summary.is_none() && prompt_entries.is_empty() {
-            return None;
+            return None;  // 无可展示内容
         }
 
+        // summary_block的示例：
+        // ## Repo Working Set
+        // Workspace: D:\\tmp\\source\\CodeWhale
+        // Key files: Cargo.toml, AGENTS.md, CLAUDE.md, package.json
+        // Top-level dirs: assets, benchmark_results, crates, deploy, docs, extensions, fleets, integrations
+        // Active paths (prioritize these):
+        // - crates/tui/src/working_set.rs (file)
+        // - build.md (file)
+        // ...
+        // When in doubt, use tools to verify and keep changes focused on the working set.
+        // Git workspace: main | 1 modified
         let mut lines: Vec<String> = Vec::new();
         lines.push("## Repo Working Set".to_string());
         lines.push(format!("Workspace: {}", workspace.display()));
@@ -938,15 +1038,15 @@ impl WorkingSet {
         }
 
         lines.push(
+            // “如有疑问，请使用工具进行验证，并将更改集中在工作集范围内。”
             "When in doubt, use tools to verify and keep changes focused on the working set."
                 .to_string(),
         );
 
-        // Cache-maximal mode (#528): append the full current contents of the
-        // top active files so the model reads live source each turn instead of
-        // re-fetching it with tools. Kept after the path list and bounded by
-        // per-file and total byte caps; order follows `sorted_for_prompt` so
-        // the block is byte-stable while the files are unchanged.
+        // 缓存最大化模式（#528）：追加当前顶部活跃文件的完整内容，
+        // 使模型每轮都能读取实时源码，而无需通过工具重新获取。
+        // 放置在路径列表之后，并受限于单文件和总字节数上限；
+        // 顺序遵循 `sorted_for_prompt`，以便在文件未发生变化时该块保持字节稳定。
         if self.cache_maximal_enabled() && !prompt_entries.is_empty() {
             self.append_resident_file_contents(&mut lines, workspace, &prompt_entries);
         }
@@ -954,10 +1054,8 @@ impl WorkingSet {
         Some(lines.join("\n"))
     }
 
-    /// Whether cache-maximal context mode is active: explicit config, or the
-    /// `CODEWHALE_CACHE_MAXIMAL` env toggle (`1`/`true`/`on`/`yes`). The env
-    /// value is constant for the process, so the rendered block stays
-    /// byte-stable turn-over-turn.
+    /// 缓存最大化上下文模式是否激活：通过显式配置启用，或通过 `CODEWHALE_CACHE_MAXIMAL` 环境变量切换（`1`/`true`/`on`/`yes`）。
+    /// 环境变量值在进程生命周期内保持不变，因此渲染的块在轮次之间保持字节稳定。
     fn cache_maximal_enabled(&self) -> bool {
         if self.config.cache_maximal {
             return true;
@@ -971,9 +1069,8 @@ impl WorkingSet {
         }
     }
 
-    /// Render `### Active file contents` blocks for the resident files, honoring
-    /// the per-file and total byte caps. Unreadable or non-UTF-8 files are noted
-    /// rather than skipped silently so the omission is visible to the model.
+    /// 为常驻文件渲染 `### Active file contents` 块，并遵循单文件和总字节数上限。
+    /// 对于无法读取或非 UTF-8 编码的文件，会予以注明而非静默跳过，以便模型能够看到这些遗漏。
     fn append_resident_file_contents(
         &self,
         lines: &mut Vec<String>,
@@ -1079,6 +1176,11 @@ impl WorkingSet {
         pinned
     }
 
+    /// 候选路径记录的三阶段管道：
+    /// 1. `normalize_candidate()` — 去除两端空白和引号
+    /// 2. `relativize_candidate()` — 安全检查 + 转为工作区相对路径 + 磁盘存在性检测
+    /// 3. `record_path()` — 更新或插入 WorkingSetEntry
+    /// 最后调用 `prune()` 检查是否超出 max_entries 上限。
     fn record_candidates(
         &mut self,
         candidates: Vec<String>,
@@ -1105,7 +1207,11 @@ impl WorkingSet {
 
         self.prune();
     }
-
+    
+    /// 记录或更新一条工作集路径。
+    /// - 已存在：`exists` 和 `is_dir` 用按位或合并（一旦为 true 就保持 true），
+    ///   `touches` 会进一，`last_turn` 和 `last_source` 更新为当前值。
+    /// - 不存在：调用 `WorkingSetEntry::new` 创建新条目（touches 初始化为 1）
     fn record_path(&mut self, rel: String, exists: bool, is_dir: bool, source: WorkingSetSource) {
         match self.entries.get_mut(&rel) {
             Some(entry) => {
@@ -1122,6 +1228,9 @@ impl WorkingSet {
         }
     }
 
+    /// 检查工作集条目数是否超过 `config.max_entries` 上限。
+    /// 若超出，按 `score_entry()` 得分升序排列，移除分数最低的超额条目。
+    /// 每次 `record_candidates()` 完成后自动调用。
     fn prune(&mut self) {
         let max_entries = self.config.max_entries;
         if self.entries.len() <= max_entries {
@@ -1152,12 +1261,13 @@ impl WorkingSet {
         entries
     }
 
-    /// Turn-agnostic ordering used when rendering the prompt summary block.
-    /// `sorted_entries` mixes in a recency bonus from `self.turn`, so its
-    /// output reorders as turns advance even when no new paths are touched —
-    /// that movement would cross `max_prompt_entries` boundaries and bust the
-    /// KV prefix cache (#280). Compaction pinning still uses the recency-aware
-    /// `sorted_entries`; only the prompt-facing surface is stabilised here.
+    /// 根据WorkingSetEntry::touches对self.entries排序后输出Vec.
+    /// 
+    /// 渲染提示摘要块时使用的与轮次无关的排序。
+    /// `sorted_entries` 混合了来自 `self.turn` 的新近度加成，因此即使没有触及新路径，
+    /// 其输出也会随着轮次推进而重新排序——这种变动会跨越 `max_prompt_entries` 边界，
+    /// 从而破坏 KV 前缀缓存（#280）。压缩固定策略仍使用感知新近度的 `sorted_entries`；
+    /// 此处仅对面向提示的表面层进行稳定处理。
     fn sorted_for_prompt(&self) -> Vec<&WorkingSetEntry> {
         let mut entries: Vec<&WorkingSetEntry> = self.entries.values().collect();
         entries.sort_by(|a, b| b.touches.cmp(&a.touches).then_with(|| a.path.cmp(&b.path)));
@@ -1165,6 +1275,10 @@ impl WorkingSet {
     }
 }
 
+/// 工作集条目评分函数。
+/// 公式：`touches * 4 + recency_bonus(age)`
+/// 新鲜度加分：age=0→+6、1→+4、2→+3、3-5→+2、6-10→+1、>10→0
+/// touches 的权重（×4）确保高频引用路径的基线分数远高于偶发路径。
 fn score_entry(entry: &WorkingSetEntry, current_turn: u64) -> i64 {
     let age = current_turn.saturating_sub(entry.last_turn);
     let recency_bonus = match age {
@@ -1178,6 +1292,8 @@ fn score_entry(entry: &WorkingSetEntry, current_turn: u64) -> i64 {
     i64::from(entry.touches) * 4 + recency_bonus
 }
 
+/// 清理候选路径字符串：去除两端空白，去除可能附着在路径周围的标点符号
+/// （引号、逗号、分号、冒号、括号等）。空结果返回 None。
 fn normalize_candidate(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches(|c: char| {
         matches!(
@@ -1191,6 +1307,12 @@ fn normalize_candidate(raw: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// 将候选路径转换为工作区相对路径并检测磁盘存在性。
+/// - 拒绝包含 `://` 的 URL
+/// - 绝对路径必须在工作区内
+/// - 相对路径拒绝 `../` 父目录逃逸
+/// - 调用 `clean_relative` 解析 `./` 和 `../` 中间组件
+/// 返回 `(工作区相对路径字符串, 是否存在, 是否是目录)` 三元组。
 fn relativize_candidate(
     candidate: &str,
     workspace: &Path,
@@ -1232,6 +1354,8 @@ fn relativize_candidate(
     Some((rel_string, exists, is_dir))
 }
 
+/// 检查路径是否以 `../`（父目录）开头。
+/// 用于 `relativize_candidate()` 中拒绝工作区外的路径逃逸。
 fn starts_with_parent_dir(path: &Path) -> bool {
     matches!(
         path.components().next(),
@@ -1239,6 +1363,9 @@ fn starts_with_parent_dir(path: &Path) -> bool {
     )
 }
 
+/// 规范化相对路径：解析 `./`（当前目录）和 `../`（父目录）组件。
+/// 不处理绝对路径和跨平台前缀。
+/// 例如：`src/./lib/../main.rs` → `src/main.rs`
 fn clean_relative(path: &Path) -> PathBuf {
     use std::path::Component;
 
@@ -1260,10 +1387,16 @@ fn clean_relative(path: &Path) -> PathBuf {
     out
 }
 
+/// 将 `Path` 转换为正斜杠分隔的字符串。
+/// 在 Windows 上将 `\\` 替换为 `/`，确保跨平台路径格式一致。
+/// 路径包含非 UTF-8 字符时返回 None。
 fn path_to_string(path: &Path) -> Option<String> {
     path.as_os_str().to_str().map(|s| s.replace('\\', "/"))
 }
 
+/// 从消息的所有 ContentBlock 中提取疑似文件路径。
+/// 处理 `Text`（文本）、`ToolUse`（工具输入 JSON）、`ToolResult`（工具输出文本）三种块类型。
+/// 用于会话重建时从历史消息恢复工作集。
 fn extract_paths_from_message(message: &Message) -> Vec<String> {
     let mut paths = Vec::new();
     for block in &message.content {
@@ -1287,12 +1420,21 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
     paths
 }
 
+/// 从 `serde_json::Value` 中递归提取疑似文件路径。
+/// 使用 `tool_hint`（工具名称）辅助判断：对于 `exec_shell` 工具，即使字符串不含分隔符也尝试提取。
+/// 入口函数，委托给 `extract_paths_from_value_inner`。
 fn extract_paths_from_value(value: &Value, tool_hint: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     extract_paths_from_value_inner(value, tool_hint, None, &mut out);
     out
 }
 
+
+/// `extract_paths_from_value` 的递归内部实现。
+/// - `Value::String`：如果 key 名 path-like 或值 looks_like_path 则提取；
+///   对 `exec_shell` 工具，短字符串（<400 字符）也尝试提取。
+/// - `Value::Array`：递归每个元素
+/// - `Value::Object`：递归每个值，以 key 名作为 `key_hint`
 fn extract_paths_from_value_inner(
     value: &Value,
     tool_hint: Option<&str>,
@@ -1325,6 +1467,9 @@ fn extract_paths_from_value_inner(
     }
 }
 
+/// 判断 JSON 对象的 key 名是否暗示对应的 value 可能是文件路径。
+/// 匹配以下词汇（不区分大小写）："path"、"file"、"dir"、"cwd"、"workspace"、"root",
+/// 以及精确匹配 "target"。
 fn key_is_path_like(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     lower.contains("path")
@@ -1336,6 +1481,10 @@ fn key_is_path_like(key: &str) -> bool {
         || lower == "target"
 }
 
+/// 启发式判断字符串是否可能是文件路径。
+/// 条件之一满足即可：
+/// 1. 包含路径分隔符（`/` 或 `\`）
+/// 2. 扩展名（如 `.rs`、`.py`、`.toml`、`.md` 等）在 `COMMON_EXTENSIONS` 列表中
 fn looks_like_path(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -1350,6 +1499,9 @@ fn looks_like_path(text: &str) -> bool {
     }
 }
 
+/// 常见源文件和配置文件的扩展名列表。
+/// 用于 `looks_like_path()` 的启发式判断：当字符串不包含路径分隔符时，
+/// 如果其扩展名在此列表中，仍被视为"可能是文件路径"。
 const COMMON_EXTENSIONS: &[&str] = &[
     "rs", "toml", "md", "txt", "json", "yaml", "yml", "ts", "tsx", "js", "jsx", "py", "go", "java",
     "c", "cc", "cpp", "h", "hpp", "sh", "bash", "zsh", "sql", "html", "css", "scss",
@@ -1369,6 +1521,11 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// 使用 `OnceLock` 编译并缓存的正则表达式，用于从文本中匹配疑似文件路径。
+/// 匹配两种格式：
+/// 1. 带路径分隔符的（`a/b/c`、`C:\a\b\c`）
+/// 2. 纯 `filename.ext` 格式
+/// `OnceLock` 确保正则只编译一次，后续复用。
 fn path_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -1376,11 +1533,11 @@ fn path_regex() -> &'static Regex {
         Regex::new(
             r#"(?x)
             (?:
-                (?:[A-Za-z]:\\)?                # optional Windows drive
-                (?:\./|\../|/)?                 # optional leading
+                (?:[A-Za-z]:\\)?                # 可选的 Windows 盘符
+                (?:\./|\../|/)?                 # 可选的前导路径
                 [A-Za-z0-9._-]+
                 (?:[/\\][A-Za-z0-9._-]+)+
-                (?:\.[A-Za-z0-9]{1,8})?         # optional extension
+                (?:\.[A-Za-z0-9]{1,8})?         # 可选的拓展名
             )
             |
             (?:
@@ -1392,6 +1549,9 @@ fn path_regex() -> &'static Regex {
     })
 }
 
+/// 按字符数（而非字节数）截断字符串，返回前 `max_chars` 个字符。
+/// 与 `truncate_on_char_boundary`（按字节截断）不同，此函数在字符边界上截断。
+/// 用于 `message_mentions_any_path` 中限制消息扫描范围。
 fn truncate_chars(text: &str, max_chars: usize) -> &str {
     if max_chars == 0 {
         return "";
@@ -1402,6 +1562,10 @@ fn truncate_chars(text: &str, max_chars: usize) -> &str {
     }
 }
 
+/// 从工作集条目构建搜索关键词（needles）集合。
+/// 每个条目生成两个 needle：工作区相对路径和绝对路径，
+/// 确保在消息的文本和 JSON 中都能匹配到路径引用。
+/// 用于 `pinned_message_indices()` 的路径匹配
 fn build_search_needles(entries: &[&WorkingSetEntry], workspace: &Path) -> Vec<String> {
     let mut needles: HashSet<String> = HashSet::new();
     for entry in entries {
@@ -1420,6 +1584,10 @@ fn build_search_needles(entries: &[&WorkingSetEntry], workspace: &Path) -> Vec<S
     needles.into_iter().collect()
 }
 
+/// 检查消息是否包含对任何工作集路径的引用。
+/// 扫描 Text、ToolUse（JSON 序列化后）、ToolResult 三种内容块，
+/// 受 `max_scan_chars` 字符上限保护（防止消息体过大导致性能问题）。
+/// 用于 `pinned_message_indices()` 确定哪些消息应在压缩时保留。
 fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_chars: usize) -> bool {
     if needles.is_empty() {
         return false;
@@ -1455,12 +1623,21 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
     false
 }
 
+/// 检查 `text` 是否包含 `needles` 中的任一字符串。
+/// 自动跳过空 needle。不区分大小写？否——保持原始匹配。
+/// 用于 `message_mentions_any_path` 中的朴素子串匹配。
 fn contains_any(text: &str, needles: &[String]) -> bool {
     needles
         .iter()
         .any(|needle| !needle.is_empty() && text.contains(needle))
 }
 
+/// 生成仓库根目录摘要文本，用于 `summary_block()`。
+/// 组合 `detect_key_files()` 和 `list_top_level_dirs()` 的结果。
+/// 两个列表都为空时返回 `None`。
+/// 输出示例：
+///   Key files: Cargo.toml, AGENTS.md
+///   Top-level dirs: src, docs
 fn summarize_repo_root(workspace: &Path) -> Option<String> {
     let key_files = detect_key_files(workspace);
     let top_dirs = list_top_level_dirs(workspace, 8);
@@ -1479,6 +1656,10 @@ fn summarize_repo_root(workspace: &Path) -> Option<String> {
     Some(parts.join("\n"))
 }
 
+/// 检测工作区根目录下是否存在预定义的关键项目文件。
+/// 候选列表：`Cargo.toml`、`README.md`、`AGENTS.md`、`CLAUDE.md`、
+/// `package.json`、`pyproject.toml`、`go.mod`、`Makefile`。
+/// 返回存在的文件名列表，用于提示词中向模型展示项目概况。
 fn detect_key_files(workspace: &Path) -> Vec<String> {
     const CANDIDATES: &[&str] = &[
         "Cargo.toml",
@@ -1504,6 +1685,9 @@ fn detect_key_files(workspace: &Path) -> Vec<String> {
         .collect()
 }
 
+/// 列出工作区根目录的一级子目录。
+/// 过滤隐藏目录（`.` 开头）和已知忽略目录（`target`、`node_modules`、`dist`、`build`、`.git`）。
+/// 返回排序去重后的目录名列表，上限由 `limit` 控制。
 fn list_top_level_dirs(workspace: &Path, limit: usize) -> Vec<String> {
     let mut dirs = Vec::new();
     let entries = match fs::read_dir(workspace) {
@@ -1536,13 +1720,18 @@ fn list_top_level_dirs(workspace: &Path, limit: usize) -> Vec<String> {
     dirs
 }
 
+/// `list_top_level_dirs()` 中跳过的不展示根级目录名称。
+/// 这些是构建产物、依赖管理或版本控制目录，对项目结构展示无帮助
 const IGNORED_ROOT_DIRS: &[&str] = &["target", "node_modules", "dist", "build", ".git"];
 
 #[cfg(test)]
 mod tests {
+    // 测试模块覆盖：WorkingSet（路径追踪、钉住消息、摘要块、缓存最大化）+
+    // Workspace（路径解析、自动补全、浏览器模式、文件索引）+ 路径提取函数
     use super::*;
     use tempfile::TempDir;
 
+    /// 测试辅助函数：快速构造一条仅包含 Text 块的 Message。
     fn make_message(role: &str, text: &str) -> Message {
         Message {
             role: role.to_string(),

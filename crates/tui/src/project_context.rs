@@ -1,20 +1,18 @@
-//! Project context loading for CodeWhale.
+//! 这是 CodeWhale 的项目上下文加载模块。
 //!
-//! This module handles loading project-specific context files that provide
-//! instructions and context to the AI agent. These include:
+//! 该模块负责加载项目特定的上下文文件，为 AI 智能体提供指令和上下文。包括
 //!
-//! - `AGENTS.md` - Cross-agent project instructions (canonical, highest priority)
-//! - `.claude/instructions.md` - Claude-style hidden instructions (compat)
-//! - `CLAUDE.md` - Claude-style instructions (compat)
-//! - `.codewhale/instructions.md` - Hidden instructions file (compat)
-//! - `.deepseek/instructions.md` - Hidden instructions file (legacy)
+//! - AGENTS.md - 跨智能体项目指令（规范，最高优先级）
+//! - .claude/instructions.md - Claude 风格的隐藏指令（兼容）
+//! - CLAUDE.md - Claude 风格的指令（兼容）
+//! - .codewhale/instructions.md - 隐藏指令文件（兼容）
+//! - .deepseek/instructions.md - 隐藏指令文件（遗留）
 //!
-//! CodeWhale-specific repo authority/prioritization policy lives separately in
-//! `.codewhale/constitution.json` and is rendered as its own higher-authority
-//! block. The loaded content is injected into the system prompt to give the
-//! agent context about the project's conventions, structure, and requirements.
+//! CodeWhale 特定的仓库授权/优先级策略独立存在于 .codewhale/constitution.json
+//! 中，并以它自己更高权限的块渲染。加载的内容被注入系统提示词，向智能体提供有关项目
+//! 的约定、结构和需求信息。
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};  // BTreeMap 用于排序的计数统计,VecDeque 用于 BFS 目录遍历；
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -22,15 +20,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Names of project context files to look for, in priority order.
+/// 要查找的项目上下文文件名称，按优先级顺序排列。
 ///
-/// `AGENTS.md` is the canonical cross-agent project-instructions file.
-/// `WHALE.md` is no longer an active context surface; when present, CodeWhale
-/// reports a migration warning but ignores it. CodeWhale-specific repo
-/// authority now lives in `.codewhale/constitution.json`, not a bespoke
-/// markdown file. `CLAUDE.md` and the `*/instructions.md` variants are
-/// read-only compatibility fallbacks; CodeWhale never creates or recommends
-/// them.
+/// `AGENTS.md` 是标准的跨 Agent 项目指令文件。
+/// `WHALE.md` 不再作为有效的上下文来源；如果存在，CodeWhale 会报告迁移警告但忽略它。
+/// CodeWhale 特定的仓库权限现在位于 `.codewhale/constitution.json` 中，而不是自定义的 Markdown 文件。
+/// `CLAUDE.md` 和 `*/instructions.md` 变体是只读的兼容性回退方案；CodeWhale 不会创建或推荐使用它们。
 const PROJECT_CONTEXT_FILES: &[&str] = &[
     "AGENTS.md",
     ".claude/instructions.md",
@@ -39,62 +34,59 @@ const PROJECT_CONTEXT_FILES: &[&str] = &[
     ".deepseek/instructions.md",
 ];
 
-/// Rules directories auto-discovered at workspace level, in priority order.
-/// `.codewhale/rules/` is CodeWhale-native; `.claude/rules/` is Claude compatibility.
-/// All `.md` files in these directories are loaded as project rules in filename order.
-/// Security model: same trust class as AGENTS.md — workspace-contained content only,
-/// no absolute-path escape. Does not require #417 project-config relaxation.
+/// 在工作空间级别自动发现的规则目录，按优先级顺序排列。
+/// `.codewhale/rules/` 是 CodeWhale 原生目录；`.claude/rules/` 用于 Claude 兼容性。
+/// 这些目录中的所有 `.md` 文件将按文件名顺序加载为项目规则。
+/// 安全模型：与 AGENTS.md 具有相同的信任等级——仅包含工作空间内的内容，
+/// 不允许绝对路径转义。不需要 #417 项目配置放宽。
 const RULES_DIRS: &[&str] = &[".codewhale/rules", ".claude/rules"];
 
-/// File name of the deprecated CodeWhale-native instructions file.
+/// 已废弃的 WHALE.md 文件名
 const DEPRECATED_WHALE_FILENAME: &str = "WHALE.md";
 
-/// Warning surfaced when an ignored `WHALE.md` is present.
+/// 当发现 WHALE.md 时输出的迁移警告文本
 const WHALE_IGNORED_WARNING: &str = "WHALE.md is ignored; move project instructions to AGENTS.md, or CodeWhale-specific authority policy to .codewhale/constitution.json.";
 
-/// Relative path (within a workspace or one of its parents) to the
-/// CodeWhale-specific repo authority/prioritization policy.
+/// CodeWhale 特定的仓库权限/优先级策略文件的相对路径（位于工作空间或其父级目录内）。
 const REPO_CONSTITUTION_RELATIVE_PATH: &[&str] = &[".codewhale", "constitution.json"];
 
-/// `schema_version` understood by this build of the constitution loader.
+/// 当前构建版本支持的宪章 schema 版本号为 1。如果发现不匹配的版本会发出警告，但尽量解析。
 const SUPPORTED_CONSTITUTION_SCHEMA: u32 = 1;
 
-/// User-level project instructions loaded as a fallback when the workspace and
-/// its parents do not define project context. Any global AGENTS.md takes
-/// priority over a global instructions.md (#3012). Within each file name,
-/// `.codewhale/` takes priority over vendor-neutral `.agents/`, which takes
-/// priority over legacy `.deepseek/`. Global `WHALE.md` files are ignored and
-/// reported as migration-only diagnostics.
+/// 当工作空间及其父级目录未定义项目上下文时，作为回退方案加载的用户级项目指令。
+/// 任何全局的 AGENTS.md 优先级均高于全局的 instructions.md（#3012）。
+/// 在同一文件名层级下，`.codewhale/` 优先于厂商中立的 `.agents/`，后者又优先于旧版的 `.deepseek/`。
+/// 全局 `WHALE.md` 文件将被忽略，并仅作为迁移诊断信息进行报告。
 const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codewhale", "AGENTS.md"];
 const GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "AGENTS.md"];
 const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
 const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codewhale", "WHALE.md"];
 const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
 const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
-/// Global `instructions.md` (#3012): auto-loaded as a fallback context layer,
-/// ranked below AGENTS.md, mirroring the project-level precedence.
+/// 全局 `instructions.md`（#3012）：作为回退上下文层自动加载，
+/// 排名低于 AGENTS.md，与项目级别的优先级顺序保持一致。
 const GLOBAL_INSTRUCTIONS_RELATIVE_PATH: &[&str] = &[".codewhale", "instructions.md"];
 const GLOBAL_INSTRUCTIONS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "instructions.md"];
 const GLOBAL_INSTRUCTIONS_LEGACY_PATH: &[&str] = &[".deepseek", "instructions.md"];
 
-/// Maximum size for project context files (to prevent loading huge files)
+/// 项目上下文文件的最大大小（以防止加载过大的文件）。
 const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
 
-/// Maximum number of rule files loaded per rules directory.
-/// Prevents a project from silently injecting hundreds of rule files.
+/// 每个规则目录加载的最大规则文件数量。
+/// 防止项目静默注入数百个规则文件。
 const MAX_RULES_FILES: usize = 50;
 
-/// Maximum total bytes across the assembled rules_block.
-/// 50 files × 100 KB per file could reach ~5 MB; this caps the
-/// cumulative injected content so a large rules directory can't
-/// dominate the context window. Exceeded bytes are truncated with
-/// an explicit marker.
+/// 所有这些常量用于确保上下文加载不会无限膨胀。
+/// 
+/// 组合后的 rules_block 的最大总字节数。
+/// 50 个文件 × 每个文件 100 KB 可能达到约 5 MB；此上限限制了累计注入的内容量，
+/// 以防止大型规则目录主导上下文窗口。超出上限的字节将被截断，并显式标记。
 const MAX_RULES_BLOCK_BYTES: usize = 500 * 1024; // 500 KB
 const PACK_README_MAX_CHARS: usize = 4_000;
 const PACK_MAX_ENTRIES: usize = 220;
 const PACK_MAX_SOURCE_FILES: usize = 60;
 const PACK_MAX_CONFIG_FILES: usize = 60;
-const PACK_MAX_DEPTH: usize = 4;
+const PACK_MAX_DEPTH: usize = 4;            // 扫描深度 4 层
 const PACK_IGNORED_DIRS: &[&str] = &[
     ".git",
     ".worktrees",
@@ -119,7 +111,9 @@ const PACK_IGNORED_FILE_EXTENSIONS: &[&str] = &[
 ];
 
 // === Errors ===
-
+/// 使用 thiserror 推导的错误类型。每个变体对应加载上下文文件时可能出现的故障模式：
+/// 元数据读取失败、检测到符号链接（安全策略）、不是普通文件、文件过大（超过 100 KB）、
+/// IO 读取错误、内容为空。每个错误都携带产生错误的路径
 #[derive(Debug, Error)]
 enum ProjectContextError {
     #[error("Failed to read context metadata for {path}: {source}")]
@@ -146,34 +140,33 @@ enum ProjectContextError {
     Empty { path: PathBuf },
 }
 
-/// Result of loading project context
+/// 这是整个模块的核心输出结构体，保存项目上下文加载的全部结果
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
-    /// The loaded instructions content
+    /// 从 AGENTS.md（或回退文件）加载到的指令内容，包装在 <project_instructions> 块中
     pub instructions: Option<String>,
-    /// Auto-discovered rules from `.codewhale/rules/` / `.claude/rules/`.
-    /// Kept separate from `instructions` so rules alone don't block
-    /// parent-directory AGENTS.md discovery via `has_instructions()`.
+    /// 从 .codewhale/rules/ 和 .claude/rules/ 自动发现的规则，拼接为 <project_rule> 块。
+    /// 与 instructions 分离保存，这样规则存在不会阻止父目录 AGENTS.md 的发现
+    /// （通过 has_instructions() 判断）
     pub rules_block: Option<String>,
-    /// Path to the loaded file (for display)
+    /// 被加载的指令文件路径，用于 UI 显示
     pub source_path: Option<PathBuf>,
-    /// Any warnings during loading
+    /// 加载过程中累积的警告列表（如废弃文件、解析错误）
     pub warnings: Vec<String>,
-    /// Rendered `.codewhale/constitution.json` authority block, if present.
-    /// CodeWhale-specific repo authority/prioritization policy — distinct from
-    /// the cross-agent prose in `instructions`.
+    /// 渲染后的 `.codewhale/constitution.json` 权限块（如果存在）。
+    /// CodeWhale 特定的仓库权限/优先级策略——区别于 `instructions` 中的跨 Agent 纯文本指令。
     pub constitution_block: Option<String>,
-    /// Path to the repo constitution file that produced `constitution_block`.
+    /// 产生宪法块的源文件路径
     pub constitution_source_path: Option<PathBuf>,
-    /// Project root directory
-    #[allow(dead_code)] // Part of ProjectContext public interface
+    /// 项目根目录
+    #[allow(dead_code)] // 因为它是公共接口的一部分
     pub project_root: PathBuf,
-    /// Whether this is a trusted project
+    /// 该项目是否标记为受信任
     pub is_trusted: bool,
 }
 
 impl ProjectContext {
-    /// Create an empty project context
+    /// 创建空的 ProjectContext，所有可选字段为 None，警告为空列表，is_trusted 为 false。
     pub fn empty(project_root: PathBuf) -> Self {
         Self {
             instructions: None,
@@ -187,16 +180,19 @@ impl ProjectContext {
         }
     }
 
-    /// Check if any instructions were loaded
+    /// 检查是否加载到了任何指令。这是父目录搜索逻辑的关键判断——如果没有 instructions， 
+    /// load_project_context_with_parents 会继续向上搜索父目录。
     pub fn has_instructions(&self) -> bool {
         self.instructions.is_some()
     }
 
-    /// Get the instructions as a formatted block for system prompt.
-    ///
-    /// The CodeWhale repo constitution (`.codewhale/constitution.json`), when
-    /// present, is emitted first as a higher-authority block, followed by the
-    /// cross-agent `<project_instructions>` prose. Either may be absent.
+    /// 将整个上下文渲染为系统提示块。逻辑：
+    /// 先构建指令块（<project_instructions source="..."> XML 标签包裹的 instructions 加 rules），
+    /// 然后决定最终输出：
+    /// 如果宪章和指令都存在，宪章在前指令在后；
+    /// 只有宪章时输出宪章（若规则存在则附加）；
+    /// 只有指令时输出指令；
+    /// 全无时如果只有规则则输出规则块。
     pub fn as_system_block(&self) -> Option<String> {
         let instructions_block = self.instructions.as_ref().map(|content| {
             let source = self
@@ -207,9 +203,9 @@ impl ProjectContext {
             let mut block = format!(
                 "<project_instructions source=\"{source}\">\n{content}\n</project_instructions>"
             );
-            // Append rules after instructions, inside the same logical block.
-            // Rules are kept separate from `instructions` so they don't block
-            // parent-directory AGENTS.md discovery via `has_instructions()`.
+            // 在 instructions 之后追加规则，位于同一逻辑块内。
+            // 规则与 `instructions` 保持分离，以便它们不会通过 `has_instructions()` 
+            // 阻止父级目录 AGENTS.md 的发现。
             if let Some(rules) = &self.rules_block {
                 block.push('\n');
                 block.push_str(rules);
@@ -238,43 +234,91 @@ impl ProjectContext {
     }
 }
 
-/// CodeWhale-specific repo authority/prioritization policy, loaded from
-/// `.codewhale/constitution.json`. All fields are optional so a minimal file
-/// (or a future schema) still parses; unknown fields are ignored.
+/// 从 .codewhale/constitution.json 反序列化的仓库宪章(仓库权限/优先级策略)。
+/// 所有字段均为可选，因此最小配置文件（或未来的 schema）仍可正常解析；未知字段将被忽略。
 #[derive(Debug, Clone, Default, Deserialize)]
 struct RepoConstitution {
+    /// 版本号，用于未来兼容性检查
     #[serde(default)]
     schema_version: Option<u32>,
-    /// Ordered list of sources to trust when local sources conflict
-    /// (highest authority first).
+    /// 有序信任列表，当本地源冲突时按此优先级裁决（即定义了智能体决策时的优先级顺序，从高到低）
     #[serde(default)]
     authority: Option<Vec<String>>,
-    /// Repo invariants the agent must not break. Plain strings are advisory
-    /// prose (rendered into the prompt only); object entries with `paths`
-    /// are additionally compiled into mechanical write holds (see
-    /// `crate::repo_law`). Law can only tighten — there is no allow shape.
+    /// 智能体不得违反的保护规则。纯字符串为建议性说明（仅渲染到提示中）；
+    /// 带有 `paths` 的对象条目还会被编译为机械式的写入保持（见 `crate::repo_law`）。
+    /// 法律只能收紧——不存在放宽的形状。
     #[serde(default)]
     protected_invariants: Option<Vec<ProtectedInvariant>>,
-    /// Branch / release policy in effect (e.g. "PRs target codex/v0.8.53").
+    /// 分支/发布策略（如"PR 应目标到 codex/v0.8.53"）
     #[serde(default)]
     branch_policy: Option<String>,
-    /// Conditions under which the agent should stop and escalate to the user.
+    /// 智能体应停止并上报给用户的条件列表
     #[serde(default)]
     escalate_when: Option<Vec<String>>,
+    /// 验证策略
     #[serde(default)]
     verification_policy: Option<VerificationPolicy>,
 }
+// 这是RepoConstitution的一个例子，来源于codewhale本项目：CodeWhale\.codewhale\constitution.json
+/*
+{
+  "schema_version": 1,
+  "authority": [                     # 定义了智能体决策时的优先级顺序，从高到低：
+    "current user request",          # 用户当下的指令具有最高优先级
+    "live code and tests",           # 实时代码和测试
+    "GitHub issue/PR details",       # GitHub Issue/PR 上下文
+    "AGENTS.md and project CLAUDE.md",     # 项目文档（AGENTS.md / CLAUDE.md）
+    "memory",                        # 记忆系统（跨会话的持久化记忆）
+    "previous-session handoffs"      # 上一会话交接信息（多轮对话间的状态传递）
+  ],
+  "protected_invariants": [          # 不可违反的铁律
+    # 工具目录头字节稳定性：首轮对话的工具列表（tool-catalog）必须保持字节级稳定，以保证 DeepSeek 的 KV 缓存前缀复用生效（性能优化）
+    "Keep the active first-turn tool-catalog head byte-stable (DeepSeek KV prefix-cache invariant); changes to it must be one-time and deterministic.",
+    # 保留旧会话转录重放： 即使工具被标记为废弃/隐藏，也不能从注册表中删除，以保证历史会话可完整重放
+    "Preserve old-session transcript replay: never remove a tool's registration just because it is deprecated/hidden.",
+    # 仅限稳定 Rust（2024 版）： 禁止使用 nightly 特性，保证代码在稳定工具链上可编译
+    "Stable Rust only (edition 2024); no nightly features.",
+    # CLI 与 TUI 同步： 当 crates/tui 变更时，必须同步更新 CLI 调度器，保持两者行为一致
+    "Keep the codewhale CLI dispatcher and the codewhale-tui binary in sync when crates/tui changes."
+  ],
+  # 分支策略： 从当前活跃分支出发，不直接从 main 分支工作；禁止直接提交到 main，必须走 PR 流程；单 PR 单逻辑工作流，不混合无关修改；可以使用 codex/... 前缀的临时分支或 worktree 做隔离开发
+  "branch_policy": "Start from live branch and handoff truth. Never commit directly to main; use the active integration branch or a fresh codex/... branch/worktree for isolated work, and open reviewable PRs into main. One PR per logical workstream; do not mix unrelated fixes.",
+  # 验证策略
+  "verification_policy": {
+    "before_claiming_done": [   # 在声明任务完成之前必须执行：
+      # 运行针对性的测试：cargo test -p <crate>，执行 cargo check/clippy 确保代码质量
+      "run the focused tests for the changed crate (cargo test -p <crate>), then cargo check/clippy as appropriate",
+      # 读回变更的文件，确认修改确实生效
+      "read changed files back to confirm the edit landed as intended",
+      # 禁止声称未实际执行的验证
+      "never claim verification you did not perform"
+    ]
+  },
+  # 升级/上报条件（escalate_when）
+  "escalate_when": [
+    # 破坏性/难逆转的操作，未经明确授权时不得执行
+    "an action is destructive or hard to reverse and was not explicitly authorized",
+    # 外部服务变更，修改 provider、认证配置或向外部发送数据
+    "changing provider/auth/config or anything that sends data to an external service",
+    # 删除/覆盖非自创文件，不能删除或覆盖不是自己创建的文件，也不得与文件描述矛盾
+    "deleting or overwriting files you did not create, or that contradict how they were described"
+  ]
+}
+*/
+
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct VerificationPolicy {
-    /// Steps to perform before claiming a task is done.
+    /// 验证策略，包含声明任务完成前必须执行的步骤列表。
     #[serde(default)]
     before_claiming_done: Option<Vec<String>>,
 }
 
-/// One protected invariant: either advisory prose (the historical shape) or
-/// an enforced entry carrying path globs. Untagged so existing files keep
-/// parsing unchanged.
+/// 保护条款：可以是建议性说明（旧形态），也可以是带有路径通配符的强制条目。
+/// 这里使用了#[serde(untagged)]无标签标记，以便对旧文件保持兼容。
+/// 
+/// 使用 #[serde(untagged)] 实现多态反序列化：纯字符串解析为 Advisory，带 text+paths+ action 的对象
+/// 解析为 Enforced。Advisory 仅是渲染到提示的建议；Enforced 会被编译为机械性的写入保护。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProtectedInvariant {
@@ -282,11 +326,14 @@ enum ProtectedInvariant {
     Enforced(EnforcedInvariant),
 }
 
+/// EnforcedInvariant 包含保护规则文本、受保护路径的 glob 列表、以及违反时的动作。 
+/// RepoLawAction 定义两种级别：Ask（强制弹出审批——法律只能增加约束，不能减少）和
+/// Block （直接拒绝写入）。默认值是 Ask。
 #[derive(Debug, Clone, Deserialize)]
 struct EnforcedInvariant {
     text: String,
-    /// Workspace-relative path globs this invariant protects (e.g.
-    /// `crates/protocol/**`). Empty means advisory-only despite the shape.
+    /// 该保护条款所覆盖的工作空间相对路径通配符 (e.g.
+    /// `crates/protocol/**`). 若为空则表示尽管采用了该结构但仅为建议性。
     #[serde(default)]
     paths: Vec<String>,
     /// What the harness does when a write targets a protected path.
@@ -294,18 +341,20 @@ struct EnforcedInvariant {
     action: RepoLawAction,
 }
 
-/// Enforcement level for a protected path. `Ask` force-prompts (in every
-/// mode, including YOLO — law can add holds, never remove them); `Block`
-/// denies outright.
+/// 受保护路径的强制级别。`Ask` 强制提示（在所有模式下均生效，包括 YOLO——法律只能增加保持，绝不移除）；
+/// `Block` 直接拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RepoLawAction {
     #[default]
-    Ask,
-    Block,
+    Ask,        // 强制审批（在所有模式下，包括 YOLO）
+    Block,      // 直接拒绝
 }
 
-/// A compiled, mechanically-enforceable repo-law rule.
+/// 编译后的可执行法律规则。
+/// patterns 保存原始字符串，
+/// globs 是编译后的 glob 匹配器（用于快速路径匹配），
+/// action 是违反后的动作级别。
 pub(crate) struct RepoLawRule {
     pub(crate) text: String,
     pub(crate) patterns: Vec<String>,
@@ -313,11 +362,9 @@ pub(crate) struct RepoLawRule {
     pub(crate) action: RepoLawAction,
 }
 
-/// Load and compile the enforceable rules from the workspace's repo
-/// constitution. Any failure — missing file, parse error, invalid glob —
-/// degrades to fewer (or zero) rules: enforcement can silently do less,
-/// never more, and never poisons the tool gate. Parse warnings still reach
-/// the user through the prompt-side load path, which reads the same file.
+/// 从工作区的仓库宪章加载和编译可执行规则。仅处理 Enforced 类型的保护规则。
+/// 每个规则的 paths 被编译为 globset::GlobSet。
+/// 任何失败（缺失文件、解析错误、无效glob）都优雅降级。（就是当解析错误就忽略的意思）
 pub(crate) fn load_repo_law_rules(workspace: &Path) -> Vec<RepoLawRule> {
     let Some((_, constitution)) = discover_repo_constitution(workspace) else {
         return Vec::new();
@@ -358,9 +405,8 @@ pub(crate) fn load_repo_law_rules(workspace: &Path) -> Vec<RepoLawRule> {
     rules
 }
 
-/// Walk from `workspace` toward the git root looking for the repo
-/// constitution; parse best-effort. Shared by the enforcement loader; the
-/// prompt-side loader keeps its richer warning handling.
+/// 从工作区开始，逐级向上（直到 git root）搜索 .codewhale/constitution.json。
+/// 找到后读取并解析为 RepoConstitution。
 fn discover_repo_constitution(workspace: &Path) -> Option<(PathBuf, RepoConstitution)> {
     let git_root = find_git_root(workspace);
     let mut current = workspace.to_path_buf();

@@ -1,8 +1,10 @@
-//! `retrieve_tool_result` - 选择性检索溢出的工具输出。
+//! `retrieve_tool_result` - selective retrieval for spilled tool outputs.
 //!
-//! 大型成功工具输出由 `tools::truncate` 溢出到
-//! `~/.codewhale/tool_outputs/<tool-call-id>.txt`。该工具为模型提供了一种只读的、限定目录范围的方式，
-//! 用于获取这些历史输出的摘要或切片，而无需将整个文件回放到每个后续请求中。
+//! Large successful tool results are spilled to
+//! `~/.codewhale/tool_outputs/<tool-call-id>.txt` by `tools::truncate`. This
+//! tool gives the model a read-only, directory-scoped way to fetch summaries or
+//! slices of those historical outputs without replaying the entire file into
+//! every subsequent request.
 
 use std::fs;
 use std::path::PathBuf;
@@ -24,7 +26,7 @@ const HARD_MAX_MATCHES: usize = 100;
 const DEFAULT_CONTEXT_LINES: usize = 1;
 const HARD_CONTEXT_LINES: usize = 5;
 
-/// 检索先前溢出的工具结果的摘要或切片。
+/// Retrieve summaries or slices of a prior spilled tool result.
 pub struct RetrieveToolResultTool;
 
 #[async_trait]
@@ -137,35 +139,38 @@ impl ToolSpec for RetrieveToolResultTool {
     }
 }
 
-/// 将工具结果引用解析为具体的文件路径。
+/// Resolve a tool-result ref to a concrete file path.
 ///
-/// 接受六种形式：
-/// 1. `tool_call_id` — 旧版溢出形式，`tool_outputs/` 下的 `<id>.txt`。
-/// 2. `art_<id>` — 当前产物 ID，由 `apply_spillover_with_artifact` 写入。
-///    优先尝试会话产物目录，回退到 `<id>.txt`（去除 `art_` 前缀），新旧命名均可工作。
-/// 3. `sha:<64-hex>` 或裸 64-hex — 内容寻址的线路去重，`sha_<hex>.txt`。
-/// 4. `tool_result:<x>` — `<x>` 是前缀后的上述任意一种形式。
-/// 5. `artifacts/<file>.txt` 或 `<file>.txt` — 相对路径。
-/// 6. CodeWhale 主目录下的绝对路径。
+/// Accepts six shapes:
+/// 1. `tool_call_id` — legacy spillover form, `<id>.txt` under `tool_outputs/`.
+/// 2. `art_<id>` — current artifact id, written by `apply_spillover_with_artifact`.
+///    Tries the session artifact directory first, falls back to `<id>.txt`
+///    (stripping the `art_` prefix) so old + new naming both work.
+/// 3. `sha:<64-hex>` or bare 64-hex — content-addressed wire dedup, `sha_<hex>.txt`.
+/// 4. `tool_result:<x>` — `<x>` is any of the above after the prefix.
+/// 5. `artifacts/<file>.txt` or `<file>.txt` — relative paths.
+/// 6. Absolute paths under the CodeWhale home.
 ///
-/// 未命中时的错误信息会枚举尝试过的形式，以便模型无需再次盲目猜测即可纠正方向。
+/// The error message on a miss enumerates which forms were tried so the
+/// model can correct course without a second blind guess.
 fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<PathBuf, ToolError> {
     let root = crate::tools::truncate::spillover_root().ok_or_else(|| {
         ToolError::execution_failed("could not resolve ~/.codewhale/tool_outputs")
     })?;
     let root_canonical = root.canonicalize().ok();
 
-    // 解析会话的 `artifacts/` 目录。
-    // `session_artifact_absolute_path(sid, p)` 返回
-    // `~/.codewhale/sessions/<sid>/<p>` — 因此传入字面量
-    // `ARTIFACTS_DIR_NAME` ("artifacts") 即可获得真正的产物
-    // 根目录。早期草稿传入 `Path::new(".")` 并调用
-    // `.parent()`，结果定位高了一层（`<sid>` 而非
-    // `<sid>/artifacts`），导致所有裸 `art_<id>` 引用静默失效
-    // — 仅旧版溢出回退存活了下来。测试
-    // `resolves_art_prefix_to_legacy_spillover_id` 掩盖了此问题，
-    // 因为它只写了旧版溢出文件。新测试
-    // `resolves_art_prefix_via_session_artifacts` 则覆盖了真实路径。
+    // Resolve the session's `artifacts/` directory.
+    // `session_artifact_absolute_path(sid, p)` returns
+    // `~/.codewhale/sessions/<sid>/<p>` — so passing the literal
+    // `ARTIFACTS_DIR_NAME` ("artifacts") gets us the real artifacts
+    // root. An earlier draft passed `Path::new(".")` and took
+    // `.parent()`, which landed one directory too high (`<sid>` instead
+    // of `<sid>/artifacts`) and silently broke every bare `art_<id>`
+    // ref — only the legacy-spillover fallback survived. The test
+    // `resolves_art_prefix_to_legacy_spillover_id` masked it because
+    // it ONLY wrote a legacy spillover file. The new test
+    // `resolves_art_prefix_via_session_artifacts` exercises the real
+    // path.
     let session_artifacts_root = if !session_id.is_empty() {
         crate::artifacts::session_artifact_absolute_path(
             session_id,
@@ -186,21 +191,21 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
 
     let mut tried: Vec<PathBuf> = Vec::new();
     let try_path = |candidate: PathBuf, tried: &mut Vec<PathBuf>| -> Option<PathBuf> {
-        // 始终记录我们尝试过的路径，以便 `not_found` 诊断信息
-        // 能枚举所有候选路径，即使其中某些路径的
-        // `canonicalize` 返回 ENOENT。否则模型会看到
-        // 无用的 "(no valid candidates derived from ref)" 行。
+        // Always record what we tried so the `not_found` diagnostic
+        // can enumerate every candidate, even ones whose
+        // `canonicalize` returns ENOENT. Models otherwise saw the
+        // useless "(no valid candidates derived from ref)" line.
         tried.push(candidate.clone());
 
-        // 在规范化之前拒绝叶子节点的符号链接，这样能够写入
-        // `<sid>/artifacts/` 目录的攻击者就无法
-        // 布置指向 `/etc/passwd` 的符号链接并通过
-        // `retrieve_tool_result` 读取它。canonicalize() 会愉快地
-        // 跟随这样的链接，然后由于"先解析后比较"的顺序，
-        // `starts_with(root)` 检查也会通过。
-        // 主目录级别的 `~/.codewhale/tool_outputs/` 目录仅供引擎使用，
-        // 从未有此担忧；而会话产物目录中存放的是
-        // 任意工具输出，需要这道防护。
+        // Reject symlinks at the leaf BEFORE canonicalizing so an
+        // attacker who can write under `<sid>/artifacts/` cannot
+        // plant a symlink to `/etc/passwd` and read it back through
+        // `retrieve_tool_result`. canonicalize() would happily
+        // follow such a link and then pass the `starts_with(root)`
+        // check because of the resolved-then-compare order. The
+        // home-level `~/.codewhale/tool_outputs/` dir is engine-only and
+        // never carried this concern; session artifact dirs hold
+        // arbitrary tool output and need the guard.
         if let Ok(meta) = std::fs::symlink_metadata(&candidate)
             && meta.file_type().is_symlink()
         {
@@ -224,7 +229,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         }
     };
 
-    // 形式 1/3：绝对路径。验证其位于允许的根目录之一下。
+    // Form 1/3: absolute path. Validate it lives under one of the allowed roots.
     let raw_path = PathBuf::from(stripped);
     if raw_path.is_absolute() {
         if let Some(found) = try_path(raw_path.clone(), &mut tried) {
@@ -238,7 +243,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         ));
     }
 
-    // 形式 4：`sha:<hex>` 前缀或裸 64-hex SHA → SHA 寻址的文件。
+    // Form 4: `sha:<hex>` prefix or bare 64-hex SHA → SHA-addressed file.
     let sha_candidate = stripped
         .strip_prefix("sha:")
         .or_else(|| stripped.strip_prefix("sha_"))
@@ -251,17 +256,18 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         return Ok(found);
     }
 
-    // 形式 5：包含分隔符或 `.txt` 后缀的相对路径。
+    // Form 5: relative path with separator or `.txt` suffix.
     let looks_like_path = stripped.ends_with(".txt")
         || stripped.contains('/')
         || (std::path::MAIN_SEPARATOR != '/' && stripped.contains(std::path::MAIN_SEPARATOR));
     if looks_like_path {
-        // 尝试旧版溢出根目录。
+        // Try legacy spillover root.
         if let Some(found) = try_path(root.join(stripped), &mut tried) {
             return Ok(found);
         }
-        // 会话产物根目录直接指向 `<sid>/artifacts/`。
-        // 在拼接之前，从记录路径中去除可选的 `artifacts/` 前缀段。
+        // Session artifact roots point directly at `<sid>/artifacts/`.
+        // Strip an optional leading `artifacts/` segment from transcript
+        // paths before joining.
         if let Some(sa_root) = session_artifacts_root.as_ref() {
             let rel = stripped.strip_prefix("artifacts/").unwrap_or(stripped);
             if let Some(found) = try_path(sa_root.join(rel), &mut tried) {
@@ -276,15 +282,15 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         ));
     }
 
-    // 形式 1：裸 id → 旧版 `tool_outputs/<id>.txt`。
+    // Form 1: bare id → legacy `tool_outputs/<id>.txt`.
     if let Some(p) = crate::tools::truncate::spillover_path(stripped)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
     }
-    // 形式 2：`art_<id>` → 去除前缀并尝试两种方式：
-    //   a) 会话产物目录 `artifacts/art_<id>.txt`
-    //   b) 旧版溢出 `<id>.txt`
+    // Form 2: `art_<id>` → strip prefix and try both:
+    //   a) session artifacts dir at `artifacts/art_<id>.txt`
+    //   b) legacy spillover at `<id>.txt`
     if let Some(stripped_art) = stripped.strip_prefix("art_") {
         if let Some(sa_root) = session_artifacts_root.as_ref() {
             let session_file = sa_root.join(format!("art_{stripped_art}.txt"));
@@ -298,7 +304,8 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
             return Ok(found);
         }
     }
-    // 形式 2b：模型可能传了裸 id，但产物实际在会话产物目录下。尝试 `artifacts/art_<id>.txt`。
+    // Form 2b: maybe the model passed the bare id but the artifact lives
+    // under the session artifacts dir. Try `artifacts/art_<id>.txt`.
     if let Some(sa_root) = session_artifacts_root.as_ref() {
         let session_file = sa_root.join(format!("art_{stripped}.txt"));
         if let Some(found) = try_path(session_file, &mut tried) {
@@ -314,8 +321,8 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
     ))
 }
 
-/// 格式化"引用未解析"的错误，提供足够详细的信息，
-/// 以便调用者在下次尝试时选择有效的引用形式。
+/// Format a "ref didn't resolve" error with enough detail for the
+/// caller to choose a valid reference form on the next attempt.
 fn not_found(
     reference: &str,
     tried: &[PathBuf],
@@ -782,8 +789,9 @@ mod tests {
 
         let err = execute_tool(json!({"ref": outside.display().to_string()})).unwrap_err();
 
-        // 新解析器将所有不在批准根目录下的路径归类为 "not found"，
-        // 这样我们就不会意外泄露外部路径是否存在于磁盘上。
+        // The new resolver classifies anything that fails to live under
+        // an approved root as "not found" so we don't accidentally
+        // leak whether an outside path exists on disk.
         let msg = err.to_string();
         assert!(
             msg.contains("not found"),
@@ -793,8 +801,9 @@ mod tests {
 
     #[test]
     fn resolves_sha_reference_from_wire_dedup() {
-        // 基于 SHA 的查找 — 模拟模型看到 `<TOOL_RESULT_REF sha="..." />` 块
-        // 并将 SHA 传递给 retrieve_tool_result 时的行为。
+        // A SHA-keyed lookup — emulates what happens when the model
+        // sees a `<TOOL_RESULT_REF sha="..." />` block and passes the
+        // SHA to retrieve_tool_result.
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
@@ -802,20 +811,21 @@ mod tests {
         let sha = crate::hashing::sha256_hex(body.as_bytes());
         crate::tools::truncate::write_sha_spillover(&sha, &body).unwrap();
 
-        // 形式：`sha:<hex>`
+        // Form: `sha:<hex>`
         let result = execute_tool(json!({"ref": format!("sha:{sha}")})).unwrap();
         assert!(result.success, "sha:<hex> form should resolve");
 
-        // 形式：裸 64-hex
+        // Form: bare 64-hex
         let result = execute_tool(json!({"ref": &sha})).unwrap();
         assert!(result.success, "bare 64-hex form should resolve");
     }
 
     #[test]
     fn resolves_art_prefix_to_legacy_spillover_id() {
-        // 模型通常在产物引用块中看到 `id: art_call_xyz`。
-        // retrieve_tool_result 应去除 `art_` 前缀，并在不存在
-        // 相应的会话产物时找到旧版 `<id>.txt` 文件。
+        // The model commonly sees `id: art_call_xyz` in artifact
+        // ref blocks. retrieve_tool_result should strip the `art_`
+        // prefix and find the legacy `<id>.txt` file if no
+        // session-artifact equivalent exists.
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
@@ -900,10 +910,11 @@ mod tests {
             scopeguard_for_test(prior)
         };
         let session_id = "session-xyz";
-        // 在产物目录外放置一个敏感文件。
+        // Plant a sensitive file outside the artifact dir.
         let secret = tmp.path().join("secret.txt");
         fs::write(&secret, "do not leak").unwrap();
-        // 创建产物目录，然后在其中放置指向该秘密文件的符号链接。
+        // Create the artifact dir, then drop a symlink inside it
+        // pointing at the secret.
         let art_dir = tmp
             .path()
             .join("sessions")

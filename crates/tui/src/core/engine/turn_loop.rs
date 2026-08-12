@@ -250,16 +250,6 @@ impl Engine {
         count
     }
 
-    /// 这是 CodeWhale TUI 代理引擎中最核心的函数——它负责执行一个完整的"回合"（turn）：
-    /// 请求模型 → 流式接收响应 → 解析工具调用 → 执行工具 → 把结果返回模型 → 循环往复，
-    /// 直到模型不再调用工具为止。
-    /// ## Arguments
-    /// - `turn` 该回合的上下文（步数、token 用量等）
-    /// - `tool_registry` 可选的工具注册表（运行时工具集合）
-    /// - `tools` 可选的可用于当前回合的工具列表（从模型搜索得到）
-    /// - `mode` 当前应用模式（Agent / Plan / YOLO）
-    /// - `force_update_plan_first` 是否强制先调用 update_plan
-    /// - `dynamic_active_tools` 动态激活的额外工具
     pub(super) async fn handle_deepseek_turn(
         &mut self,
         turn: &mut TurnContext,
@@ -269,7 +259,8 @@ impl Engine {
         force_update_plan_first: bool,
         dynamic_active_tools: Vec<&'static str>,
     ) -> (TurnOutcomeStatus, Option<String>) {
-        // 通知任务栏：开始忙状态 + 标题栏动画。
+        // Signal to the terminal / taskbar that a turn is in progress
+        // (OSC 9 ; 4 indeterminate progress + title spinner).
         crate::tui::notifications::set_taskbar_progress_busy();
         crate::tui::notifications::start_title_animation("CodeWhale");
 

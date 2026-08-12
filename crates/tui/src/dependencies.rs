@@ -139,10 +139,12 @@ fn resolve_executable_path(spec: &str, version_flag: &str) -> Option<String> {
     None
 }
 
-/// 在每个进程中只解析一次 Python 解释器。返回探测成功的候选规范
-///（例如 `"python3"` 或 `"py -3"`），若所有候选均失败则返回 `None`。
+/// Resolve the Python interpreter once per process. Returns the
+/// candidate spec (e.g. `"python3"` or `"py -3"`) that succeeded,
+/// or `None` when every candidate failed.
 ///
-/// 需要启动解释器的调用者应将该字符串按空白符分割——参见 [`split_interpreter_spec`]。
+/// Callers that need to spawn the interpreter should split this
+/// string on whitespace — see [`split_interpreter_spec`].
 pub fn resolve_python_interpreter() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
@@ -241,11 +243,12 @@ pub fn resolve_pandoc() -> Option<String> {
         .clone()
 }
 
-/// 在每个进程中只解析一次 Node.js 运行时。`js_execution` 工具使用此结果
-/// 来决定是否在目录中对外暴露自身。
-/// 与 Python 不同的是，可执行文件名称 `node` 在我们所支持的所有平台上
-/// 都是统一的——不存在 `node3` 或 `node.exe` 等需要逐一尝试的变体——
-/// 因此这里只需一次探测，而不需要候选回退链。
+/// Resolve the Node.js runtime once per process. Used by the
+/// `js_execution` tool to decide whether to advertise itself in
+/// the catalog. Unlike Python, the executable name `node` is the
+/// same across every platform we ship to — there's no `node3` or
+/// `node.exe` variant to fall through to — so this is a single
+/// probe rather than a candidate ladder.
 pub fn resolve_node() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE

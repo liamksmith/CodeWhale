@@ -7,7 +7,7 @@
 //! 可以将依赖探测和临时文件生成逻辑隔离出来以便测试固定。
 //!
 //! 注册受 [`crate::dependencies::resolve_node`] 门控：当 Node 缺失时，
-//! 该工具根本不会被暴露（给模型），因此模型永远不会看到它实际无法使用的运行时。
+//! 该工具根本不会被广告，因此模型永远不会看到它实际无法使用的运行时。
 //! 目录端调度见 `core::engine::tool_catalog::ensure_advanced_tooling`。
 
 use std::ffi::OsString;

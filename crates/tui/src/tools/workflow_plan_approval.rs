@@ -1,8 +1,8 @@
-//! 工作流计划升级审批分析 (#4126)。
+//! Elevated Workflow plan approval analysis (#4126).
 //!
-//! 构建审批卡摘要（目标、子任务、写入/shell/网络/预算）
-//! 并决定启动是否需要操作员审批
-//! 超出只读自动启动范围的情况。
+//! Builds the approval-card summary (goal, children, writes/shell/network/budget)
+//! and decides whether a launch is elevated enough to require operator approval
+//! beyond read-only auto-start.
 
 use codewhale_config::WorkflowConfigToml;
 use codewhale_workflow::{
@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::tools::spec::ApprovalRequirement;
 
-/// 显示在工作流审批卡上的能力/预算摘要。
+/// Capability / budget summary shown on the Workflow approval card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPlanApprovalSummary {
     pub goal: String,
@@ -36,7 +36,7 @@ pub struct WorkflowPlanApprovalSummary {
 }
 
 impl WorkflowPlanApprovalSummary {
-    /// 卡片字段对：Goal、Children、Writes、Shell、Network、Budget。
+    /// Card field pairs: Goal, Children, Writes, Shell, Network, Budget.
     #[must_use]
     pub fn card_fields(&self) -> Vec<(&'static str, String)> {
         vec![
@@ -49,7 +49,7 @@ impl WorkflowPlanApprovalSummary {
         ]
     }
 
-    /// 共享 ApprovalView 卡片的一行影响摘要。
+    /// One-line impacts for the shared ApprovalView card.
     #[must_use]
     pub fn approval_impacts(&self) -> Vec<String> {
         let mut impacts = Vec::new();
@@ -86,7 +86,7 @@ impl WorkflowPlanApprovalSummary {
         impacts
     }
 
-    /// 审批/启动后用于审计的持久化收据片段。
+    /// Durable receipt fragment for audit after approval/launch.
     #[must_use]
     pub fn to_receipt(&self, decision: &str, approved_at_ms: u64) -> WorkflowPlanApprovalReceipt {
         WorkflowPlanApprovalReceipt {
@@ -115,7 +115,7 @@ impl WorkflowPlanApprovalSummary {
     }
 }
 
-/// 已批准（或自动启动）计划的持久化快照，用于审计 (#4126)。
+/// Durable snapshot of an approved (or auto-started) plan for audit (#4126).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPlanApprovalReceipt {
     pub decision: String,
@@ -138,13 +138,13 @@ pub struct WorkflowPlanApprovalReceipt {
     pub risk: Option<String>,
 }
 
-/// 分析 `workflow` 工具输入以确定审批升级 (#4126)。
+/// Analyze a `workflow` tool input for approval elevation (#4126).
 #[must_use]
 pub fn analyze_workflow_plan_approval(input: &Value) -> WorkflowPlanApprovalSummary {
     analyze_workflow_plan_approval_with_config(input, &WorkflowConfigToml::default())
 }
 
-/// 与 [`analyze_workflow_plan_approval`] 相同，但使用显式工作流配置。
+/// Same as [`analyze_workflow_plan_approval`] with an explicit workflow config.
 #[must_use]
 pub fn analyze_workflow_plan_approval_with_config(
     input: &Value,
@@ -162,7 +162,7 @@ pub fn analyze_workflow_plan_approval_with_config(
         return analyze_plan_object(plan, optional_u64(input, "token_budget"), config);
     }
 
-    // script / source_path — 保守地视为升级，除非明确仅为状态查询。
+    // script / source_path — conservative elevated unless clearly status-only.
     let goal = input
         .get("source_path")
         .and_then(Value::as_str)
@@ -185,7 +185,7 @@ pub fn analyze_workflow_plan_approval_with_config(
     let worktree = script.contains("worktree") || script.contains("isolation");
     let token_budget = optional_u64(input, "token_budget");
     let high_budget = token_budget.is_some_and(|b| b > config.default_token_budget);
-    // 未知脚本权限：始终升级，因此需要显示审批卡。
+    // Unknown script authority: always elevated so the card is required.
     let elevated = true;
     let mut reasons = vec!["script_or_source".to_string()];
     if writes {
@@ -230,7 +230,7 @@ pub fn analyze_workflow_plan_approval_with_config(
     }
 }
 
-/// 评估已编译的工作流 IR，用于审批卡/收据。
+/// Assess a compiled Workflow IR for the approval card / receipt.
 #[must_use]
 pub fn analyze_workflow_spec(
     spec: &WorkflowSpec,
@@ -274,7 +274,7 @@ fn summary_from_elevation(
     }
 }
 
-/// 决定工作流工具调用是否需要审批卡 (#4126)。
+/// Decide whether the workflow tool call requires an approval card (#4126).
 #[must_use]
 pub fn workflow_approval_requirement_for(
     input: &Value,
@@ -387,7 +387,7 @@ fn analyze_plan_object(
         &mut secrets,
         &mut worktree,
     );
-    // IR 节点逃生口
+    // IR nodes escape hatch
     if let Some(nodes) = plan.get("nodes").and_then(Value::as_array) {
         walk_nodes(
             nodes,
@@ -415,7 +415,7 @@ fn analyze_plan_object(
         network = network || matches!(risk.as_deref(), Some("elevated" | "high" | "network"));
     }
 
-    // 并行写入子任务默认启用工作树隔离 (#4120)。
+    // Parallel write children default to worktree isolation (#4120).
     if writes && child_count > 1 {
         worktree = true;
     }
@@ -515,7 +515,7 @@ fn collect_children(
             .unwrap_or_default();
         if mode.contains("write") || agent_type == "implementer" || agent_type == "builder" {
             *writes = true;
-            // 可写入的执行者可能运行超出只读范围的 shell。
+            // Write-capable implementers may run shell beyond read-only.
             if agent_type == "implementer" || agent_type == "builder" || agent_type == "general" {
                 *shell = true;
             }

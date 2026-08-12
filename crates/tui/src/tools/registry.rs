@@ -1,10 +1,10 @@
-//! 用于管理和执行工具的工具注册表。
+//! Tool registry for managing and executing tools.
 //!
-//! 注册表提供：
-//! - 动态工具注册
-//! - 按名称查找工具
-//! - 转换为 API 工具格式
-//! - 按能力过滤
+//! The registry provides:
+//! - Dynamic tool registration
+//! - Tool lookup by name
+//! - Conversion to API Tool format
+//! - Filtering by capability
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -24,20 +24,21 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-// === 类型 ===
+// === Types ===
 
-/// 持有所有可用工具的注册表。
+/// Registry that holds all available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn ToolSpec>>,
     context: ToolContext,
-    /// 缓存的序列化工具目录。在发生变更后首次调用 `to_api_tools` 时惰性重建；
-    /// 在多次读取之间固定，使得描述和 schema 的字节保持稳定，以利用 DeepSeek 的 KV
-    /// 前缀缓存。在 `register` / `remove` / `clear` 时失效。
+    /// Memoised serialised tool catalog. Rebuilt lazily on first
+    /// `to_api_tools` call after a mutation; pinned across reads so the
+    /// description and schema bytes stay byte-stable for DeepSeek's KV
+    /// prefix cache. Invalidated on `register` / `remove` / `clear`.
     api_cache: OnceLock<Vec<Tool>>,
 }
 
 impl ToolRegistry {
-    /// 创建一个具有给定上下文的新空注册表。
+    /// Create a new empty registry with the given context.
     #[must_use]
     pub fn new(context: ToolContext) -> Self {
         Self {
@@ -47,7 +48,7 @@ impl ToolRegistry {
         }
     }
 
-    /// 在注册表中注册一个工具。
+    /// Register a tool in the registry.
     pub fn register(&mut self, tool: Arc<dyn ToolSpec>) {
         let name = tool.name().to_string();
         if self.tools.insert(name.clone(), tool).is_some() {
@@ -56,53 +57,53 @@ impl ToolRegistry {
         self.invalidate_api_cache();
     }
 
-    /// 一次注册多个工具。
+    /// Register multiple tools at once.
     pub fn register_all(&mut self, tools: Vec<Arc<dyn ToolSpec>>) {
         for tool in tools {
             self.register(tool);
         }
     }
 
-    /// 按名称获取工具。
+    /// Get a tool by name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn ToolSpec>> {
         self.tools.get(name).cloned()
     }
 
-    /// 检查工具是否存在。
+    /// Check if a tool exists.
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
     }
 
-    /// 获取所有已注册的工具名称。
+    /// Get all registered tool names.
     #[must_use]
     #[allow(dead_code)]
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(std::string::String::as_str).collect()
     }
 
-    /// 获取已注册工具的数量。
+    /// Get the number of registered tools.
     #[must_use]
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
-    /// 检查注册表是否为空。
+    /// Check if the registry is empty.
     #[must_use]
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
 
-    /// 获取所有已注册的工具。
+    /// Get all registered tools.
     #[must_use]
     pub fn all(&self) -> Vec<Arc<dyn ToolSpec>> {
         self.tools.values().cloned().collect()
     }
 
-    /// 按名称使用给定输入执行工具。
+    /// Execute a tool by name with the given input.
     #[allow(dead_code)]
     pub async fn execute(&self, name: &str, input: Value) -> Result<String, ToolError> {
         let tool = self
@@ -113,7 +114,7 @@ impl ToolRegistry {
         Ok(result.content)
     }
 
-    /// 按名称执行工具，返回完整的 `ToolResult`。
+    /// Execute a tool by name, returning the full `ToolResult`.
     pub async fn execute_full(&self, name: &str, input: Value) -> Result<ToolResult, ToolError> {
         let tool = self
             .get(name)
@@ -122,10 +123,10 @@ impl ToolRegistry {
         tool.execute(input, &self.context).await
     }
 
-    /// 使用可选上下文覆盖执行工具。
+    /// Execute a tool with an optional context override.
     ///
-    /// 用于在提升的沙箱策略下重试工具。
-    /// 执行后，大型结果将通过 workshop 路由 (#548)。
+    /// This is used for retrying tools with elevated sandbox policies.
+    /// After execution, large results are routed through the workshop (#548).
     pub async fn execute_full_with_context(
         &self,
         name: &str,
@@ -139,8 +140,8 @@ impl ToolRegistry {
         let ctx = context_override.unwrap_or(&self.context);
         let result = tool.execute(input.clone(), ctx).await?;
 
-        // 大输出路由 (#548): 如果结果超过阈值且
-        // 调用者未请求 `raw=true`，则通过 workshop 进行综合。
+        // Large-output routing (#548): if the result exceeds the threshold and
+        // the caller did not request `raw=true`, synthesise via the workshop.
         let raw_bypass = input.get("raw").and_then(|v| v.as_bool()).unwrap_or(false);
 
         if let Some(router) = ctx.large_output_router.as_ref() {
@@ -151,15 +152,18 @@ impl ToolRegistry {
                     estimated_tokens,
                     threshold,
                 } => {
-                    // 将原始输出存储在 workshop 变量存储中。
+                    // Store the raw output in the workshop variable store.
                     if let Some(vars_arc) = ctx.workshop_vars.as_ref() {
                         let mut vars = vars_arc.lock().await;
                         vars.store_raw(name, &result.content);
                     }
 
-                    // 使用注册表构建时所使用的同一模型（workshop Flash 模型）构建简洁的综合结果。
-                    // 目前我们生成结构化头部 + 截断预览，无需实时 API 调用，
-                    // 以便引擎在注册表层保持无依赖。后续可以在异步 LLM 调用安全时接入 Flash 客户端。
+                    // Build a terse synthesis using the same model the registry
+                    // was constructed for (workshop Flash model). For now we
+                    // produce a structured header + truncated preview without
+                    // a live API call so the engine stays dependency-free at
+                    // the registry layer. A follow-up can wire in the Flash
+                    // client when the async LLM call is safe here.
                     let preview_chars = 1_200usize;
                     let preview: String = result.content.chars().take(preview_chars).collect();
                     let ellipsis = if result.content.chars().count() > preview_chars {
@@ -188,24 +192,27 @@ impl ToolRegistry {
         Ok(result)
     }
 
-    /// 获取当前工具上下文。
+    /// Get the current tool context.
     #[must_use]
     pub fn context(&self) -> &ToolContext {
         &self.context
     }
 
-    /// 将所有工具转换为 API 工具格式以发送给模型。
+    /// Convert all tools to API Tool format for sending to the model.
     ///
-    /// 输出按工具名称排序以保证**前缀缓存稳定性** (#263)。
-    /// Rust 的 `HashMap` 每个进程使用随机种子哈希器，因此在每次 `deepseek` 启动时，
-    /// 原始的 `self.tools.values()` 迭代会以不同顺序输出工具，
-    /// 使 DeepSeek 的 KV 前缀缓存在每次跨会话恢复时失效。
-    /// 此处排序与 Claude Code 稳定其工具数组的方式一致（参见其参考实现中的 `assembleToolPool`）。
+    /// Output is sorted by tool name for **prefix-cache stability** (#263).
+    /// Rust's `HashMap` uses a randomly-seeded hasher per process, so a raw
+    /// `self.tools.values()` iteration emits tools in a different order on
+    /// every `deepseek` launch, invalidating DeepSeek's KV prefix cache for
+    /// every cross-session resume. Sorting here matches the way Claude Code
+    /// stabilises its tool array (`assembleToolPool` in their reference).
     ///
-    /// 序列化的目录在首次调用时缓存，并在多次读取之间固定，
-    /// 使得每个工具的 `description()` 和 `input_schema()` 在每个注册周期内只采样一次。
-    /// 否则，MCP 适配器的上游描述在重连时发生变化，会在会话期间重写目录并破坏前缀缓存。
-    /// 缓存在 `register`、`remove` 和 `clear` 时失效。
+    /// The serialised catalog is memoised on first call and pinned across
+    /// reads so each tool's `description()` and `input_schema()` are sampled
+    /// exactly once per registration. MCP adapters whose upstream description
+    /// drifts on reconnect would otherwise rewrite the catalog mid-session
+    /// and bust the prefix cache. The cache is invalidated on `register`,
+    /// `remove`, and `clear`.
     #[must_use]
     pub fn to_api_tools(&self) -> Vec<Tool> {
         self.api_cache
@@ -242,7 +249,7 @@ impl ToolRegistry {
         self.api_cache = OnceLock::new();
     }
 
-    /// 将工具转换为 API 工具格式，最后一个工具可选启用缓存控制。
+    /// Convert tools to API Tool format with optional cache control on the last tool.
     #[must_use]
     pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
         let mut tools = self.to_api_tools();
@@ -254,7 +261,7 @@ impl ToolRegistry {
         tools
     }
 
-    /// 按能力过滤工具。
+    /// Filter tools by capability.
     #[must_use]
     #[allow(dead_code)]
     pub fn filter_by_capability(&self, capability: ToolCapability) -> Vec<Arc<dyn ToolSpec>> {
@@ -265,7 +272,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取只读工具。
+    /// Get read-only tools.
     #[must_use]
     #[allow(dead_code)]
     pub fn read_only_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
@@ -276,7 +283,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取需要审批的工具。
+    /// Get tools that require approval.
     #[must_use]
     #[allow(dead_code)]
     pub fn approval_required_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
@@ -287,7 +294,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取建议审批的工具。
+    /// Get tools that suggest approval.
     #[must_use]
     #[allow(dead_code)]
     pub fn approval_suggested_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
@@ -303,20 +310,20 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 更新上下文（例如工作区变更时）。
+    /// Update the context (e.g., when workspace changes).
     #[allow(dead_code)]
     pub fn set_context(&mut self, context: ToolContext) {
         self.context = context;
     }
 
-    /// 获取当前上下文的可变引用。
+    /// Get a mutable reference to the current context.
     #[must_use]
     #[allow(dead_code)]
     pub fn context_mut(&mut self) -> &mut ToolContext {
         &mut self.context
     }
 
-    /// 按名称移除工具。
+    /// Remove a tool by name.
     #[must_use]
     #[allow(dead_code)]
     pub fn remove(&mut self, name: &str) -> Option<Arc<dyn ToolSpec>> {
@@ -327,36 +334,37 @@ impl ToolRegistry {
         removed
     }
 
-    /// 将非规范工具名称解析为已注册的规范名称。
+    /// Resolve a non-canonical tool name to a registered canonical name.
     ///
-    /// 对已注册的工具名称运行确定性阶梯匹配：
-    /// 1. 小写精确匹配。
-    /// 2. 连字符/空格 → 下划线 (read-file → read_file)。
-    /// 3. 驼峰式 → 蛇形式 (ReadFile → read_file)。
-    /// 4. 去除尾部 `_tool` / `-tool` 后缀（两次）。
-    /// 5. 通过简单前缀/后缀相似度进行模糊匹配。
+    /// Runs a deterministic ladder against the registered tool names:
+    /// 1. Lowercase exact match.
+    /// 2. Hyphens/spaces → underscores (read-file → read_file).
+    /// 3. CamelCase → snake_case (ReadFile → read_file).
+    /// 4. Strip trailing `_tool` / `-tool` suffix (twice).
+    /// 5. Fuzzy match via simple prefix/suffix similarity.
     ///
-    /// 当未找到解析结果时返回 `None`（由调用者提示"未知工具"）。
+    /// Returns `None` when no resolution is found (let the caller surface
+    /// "Unknown tool").
     #[must_use]
     pub fn resolve(&self, requested: &str) -> Option<&str> {
         let names: Vec<&str> = self.tools.keys().map(String::as_str).collect();
         let lower = requested.to_lowercase();
 
-        // 1. ASCII 大小写不敏感精确匹配
+        // 1. ASCII case-insensitive exact
         if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(requested)) {
             return Some(n);
         }
-        // 2. 连字符/空格 → 下划线
+        // 2. hyphen/space → underscore
         let snaked = lower.replace(['-', ' '], "_");
         if let Some(n) = names.iter().find(|n| **n == snaked) {
             return Some(n);
         }
-        // 3. 驼峰式 → 蛇形式
+        // 3. CamelCase → snake_case
         let cc = to_snake_case(requested);
         if let Some(n) = names.iter().find(|n| **n == cc) {
             return Some(n);
         }
-        // 4. 去除 _tool/-tool/tool 后缀，执行两次
+        // 4. strip _tool/-tool/tool suffix, twice
         let mut stripped = cc.clone();
         for _ in 0..2 {
             for suf in ["_tool", "-tool", "tool"] {
@@ -371,7 +379,7 @@ impl ToolRegistry {
         {
             return Some(n);
         }
-        // 5. 模糊匹配：简单前缀匹配（至少 3 个字符）
+        // 5. fuzzy: simple prefix match (at least 3 chars)
         if lower.len() >= 3 {
             for n in &names {
                 if n.len() >= 3 && (n.starts_with(&lower) || lower.starts_with(n)) {
@@ -382,15 +390,15 @@ impl ToolRegistry {
         None
     }
 
-    /// 清除注册表中的所有工具。
+    /// Clear all tools from the registry.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tools.clear();
         self.invalidate_api_cache();
     }
 
-    /// 按名称从注册表中移除一个工具。如果工具存在并已移除则返回 `true`，
-    /// 如果不存在该名称的工具则返回 `false`。
+    /// Remove a tool from the registry by name. Returns `true` if the tool
+    /// was present and removed, `false` if no tool with that name existed.
     pub fn remove_tool(&mut self, name: &str) -> bool {
         let existed = self.tools.remove(name).is_some();
         if existed {
@@ -399,13 +407,13 @@ impl ToolRegistry {
         existed
     }
 
-    /// 将 config.toml 中的工具覆盖应用于此注册表。
+    /// Apply config.toml tool overrides to this registry.
     ///
-    /// 对于 `overrides` 中的每个条目：
-    /// - `Disabled` 移除该工具。
-    /// - `Script` / `Command` 用用户的实现替换该工具。
+    /// For each entry in `overrides`:
+    /// - `Disabled` removes the tool.
+    /// - `Script` / `Command` replaces the tool with the user's implementation.
     ///
-    /// `plugin_dir` 用作相对脚本路径的基础目录。
+    /// `plugin_dir` is used as the base for relative script paths.
     pub fn apply_overrides(
         &mut self,
         overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
@@ -421,7 +429,7 @@ impl ToolRegistry {
                     }
                 }
                 _ => {
-                    // Script 和 Command 覆盖会创建替换工具。
+                    // Script and Command overrides create replacement tools.
                     use crate::tools::plugin::tool_from_override;
                     match tool_from_override(tool_name, override_cfg, plugin_dir) {
                         Some(replacement) => {
@@ -447,10 +455,11 @@ impl ToolRegistry {
         }
     }
 
-    /// 从目录中加载并注册插件工具。
+    /// Load and register plugin tools from a directory.
     ///
-    /// 每个具有有效前置元数据（`# name:`、`# description:` 等）的脚本
-    /// 都会注册为一个 `ScriptPluginTool`。名称与已注册工具匹配的工具将覆盖之。
+    /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
+    /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
+    /// already-registered tool will overwrite it.
     pub fn load_plugins(&mut self, plugin_dir: &Path) {
         if !plugin_dir.exists() {
             tracing::debug!(
@@ -473,15 +482,16 @@ impl ToolRegistry {
     }
 }
 
-/// 用于构建包含常用工具的 `ToolRegistry` 的构建器。
+/// Builder for constructing a `ToolRegistry` with common tools.
 pub struct ToolRegistryBuilder {
     tools: Vec<Arc<dyn ToolSpec>>,
 }
 
-/// 依赖于特性/配置的原生 Agent 模式工具表面。
+/// Feature/config-dependent native Agent-mode tool surface.
 ///
-/// 父 Agent/Yolo 轮次和默认子代理都通过此选项对象构建，
-/// 以便目录不会因新的一方可选工具被特性标志或配置状态所限而出现差异。
+/// Parent Agent/Yolo turns and default child sub-agents both build through this
+/// options object so the catalog does not drift as new first-party tools are
+/// gated behind feature flags or config state.
 #[derive(Clone)]
 pub struct AgentToolSurfaceOptions {
     pub shell_policy: crate::worker_profile::ShellPolicy,
@@ -509,13 +519,13 @@ impl AgentToolSurfaceOptions {
 }
 
 impl ToolRegistryBuilder {
-    /// 创建一个新的构建器。
+    /// Create a new builder.
     #[must_use]
     pub fn new() -> Self {
         Self { tools: Vec::new() }
     }
 
-    /// 添加一个自定义工具。
+    /// Add a custom tool.
     #[must_use]
     pub fn with_tool(mut self, tool: Arc<dyn ToolSpec>) -> Self {
         self.tools.push(tool);
@@ -532,7 +542,7 @@ impl ToolRegistryBuilder {
         self
     }
 
-    /// 包含文件工具（read、write、edit、list）。
+    /// Include file tools (read, write, edit, list).
     #[must_use]
     pub fn with_file_tools(self) -> Self {
         use super::file::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
@@ -542,7 +552,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(ListDirTool))
     }
 
-    /// 仅包含只读文件工具（read、list）。
+    /// Include only read-only file tools (read, list).
     #[must_use]
     pub fn with_read_only_file_tools(self) -> Self {
         use super::file::{ListDirTool, ReadFileTool};
@@ -553,7 +563,7 @@ impl ToolRegistryBuilder {
             ))
     }
 
-    /// 包含 shell 执行工具。
+    /// Include shell execution tool.
     #[must_use]
     pub fn with_shell_tools(self) -> Self {
         use super::shell::{ExecShellTool, ShellCancelTool, ShellInteractTool, ShellWaitTool};
@@ -565,7 +575,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(ShellInteractTool::new("exec_interact")))
     }
 
-    /// 包含搜索工具（`grep_files`）。
+    /// Include search tools (`grep_files`).
     #[must_use]
     pub fn with_search_tools(self) -> Self {
         use super::file_search::FileSearchTool;
@@ -574,7 +584,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(FileSearchTool))
     }
 
-    /// 包含 git 检查工具（`git_status`、`git_diff`）。
+    /// Include git inspection tools (`git_status`, `git_diff`).
     #[must_use]
     pub fn with_git_tools(self) -> Self {
         use super::git::{GitDiffTool, GitStatusTool};
@@ -582,7 +592,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GitDiffTool))
     }
 
-    /// 包含 git 历史工具（`git_log`、`git_show`、`git_blame`）。
+    /// Include git history tools (`git_log`, `git_show`, `git_blame`).
     #[must_use]
     pub fn with_git_history_tools(self) -> Self {
         use super::git_history::{GitBlameTool, GitLogTool, GitShowTool};
@@ -591,16 +601,18 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GitBlameTool))
     }
 
-    /// 包含工作区诊断工具。
+    /// Include workspace diagnostics tool.
     #[must_use]
     pub fn with_diagnostics_tool(self) -> Self {
         use super::diagnostics::DiagnosticsTool;
         self.with_tool(Arc::new(DiagnosticsTool))
     }
 
-    /// 仅当本主机上存在 `pandoc` 二进制文件时，才包含 `pandoc_convert` 工具。
-    /// 与 v0.8.31 为 Python 引入的探测后决策模式相同——
-    /// 当 pandoc 缺失时工具不会注册，因此模型永远不会看到其无法实际使用的二进制文件。
+    /// Include the `pandoc_convert` tool only when the `pandoc`
+    /// binary is present on this host. Same probe-then-decide
+    /// pattern v0.8.31 introduced for Python — when pandoc is
+    /// missing the tool is not registered, so the model never
+    /// sees a binary it can't actually use.
     #[must_use]
     pub fn with_pandoc_tools(self) -> Self {
         if crate::dependencies::resolve_pandoc().is_some() {
@@ -611,8 +623,9 @@ impl ToolRegistryBuilder {
         }
     }
 
-    /// 仅当存在本地 OCR 后端时，才包含 `image_ocr` 工具。
-    /// macOS 使用内置的 Vision 框架，而其他平台在安装了 Tesseract 时使用之。
+    /// Include the `image_ocr` tool only when a local OCR backend is present.
+    /// macOS uses the built-in Vision framework, while other platforms use
+    /// Tesseract when installed.
     #[must_use]
     pub fn with_image_ocr_tools(self) -> Self {
         if super::image_ocr::ocr_available() {
@@ -623,23 +636,24 @@ impl ToolRegistryBuilder {
         }
     }
 
-    /// 包含 `load_skill` 工具 (#434)，使得模型可以通过一次调用将
-    /// SKILL.md 正文 + 配套文件列表拉入上下文，
-    /// 而不是针对系统提示中 `## Skills` 节显示的路径执行 `read_file` + `list_dir`。
+    /// Include the `load_skill` tool (#434) so the model can pull a
+    /// SKILL.md body + companion file list into context with one
+    /// call instead of `read_file` + `list_dir` against the path
+    /// shown in the system prompt's `## Skills` section.
     #[must_use]
     pub fn with_skill_tools(self) -> Self {
         use super::skill::LoadSkillTool;
         self.with_tool(Arc::new(LoadSkillTool))
     }
 
-    /// 包含项目映射工具。
+    /// Include project mapping tools.
     #[must_use]
     pub fn with_project_tools(self) -> Self {
         use super::project::ProjectMapTool;
         self.with_tool(Arc::new(ProjectMapTool))
     }
 
-    /// 包含 cargo 测试运行工具。
+    /// Include cargo test runner tool.
     #[must_use]
     pub fn with_test_runner_tool(self) -> Self {
         use super::test_runner::RunTestsTool;
@@ -648,24 +662,25 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(RunVerifiersTool))
     }
 
-    /// 包含结构化数据验证工具（`validate_data`）。
+    /// Include structured data validation tool (`validate_data`).
     #[must_use]
     pub fn with_validation_tools(self) -> Self {
         use super::validate_data::ValidateDataTool;
         self.with_tool(Arc::new(ValidateDataTool))
     }
 
-    /// 包含对溢出的历史工具结果的检索。
+    /// Include retrieval for spilled historical tool results.
     #[must_use]
     pub fn with_tool_result_retrieval_tool(self) -> Self {
         use super::tool_result_retrieval::RetrieveToolResultTool;
         self.with_tool(Arc::new(RetrieveToolResultTool))
     }
 
-    /// 包含持久化任务、门控、PR 尝试、GitHub 和自动化工具。
+    /// Include durable task, gate, PR-attempt, GitHub, and automation tools.
     ///
-    /// 与 shell 相关的任务工具（`task_shell_start`、`task_shell_wait`）
-    /// *不*包含在此处——当 `allow_shell` 为 true 时，使用 [`with_runtime_task_shell_tools`] 注册它们。
+    /// Shell-related task tools (`task_shell_start`, `task_shell_wait`) are
+    /// *not* included here — use [`with_runtime_task_shell_tools`] to register
+    /// them when `allow_shell` is true.
     #[must_use]
     pub fn with_runtime_task_tools(self) -> Self {
         use super::automation::{
@@ -705,10 +720,11 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GithubClosePrTool))
     }
 
-    /// 包含与 shell 相关的任务工具（`task_shell_start`、`task_shell_wait`）。
+    /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
     ///
-    /// 这些工具受 `allow_shell` 控制，因为 `task_shell_start`
-    /// 直接委托给 `ExecShellTool`，提供与 `exec_shell` 相同的 shell 执行能力。
+    /// These are gated behind `allow_shell` because `task_shell_start`
+    /// delegates directly to `ExecShellTool`, providing the same shell
+    /// execution capability as `exec_shell`.
     #[must_use]
     pub fn with_runtime_task_shell_tools(self) -> Self {
         use super::tasks::{TaskShellStartTool, TaskShellWaitTool};
@@ -716,8 +732,9 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(TaskShellWaitTool))
     }
 
-    /// 仅包含只读的持久化任务、PR 尝试、GitHub 和自动化检查工具。
-    /// 计划模式使用此表面，以便可以在不启动工作、更改远程仓库或修改自动化配置的情况下观察状态。
+    /// Include only read-only durable task, PR-attempt, GitHub, and automation
+    /// inspection tools. Plan mode uses this surface so it can observe state
+    /// without starting work, changing remotes, or mutating automation config.
     #[must_use]
     pub fn with_runtime_read_only_task_tools(self) -> Self {
         use super::automation::{AutomationListTool, AutomationReadTool};
@@ -734,10 +751,11 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(AutomationReadTool))
     }
 
-    /// 包含网络搜索和获取工具。
+    /// Include web search and fetch tools.
     ///
-    /// 这些工具在 `tool_setup.rs` 中受 `Feature::WebSearch` 特性门控。
-    /// `finance` 通过 `with_finance_tool()` 单独注册，不受网络搜索特性门控。
+    /// These are feature-gated behind `Feature::WebSearch` in `tool_setup.rs`.
+    /// `finance` is registered separately via `with_finance_tool()` and is
+    /// NOT gated behind the web-search feature.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
         use super::dev_server_readiness::WaitForDevServerTool;
@@ -750,58 +768,62 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(WebRunTool))
     }
 
-    /// 包含 `finance` 市场数据工具。
+    /// Include the `finance` market-data tool.
     ///
-    /// 该工具在 agent 模式下无条件注册，不受 `Feature::WebSearch` 门控
-    /// （它获取的是金融数据，而非网络搜索结果）。
+    /// This tool is registered unconditionally for agent modes and is NOT
+    /// gated behind `Feature::WebSearch` (it fetches financial data, not
+    /// web search results).
     #[must_use]
     pub fn with_finance_tool(self) -> Self {
         use super::finance::FinanceTool;
         self.with_tool(Arc::new(FinanceTool::new()))
     }
 
-    /// 注册 `image_analyze` 视觉工具。
-    /// 仅在 config.toml 中配置了 `[vision_model]` 时注册。
+    /// Register the `image_analyze` vision tool.
+    /// Only registered when `[vision_model]` is configured in config.toml.
     #[must_use]
     pub fn with_vision_tools(self, config: crate::config::VisionModelConfig) -> Self {
         use crate::vision::tools::ImageAnalyzeTool;
         self.with_tool(Arc::new(ImageAnalyzeTool::new(config)))
     }
 
-    /// 之前注册了 OpenAI 风格的 `multi_tool_use.parallel` 元工具。
-    /// DeepSeek-V4 拥有原生并行工具调用（一次助手轮次中多个 `tool_calls` 条目），
-    /// 而该元工具名称会触发模型幻觉生成 OpenAI 内部 XML 包装器
-    /// （`<multi_tool_use.parallel><tool_name>…</tool_name>…`），而非发出原生调用。
-    /// 保留为空操作以保持现有调用者可编译；引擎的兼容性分发器仍处理遗留的发射。
+    /// Previously registered the OpenAI-style `multi_tool_use.parallel`
+    /// meta-tool. DeepSeek-V4 has native parallel tool calls (multiple
+    /// `tool_calls` entries in one assistant turn) and the meta-tool name
+    /// triggered the model to hallucinate OpenAI-internal XML wrappers
+    /// (`<multi_tool_use.parallel><tool_name>…</tool_name>…`) instead of
+    /// emitting native calls. Kept as a no-op so existing callers compile;
+    /// the engine's compatibility dispatcher still handles legacy emissions.
     #[must_use]
     pub fn with_parallel_tool(self) -> Self {
         self
     }
 
-    /// 包含 request_user_input 工具。
+    /// Include request_user_input tool.
     #[must_use]
     pub fn with_user_input_tool(self) -> Self {
         use super::user_input::RequestUserInputTool;
         self.with_tool(Arc::new(RequestUserInputTool))
     }
 
-    /// 包含补丁工具（`apply_patch`）。
+    /// Include patch tools (`apply_patch`).
     #[must_use]
     pub fn with_patch_tools(self) -> Self {
         use super::apply_patch::ApplyPatchTool;
         self.with_tool(Arc::new(ApplyPatchTool))
     }
 
-    /// 包含 `revert_turn` 工具。由于会修改工作区，因此需要审批；
-    /// 模型在用户要求"撤销上一次编辑"时使用它。
-    /// 由每个工作区的快照辅助仓库（`crate::snapshot`）支持。
+    /// Include the `revert_turn` tool. Approval-gated since it mutates
+    /// the workspace; the model uses it when the user asks to "undo my
+    /// last edit". Backed by the per-workspace snapshot side-repo
+    /// (`crate::snapshot`).
     #[must_use]
     pub fn with_revert_turn_tool(self) -> Self {
         use super::revert_turn::RevertTurnTool;
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// 包含 Xiaomi MiMo 语音/TTS 工具（`speech`、`tts`）。
+    /// Include Xiaomi MiMo speech/TTS tools (`speech`, `tts`).
     #[must_use]
     pub fn with_speech_tools(
         self,
@@ -817,7 +839,7 @@ impl ToolRegistryBuilder {
         .with_tool(Arc::new(SpeechTool::new("tts", client, output_dir)))
     }
 
-    /// 包含持久化 RLM 会话工具。
+    /// Include persistent RLM session tools.
     #[must_use]
     pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
         use super::rlm::{
@@ -830,46 +852,49 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(RlmCloseTool))
     }
 
-    /// 包含 `handle_read`，用于符号化 `var_handle` 载荷的有界投影读取器。
+    /// Include `handle_read`, the bounded projection reader for symbolic
+    /// `var_handle` payloads.
     #[must_use]
     pub fn with_handle_tools(self) -> Self {
         use super::handle::HandleReadTool;
         self.with_tool(Arc::new(HandleReadTool))
     }
 
-    /// 包含审查工具。
+    /// Include the review tool.
     #[must_use]
     pub fn with_review_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
         use super::review::ReviewTool;
         self.with_tool(Arc::new(ReviewTool::new(client, model)))
     }
 
-    /// 包含笔记工具。
+    /// Include note tool.
     #[must_use]
     pub fn with_note_tool(self) -> Self {
         use super::shell::NoteTool;
         self.with_tool(Arc::new(NoteTool))
     }
 
-    /// 包含 FIM（Fill-in-the-Middle）编辑工具。
+    /// Include the FIM (Fill-in-the-Middle) edit tool.
     #[must_use]
     pub fn with_fim_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
         use super::fim::FimEditTool;
         self.with_tool(Arc::new(FimEditTool::new(client, model)))
     }
 
-    /// 包含 `remember` 工具——模型可调用的向用户记忆文件添加条目的功能 (#489)。
-    /// 仅在用户已选择启用记忆特性时注册；否则该工具会出现在模型的目录中，
-    /// 但始终会因"memory disabled"而失败。
+    /// Include the `remember` tool — model-callable bullet-add into the
+    /// user memory file (#489). Only register when the user has opted
+    /// in to the memory feature; without that, the tool would surface
+    /// in the model's catalog but always fail with "memory disabled".
     #[must_use]
     pub fn with_remember_tool(self) -> Self {
         use super::remember::RememberTool;
         self.with_tool(Arc::new(RememberTool))
     }
 
-    /// 包含 slop 台账工具 (#2127)——对未解决架构遗留问题的持久化追踪：
-    /// 追加、查询、更新、导出。
-    /// 无条件注册；台账 JSON 文件在首次追加时自动创建。
+    /// Include the slop ledger tools (#2127) — durable tracking of
+    /// unresolved architectural residue: append, query, update, export.
+    /// Registered unconditionally; the ledger JSON file is auto-created
+    /// on first append.
     #[must_use]
     pub fn with_slop_ledger_tools(self) -> Self {
         use crate::slop_ledger::{
@@ -881,8 +906,8 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(SlopLedgerExportTool))
     }
 
-    /// slop 台账工具 (#2127) 的只读子集，用于计划模式：
-    /// 仅查询和导出——不包含追加或更新。
+    /// Read-only subset of slop ledger tools (#2127) for plan mode:
+    /// only query and export — no append or update.
     #[must_use]
     pub fn with_slop_ledger_read_only_tools(self) -> Self {
         use crate::slop_ledger::{SlopLedgerExportTool, SlopLedgerQueryTool};
@@ -890,29 +915,32 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(SlopLedgerExportTool))
     }
 
-    /// 包含 `notify` 工具——模型可调用的桌面通知 (#1322)。
-    /// 通过现有的 `tui::notifications` OSC 9 / BEL 管道路由，
-    /// 因此用户的 `[notifications].method` 配置会自动生效（包括 `off`）。
-    /// 始终可以安全注册，因为该工具除了单次终端转义写入外没有任何副作用。
+    /// Include the `notify` tool — model-callable desktop notification
+    /// (#1322). Routes through the existing `tui::notifications` OSC 9 /
+    /// BEL pipeline so the user's `[notifications].method` config is
+    /// honoured automatically (including `off`). Always safe to register
+    /// because the tool has no side effects beyond a single terminal
+    /// escape write.
     #[must_use]
     pub fn with_notify_tool(self) -> Self {
         use super::notify::NotifyTool;
         self.with_tool(Arc::new(NotifyTool))
     }
 
-    /// 将已连接池中的 MCP 工具作为一等注册表公民包含进来。
-    /// 每个 MCP 工具被包装在一个实现 `ToolSpec` 的轻量级适配器中，
-    /// 因此统一的 `ToolRegistryBuilder` 流程可以像处理原生工具一样处理它们。
+    /// Include MCP tools from a connected pool as first-class registry
+    /// citizens. Each MCP tool is wrapped in a lightweight adapter that
+    /// implements `ToolSpec`, so the unified `ToolRegistryBuilder` flow
+    /// handles them alongside native tools.
     ///
-    /// MCP 工具默认标记为 `defer_loading`（发现辅助工具除外），
-    /// 以保持模型可见目录的紧凑性。
+    /// MCP tools are marked `defer_loading` by default (except discovery
+    /// helpers) to keep the model-visible catalog compact.
     #[must_use]
     pub fn with_mcp_tools(
         mut self,
         mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
     ) -> Self {
-        // 从池中快照当前工具列表（非阻塞）。
-        // 适配器在执行时通过池惰性解析。
+        // Snapshot the current tool list from the pool (non-blocking).
+        // The adapter lazily resolves at execution time via the pool.
         if let Ok(pool) = mcp_pool.try_lock() {
             for (name, tool) in pool.all_tools() {
                 let adapter = Arc::new(McpToolAdapter {
@@ -926,8 +954,9 @@ impl ToolRegistryBuilder {
         self
     }
 
-    /// 注册 `start_mcp_server` 工具，用于从对话上下文中动态添加 MCP 服务器。
-    /// 不注册 MCP 工具适配器——这些适配器由 `engine.mcp_tools()` 中的 `pool.to_api_tools()` 返回。
+    /// Register the `start_mcp_server` tool for dynamically adding MCP servers
+    /// from conversation context. Does not register MCP tool adapters — those
+    /// are returned by `pool.to_api_tools()` in `engine.mcp_tools()`.
     #[must_use]
     pub fn with_runtime_mcp_tool(
         mut self,
@@ -940,11 +969,13 @@ impl ToolRegistryBuilder {
         self
     }
 
-    /// 包含所有 agent 工具（文件工具 + shell + 笔记 + 搜索）。
+    /// Include all agent tools (file tools + shell + note + search).
     ///
-    /// 网络和补丁工具不在此处注册——调用方必须在检查特性标志后通过
-    /// `.with_web_tools()` 和 `.with_patch_tools()` 添加它们（参见 `tool_setup.rs`）。
-    /// 这样可以防止当 `tool_setup.rs` 在 `with_agent_tools` 之上有条件地注册它们时出现重复注册。
+    /// Web and patch tools are NOT registered here — callers must add them
+    /// via `.with_web_tools()` and `.with_patch_tools()` after checking
+    /// feature flags (see `tool_setup.rs`). This prevents double-registration
+    /// when `tool_setup.rs` conditionally registers them on top of
+    /// `with_agent_tools`.
     #[must_use]
     #[allow(dead_code)] // legacy allow_shell convenience wrapper; used by tests, prod uses with_agent_tools_policy
     pub fn with_agent_tools(self, allow_shell: bool) -> Self {
@@ -953,7 +984,7 @@ impl ToolRegistryBuilder {
         ))
     }
 
-    /// 在类型化 shell 策略下包含所有 agent 工具。
+    /// Include all agent tools under a typed shell policy.
     #[must_use]
     pub fn with_agent_tools_policy(self, shell_policy: crate::worker_profile::ShellPolicy) -> Self {
         let builder = self
@@ -984,7 +1015,8 @@ impl ToolRegistryBuilder {
         }
     }
 
-    /// 包含父运行时和默认子代理共享的原生 Agent 模式表面，但不包括 `agent` 启动器本身。
+    /// Include the native Agent-mode surface shared by the parent runtime and
+    /// default child sub-agents, excluding the `agent` launcher itself.
     #[must_use]
     pub fn with_agent_runtime_surface(
         self,
@@ -1024,14 +1056,16 @@ impl ToolRegistryBuilder {
         builder.with_notify_tool()
     }
 
-    /// 完整的子代理继承 Agent 表面的旧版便捷包装器。
+    /// Legacy convenience wrapper for the full child-inherited Agent surface.
     ///
-    /// 新的生产调用方应优先使用 [`Self::with_full_agent_surface_options`]，
-    /// 以便特性/配置门控组（网络、补丁、记忆、视觉等）与父 Agent 模式注册表保持对等。
+    /// New production callers should prefer [`Self::with_full_agent_surface_options`]
+    /// so feature/config-gated families (web, patch, memory, vision, etc.)
+    /// stay in parity with the parent Agent-mode registry.
     ///
-    /// `allow_shell` 反映会话的 shell 权限。`manager` 和 `runtime`
-    /// 是子代理运行时——子代理传递自己的运行时，
-    /// 以便孙代理可以在相同的深度/取消信封内生成。
+    /// `allow_shell` mirrors the session's shell permission. `manager` and
+    /// `runtime` are the sub-agent runtime — children pass through their own
+    /// runtime so grandchildren can spawn within the same depth/cancellation
+    /// envelope.
     #[must_use]
     #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
@@ -1056,7 +1090,8 @@ impl ToolRegistryBuilder {
         )
     }
 
-    /// 在已解析的特性/配置选项下包含完整的子代理继承 Agent 表面。
+    /// Include the full child-inherited Agent surface under resolved
+    /// feature/config options.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn with_full_agent_surface_options(
@@ -1073,10 +1108,10 @@ impl ToolRegistryBuilder {
             .with_subagent_tools(manager, runtime)
     }
 
-    /// 完整的子代理继承 Agent 表面的旧版类型化 shell 包装器。
+    /// Legacy typed-shell wrapper for the full child-inherited Agent surface.
     ///
-    /// 新的生产调用方应将已解析的 [`AgentToolSurfaceOptions`]
-    /// 传递给 [`Self::with_full_agent_surface_options`]。
+    /// New production callers should pass resolved [`AgentToolSurfaceOptions`]
+    /// to [`Self::with_full_agent_surface_options`].
     #[must_use]
     #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
@@ -1097,11 +1132,11 @@ impl ToolRegistryBuilder {
         )
     }
 
-    /// 包含带有共享 `TodoList` 的待办/工作进度工具。
+    /// Include the todo / work-progress tools with a shared `TodoList`.
     ///
-    /// `work_update` 是唯一的模型可见进度表面 (#4132)。
-    /// `checklist_*` 和 `todo_*` 仍注册为隐藏的兼容别名，
-    /// 以便保存的对话记录和旧提示仍可重放。
+    /// `work_update` is the sole model-visible progress surface (#4132).
+    /// `checklist_*` and `todo_*` remain registered as hidden compat aliases
+    /// so saved transcripts and older prompts still replay.
     #[must_use]
     pub fn with_todo_tool(self, todo_list: super::todo::SharedTodoList) -> Self {
         use super::todo::{TodoAddTool, TodoListTool, TodoUpdateTool, TodoWriteTool};
@@ -1116,14 +1151,14 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(TodoListTool::todo(todo_list.clone())))
     }
 
-    /// 包含带有共享 `PlanState` 的计划工具。
+    /// Include the plan tool with a shared `PlanState`.
     #[must_use]
     pub fn with_plan_tool(self, plan_state: super::plan::SharedPlanState) -> Self {
         use super::plan::UpdatePlanTool;
         self.with_tool(Arc::new(UpdatePlanTool::new(plan_state)))
     }
 
-    /// 包含运行时目标工具（`create_goal`、`get_goal`、`update_goal`）。
+    /// Include runtime goal tools (`create_goal`, `get_goal`, `update_goal`).
     #[must_use]
     pub fn with_goal_tools(self, goal_state: super::goal::SharedGoalState) -> Self {
         use super::goal::{CreateGoalTool, GetGoalTool, UpdateGoalTool};
@@ -1132,7 +1167,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(UpdateGoalTool::new(goal_state)))
     }
 
-    /// 包含子代理管理工具。
+    /// Include sub-agent management tools.
     #[must_use]
     pub fn with_subagent_tools(
         self,
@@ -1143,7 +1178,7 @@ impl ToolRegistryBuilder {
         use super::workflow::WorkflowTool;
         use super::workflow_trigger::soft_auto_policy_is_linked;
 
-        // 在发布构建中保持软自动触发策略链接 (#4127)。
+        // Keep soft-auto trigger policy linked in release builds (#4127).
         debug_assert!(
             soft_auto_policy_is_linked(),
             "workflow soft-auto policy must stay linked"
@@ -1156,7 +1191,7 @@ impl ToolRegistryBuilder {
         .with_tool(Arc::new(AgentTool::new(manager, runtime)))
     }
 
-    /// 使用给定的上下文构建注册表。
+    /// Build the registry with the given context.
     #[must_use]
     pub fn build(self, context: ToolContext) -> ToolRegistry {
         let mut registry = ToolRegistry::new(context);
@@ -1171,7 +1206,7 @@ impl Default for ToolRegistryBuilder {
     }
 }
 
-/// 将驼峰式转换为蛇形式。
+/// Convert CamelCase to snake_case.
 fn to_snake_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for (i, ch) in s.chars().enumerate() {
@@ -1187,7 +1222,8 @@ fn to_snake_case(s: &str) -> String {
     out
 }
 
-/// 包装 MCP 工具定义的适配器，使其可以与原生工具一起存在于统一的 `ToolRegistry` 中 (§5.B)。
+/// Adapter that wraps an MCP tool definition so it can live in the
+/// unified `ToolRegistry` alongside native tools (§5.B).
 #[allow(dead_code)]
 struct McpToolAdapter {
     name: String,
@@ -1202,7 +1238,8 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn description(&self) -> &str {
-        // McpTool.description 是 Option<String>；当缺失时回退到前缀名称。
+        // McpTool.description is Option<String>; fall back to the
+        // prefixed name when absent.
         self.tool.description.as_deref().unwrap_or(&self.name)
     }
 
@@ -1211,7 +1248,8 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        // 保守地将 MCP 工具视为需要审批和网络访问，除非它们是已知的发现辅助工具。
+        // Conservatively treat MCP tools as requiring approval and
+        // network access unless they're known discovery helpers.
         let name_lower = self.name.to_lowercase();
         if name_lower.contains("list_mcp")
             || name_lower.contains("read_mcp")
@@ -1225,7 +1263,7 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn defer_loading(&self) -> bool {
-        // 发现辅助工具保持加载状态；其他所有工具延迟加载。
+        // Discovery helpers stay loaded; everything else is deferred.
         let keep_loaded = matches!(
             self.name.as_str(),
             "list_mcp_resources"
@@ -1248,7 +1286,7 @@ impl ToolSpec for McpToolAdapter {
     }
 }
 
-// === 单元测试 ===
+// === Unit Tests ===
 
 #[cfg(test)]
 mod tests {
@@ -1266,7 +1304,7 @@ mod tests {
 
     use super::ToolRegistry;
 
-    /// 用于单元测试的简单测试工具
+    /// A simple test tool for unit testing
     struct TestTool {
         name: String,
         description: String,
@@ -1346,7 +1384,7 @@ mod tests {
             .with_todo_tool(crate::tools::todo::new_shared_todo_list())
             .build(ctx);
 
-        // 规范拼写 + 旧版拼写仍可按名称调用以支持重放。
+        // Canonical + legacy spellings stay callable for replay.
         for name in [
             "work_update",
             "checklist_write",
@@ -1476,9 +1514,10 @@ mod tests {
         );
     }
 
-    /// `description()` 按预构建字符串脚本逐个推进的工具，每次调用前进一个。
-    /// 用于演示 api-tools 缓存在首次读取时固定描述字节，而不是每轮重新采样
-    /// （#263 后续；镜像了 reference-cc 的 `getToolSchemaCache`）。
+    /// Tool whose `description()` advances through a script of pre-built
+    /// strings, one per call. Used to demonstrate that the api-tools cache
+    /// pins the description bytes on first read instead of re-sampling them
+    /// each turn (#263 follow-up; mirrors reference-cc's `getToolSchemaCache`).
     struct VaryingDescriptionTool {
         name: String,
         descriptions: Vec<String>,
@@ -1528,9 +1567,11 @@ mod tests {
 
     #[test]
     fn to_api_tools_pins_description_bytes_across_calls() {
-        // 缓存稳定性后续的回归测试：一个在重连时返回不同 `description()` 的 MCP 适配器
-        // （或任何描述不是 `&'static str` 的工具）否则会在会话期间重写目录字节
-        // 并错过前缀缓存。注册表会固定首次调用的值，直到发生变更为止。
+        // Regression for the cache-stability follow-up: an MCP adapter that
+        // returns a different `description()` on reconnect (or any other
+        // tool whose description isn't a `&'static str`) would otherwise
+        // rewrite the catalog bytes mid-session and miss the prefix cache.
+        // The registry pins the first call's value until it's mutated.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let mut registry = ToolRegistry::new(ctx);
@@ -1552,8 +1593,9 @@ mod tests {
 
     #[test]
     fn register_invalidates_api_tools_cache() {
-        // 反向测试：当发生真正的变更时（新工具注册、现有工具被移除或调用 `clear`），
-        // 缓存必须被丢弃，以便下一次读取反映实时的注册表状态。
+        // Counter-test: when a real change happens (a new tool registers,
+        // an existing one is removed, or `clear` is called), the cache must
+        // be discarded so the next read reflects the live registry.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let mut registry = ToolRegistry::new(ctx);
@@ -1571,9 +1613,10 @@ mod tests {
         assert_eq!(after.len(), 2, "cache must rebuild after register");
         assert!(after.iter().any(|t| t.name == "varying"));
         assert!(after.iter().any(|t| t.name == "late_arrival"));
-        // 变更工具的描述在缓存重建时会前进——上面的第一次读取采样了 `first description`；
-        // 这次重建采样了 `second description`。要点仅仅是字节在真正变更后*可以*改变，
-        // 而非它们总是会改变。
+        // The varying tool's description advances on cache rebuild — the
+        // first read above sampled `first description`; this rebuild samples
+        // `second description`. The point is just that the bytes *can*
+        // change after a real mutation, not that they always do.
         let varying_after = after
             .iter()
             .find(|t| t.name == "varying")
@@ -1604,10 +1647,11 @@ mod tests {
 
     #[test]
     fn to_api_tools_emits_alphabetical_order_regardless_of_registration_order() {
-        // #263 的回归测试：HashMap 迭代在进程启动间是非确定性的，
-        // 这会使 DeepSeek 的 KV 前缀缓存在每次跨会话恢复时失效。
-        // `to_api_tools` 必须按名称排序输出，而不受注册顺序影响，
-        // 以便两次连续调用（以及两次不同的启动）产生字节相同的输出。
+        // Regression for #263: HashMap iteration is non-deterministic across
+        // process launches, which busts DeepSeek's KV prefix cache for every
+        // cross-session resume. `to_api_tools` must emit by name regardless
+        // of registration order so two consecutive calls (and two distinct
+        // launches) produce byte-identical output.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
@@ -1739,8 +1783,8 @@ mod tests {
 
         let registry = ToolRegistryBuilder::new().with_web_tools().build(ctx);
 
-        // finance 已在 v0.8.49 中移至 with_finance_tool()；
-        // with_web_tools() 注册网络搜索/获取以及本地开发服务器就绪检查。
+        // finance was moved to with_finance_tool() in v0.8.49;
+        // with_web_tools() registers web search/fetch plus local dev-server readiness.
         assert!(registry.contains("web_search"));
         assert!(registry.contains("fetch_url"));
         assert!(registry.contains("wait_for_dev_server"));
@@ -1831,15 +1875,17 @@ mod tests {
         );
     }
 
-    /// #2683 — `exec_wait` 和 `exec_interact` 是 `exec_shell_wait` 和 `exec_shell_interact`
-    /// 的旧版别名。它们必须保持可调用（用于保存的对话记录重放），但对模型可见目录隐藏。
+    /// #2683 — `exec_wait` and `exec_interact` are legacy aliases for
+    /// `exec_shell_wait` and `exec_shell_interact`. They must remain
+    /// callable (for saved transcript replay) but hidden from the
+    /// model-facing catalog.
     #[test]
     fn shell_alias_tools_hidden_from_model_catalog() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let registry = ToolRegistryBuilder::new().with_shell_tools().build(ctx);
 
-        // 旧版别名保持可调用。
+        // Legacy aliases stay callable.
         for alias in ["exec_wait", "exec_interact"] {
             assert!(registry.contains(alias), "{alias} should remain callable");
         }
@@ -1850,7 +1896,7 @@ mod tests {
             .map(|tool| tool.name)
             .collect();
 
-        // 规范名称对模型可见。
+        // Canonical names are model-visible.
         for canonical in ["exec_shell_wait", "exec_shell_interact"] {
             assert!(
                 api_names.iter().any(|n| n == canonical),
@@ -1858,7 +1904,7 @@ mod tests {
             );
         }
 
-        // 旧版别名被隐藏。
+        // Legacy aliases are hidden.
         for alias in ["exec_wait", "exec_interact"] {
             assert!(
                 api_names.iter().all(|n| n != alias),

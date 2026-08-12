@@ -1,7 +1,7 @@
-//! 补丁工具：用于统一差异补丁的 `apply_patch`
+//! Patch tools: `apply_patch` for unified diff patching
 //!
-//! 本工具使用统一差异格式提供精确的文件修改，
-//! 支持多块补丁和模糊匹配。
+//! This tool provides precise file modifications using unified diff format,
+//! supporting multi-hunk patches and fuzzy matching.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,19 +17,19 @@ use super::spec::{
     lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64, required_str,
 };
 
-/// 模糊匹配的最大上下文行数（为提高容错而增加）
+/// Maximum lines of context for fuzzy matching (increased for better tolerance)
 const MAX_FUZZ: usize = 50;
-/// 调用者未指定时的默认模糊值。与工具模式的
-/// 文档默认值一致。此前默认值为 `MAX_FUZZ` (50)，因此未传 `fuzz`
-/// 参数的 hunk 可能从其声明的起始位置静默地最多应用 50 行 ——
-/// 在具有重复块的文件中落入错误区域。
+/// Default fuzz when the caller does not specify one. Matches the tool schema's
+/// documented default. Previously the default was `MAX_FUZZ` (50), so a hunk
+/// with no `fuzz` argument could silently apply up to 50 lines from its stated
+/// position — landing in the wrong region of a file with repeated blocks.
 const DEFAULT_FUZZ: usize = 3;
 
-/// 将经过 hunk 处理的逻辑行重新组装为文件内容，保留
-/// 基础文件的行尾风格（CRLF vs LF）和尾随换行符
-/// 状态。处理过程通过 `str::lines()` 往返，它会去除尾随的
-/// `\n` 和任何 `\r`；天真地用 `join("\n")` 会静默删除
-/// 文件的最后一个换行符，并在每次补丁时把 CRLF 文件翻转为 LF。
+/// Reassemble hunk-processed logical lines back into file content, preserving
+/// the base file's line-ending style (CRLF vs LF) and its trailing-newline
+/// state. Processing round-trips through `str::lines()`, which strips both the
+/// trailing `\n` and any `\r`; naively `join("\n")`-ing would silently delete
+/// the file's final newline and flip a CRLF file to LF on every patch.
 fn reassemble_preserving_newlines(lines: &[String], base_content: &str) -> String {
     if lines.is_empty() {
         return String::new();
@@ -39,8 +39,8 @@ fn reassemble_preserving_newlines(lines: &[String], base_content: &str) -> Strin
     } else {
         "\n"
     };
-    // 新创建的文件（空基础）获得一个惯例的尾随换行符；
-    // 已有文件则保留其原有的尾随换行状态。
+    // A newly created file (empty base) gets a conventional trailing newline;
+    // an existing file preserves whether it had one.
     let trailing = base_content.is_empty() || base_content.ends_with('\n');
     let mut out = lines.join(terminator);
     if trailing {
@@ -48,14 +48,14 @@ fn reassemble_preserving_newlines(lines: &[String], base_content: &str) -> Strin
     }
     out
 }
-/// 限制错误消息中打印的上下文数量。
+/// Limit how much context we print in error messages.
 const HUNK_PREVIEW_LINES: usize = 4;
 const SNIPPET_RADIUS: usize = 2;
 const FILE_LIST_LIMIT: usize = 6;
 
-// === 类型 ===
+// === Types ===
 
-/// 应用补丁的结果
+/// Result of applying a patch
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchResult {
     pub success: bool,
@@ -73,7 +73,7 @@ pub struct PatchResult {
     pub message: String,
 }
 
-/// 每个文件的补丁应用输出摘要。
+/// Per-file summary for patch application output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
     pub path: String,
@@ -85,7 +85,7 @@ pub struct FileSummary {
     pub deleted: bool,
 }
 
-/// `apply_patch` 输入意图影响的文件的不变摘要。
+/// No-mutation summary of what an `apply_patch` input intends to touch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyPatchPreflight {
     pub touched_files: Vec<String>,
@@ -101,7 +101,7 @@ pub struct ApplyPatchPreflight {
     pub header_path_mismatch: Option<String>,
 }
 
-/// 统一差异中的一个代码块（hunk）
+/// A single hunk in a unified diff
 #[derive(Debug, Clone)]
 pub struct Hunk {
     pub old_start: usize,
@@ -114,7 +114,7 @@ pub struct Hunk {
     pub lines: Vec<HunkLine>,
 }
 
-/// Hunk 中的一行
+/// A line in a hunk
 #[derive(Debug, Clone)]
 pub enum HunkLine {
     Context(String),
@@ -122,7 +122,7 @@ pub enum HunkLine {
     Remove(String),
 }
 
-/// 用于将统一差异补丁应用到文件的工具
+/// Tool for applying unified diff patches to files
 pub struct ApplyPatchTool;
 
 #[derive(Debug, Clone)]
@@ -190,7 +190,7 @@ struct ApplyPatchPreflightPlan {
     kind: ApplyPatchPreflightKind,
 }
 
-    // === 错误 ===
+// === Errors ===
 
 #[derive(Debug, Error)]
 enum ApplyHunkError {
@@ -275,7 +275,7 @@ impl ToolSpec for ApplyPatchTool {
         if let Some(changes_value) = input.get("changes") {
             let (pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
             apply_pending_writes(&pending)?;
-            // 解析绝对路径以用于 LSP 诊断查询。
+            // Resolve absolute paths for LSP diagnostics query.
             let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
             let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
             let result = PatchResult {
@@ -317,10 +317,10 @@ impl ToolSpec for ApplyPatchTool {
         let (pending, mut stats) = build_pending_writes_from_patches(file_patches, context, fuzz)?;
         stats.header_path_mismatch = preflight.summary.header_path_mismatch.clone();
         apply_pending_writes(&pending)?;
-        // 解析绝对路径以用于 LSP 诊断查询。
+        // Resolve absolute paths for LSP diagnostics query.
         let abs_paths: Vec<PathBuf> = pending
             .iter()
-            .filter(|p| p.content.is_some()) // 跳过已删除的文件
+            .filter(|p| p.content.is_some()) // skip deleted files
             .map(|p| p.path.clone())
             .collect();
         let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
@@ -347,11 +347,11 @@ impl ToolSpec for ApplyPatchTool {
     }
 }
 
-/// 将 `apply_patch` 输入解析为可复用的、不变的前置摘要。
+/// Parse `apply_patch` input into a reusable, no-mutation preflight summary.
 ///
-/// 它有意在工作空间解析或文件读取之前停止。适用于
-/// 策略检查、审计日志、诊断 Hook 以及需要在修改前
-/// 了解目标文件的未来撤销规划。
+/// This deliberately stops before workspace resolution or file reads. It is
+/// suitable for policy checks, audit logs, diagnostics hooks, and future undo
+/// planning that must know the target files before mutation.
 pub fn preflight_apply_patch(input: &Value) -> Result<ApplyPatchPreflight, ToolError> {
     Ok(preflight_apply_patch_plan(input)?.summary)
 }
@@ -484,12 +484,12 @@ fn apply_patch_preflight_metadata(preflight: &ApplyPatchPreflight) -> Value {
     metadata
 }
 
-/// 将统一差异解析为多个 hunk
+/// Parse a unified diff into hunks
 fn parse_unified_diff(patch: &str) -> Result<Vec<Hunk>, ToolError> {
     let mut hunks = Vec::new();
     let mut lines = patch.lines().peekable();
 
-    // 跳过头部行（---, +++ 等）
+    // Skip header lines (---, +++ etc)
     while let Some(line) = lines.peek() {
         if line.starts_with("@@") {
             break;
@@ -497,7 +497,7 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<Hunk>, ToolError> {
         lines.next();
     }
 
-    // 解析 hunk
+    // Parse hunks
     while let Some(line) = lines.next() {
         if line.starts_with("@@") {
             let hunk = parse_hunk_header(line, &mut lines)?;
@@ -602,7 +602,7 @@ fn normalize_diff_path(raw: &str) -> Option<String> {
     Some(raw.to_string())
 }
 
-/// 解析 hunk 头部及其内容
+/// Parse a hunk header and its content
 fn parse_hunk_header<'a, I>(
     header: &str,
     lines: &mut std::iter::Peekable<I>,
@@ -610,7 +610,7 @@ fn parse_hunk_header<'a, I>(
 where
     I: Iterator<Item = &'a str>,
 {
-    // 解析 @@ -old_start,old_count +new_start,new_count @@
+    // Parse @@ -old_start,old_count +new_start,new_count @@
     let parts: Vec<&str> = header.split_whitespace().collect();
     if parts.len() < 3 {
         return Err(ToolError::invalid_input(format!(
@@ -624,12 +624,12 @@ where
     let (old_start, old_count) = parse_range(old_range)?;
     let (new_start, new_count) = parse_range(new_range)?;
 
-    // 解析 hunk 行
+    // Parse hunk lines
     let mut hunk_lines = Vec::new();
     let expected_lines = old_count.max(new_count) + old_count.min(new_count);
 
     for _ in 0..expected_lines * 2 {
-        // 允许比预期更多的行
+        // Allow for more lines than expected
         match lines.peek() {
             Some(line) if line.starts_with("@@") => break,
             Some(line) if line.starts_with('-') => {
@@ -650,16 +650,16 @@ where
                     || line.starts_with("--- ")
                     || line.starts_with("+++ ") =>
             {
-                // 新文件补丁的开始 —— 不消费，让外层循环处理
+                // Start of a new file patch - don't consume, let outer loop handle it
                 break;
             }
             Some(line) if !line.starts_with('\\') => {
-                // 当作不带前导空格的上下文行处理
+                // Treat as context line without leading space
                 hunk_lines.push(HunkLine::Context((*line).to_string()));
                 lines.next();
             }
             Some(_) => {
-                lines.next(); // 跳过 "\ No newline at end of file" 等
+                lines.next(); // Skip "\ No newline at end of file" etc
             }
             None => break,
         }
@@ -674,7 +674,7 @@ where
     })
 }
 
-/// 将 "10,5" 或 "10" 这样的范围解析为 (start, count)
+/// Parse a range like "10,5" or "10" into (start, count)
 fn parse_range(range: &str) -> Result<(usize, usize), ToolError> {
     let parts: Vec<&str> = range.split(',').collect();
     let start = parts[0].parse::<usize>().map_err(|_| {
@@ -1149,14 +1149,14 @@ fn apply_hunks_to_lines(
     Ok(stats)
 }
 
-/// 使用模糊匹配将 hunk 应用到文件内容
+/// Apply a hunk to the file content with fuzzy matching
 fn apply_hunk(
     lines: &mut Vec<String>,
     hunk: &Hunk,
     max_fuzz: usize,
     cumulative_offset: &mut isize,
 ) -> Result<usize, ApplyHunkError> {
-    // 从 hunk 构建预期的旧行
+    // Build expected old lines from hunk
     let old_lines: Vec<&str> = hunk
         .lines
         .iter()
@@ -1166,7 +1166,7 @@ fn apply_hunk(
         })
         .collect();
 
-    // 从 hunk 构建新行
+    // Build new lines from hunk
     let new_lines: Vec<String> = hunk
         .lines
         .iter()
@@ -1176,22 +1176,22 @@ fn apply_hunk(
         })
         .collect();
 
-    // 尝试使用模糊匹配找到位置
-    // 应用来自先前 hunk 的累积偏移，并限制在有效范围内。
+    // Try to find the location with fuzzy matching
+    // Apply cumulative offset from previous hunks, clamping to valid range.
     let base_idx = if hunk.old_start > 0 {
         hunk.old_start - 1
     } else {
         0
     };
-    // 使用 checked_add_signed 安全处理负偏移，以避免
-    // 在对抗性输入上发生 isize 溢出。
+    // Use checked_add_signed to safely handle negative offsets without
+    // risking isize overflow on adversarial input.
     let start_idx = base_idx
         .checked_add_signed(*cumulative_offset)
         .unwrap_or(0)
         .min(lines.len());
 
     for fuzz in 0..=max_fuzz {
-        // 先尝试精确位置，再尝试附近位置
+        // Try at exact position first, then nearby
         let search_range = if fuzz == 0 {
             vec![start_idx]
         } else {
@@ -1202,11 +1202,11 @@ fn apply_hunk(
 
         for pos in search_range {
             if matches_at_position(lines, &old_lines, pos) {
-                // 应用 hunk
+                // Apply the hunk
                 let end_pos = pos + old_lines.len();
                 lines.splice(pos..end_pos, new_lines.clone());
 
-                // 更新累积偏移：新添加的行数减去移除的旧行数
+                // Update cumulative offset: new lines added minus old lines removed
                 let delta = new_lines.len() as isize - old_lines.len() as isize;
                 *cumulative_offset += delta;
 
@@ -1215,7 +1215,7 @@ fn apply_hunk(
         }
     }
 
-    // 特殊情况：向空文件添加或在末尾添加新的 hunk
+    // Special case: adding to empty file or new hunk at end
     if old_lines.is_empty() && (lines.is_empty() || start_idx >= lines.len()) {
         let delta = new_lines.len() as isize;
         lines.extend(new_lines);
@@ -1225,19 +1225,19 @@ fn apply_hunk(
 
     Err(ApplyHunkError::NoMatch {
         expected_line: hunk.old_start,
-        adjusted_line: start_idx + 1, // 转换回 1 索引
+        adjusted_line: start_idx + 1, // Convert back to 1-indexed
         offset: *cumulative_offset,
     })
 }
 
-/// 检查 `old_lines` 是否与给定位置匹配
+/// Check if `old_lines` match at the given position
 fn matches_at_position(lines: &[String], old_lines: &[&str], pos: usize) -> bool {
     if pos + old_lines.len() > lines.len() {
         return false;
     }
 
     for (i, old_line) in old_lines.iter().enumerate() {
-        // 标准化空白以进行比较
+        // Normalize whitespace for comparison
         let file_line = lines[pos + i].trim_end();
         let expected = old_line.trim_end();
         if file_line != expected {
@@ -1248,7 +1248,7 @@ fn matches_at_position(lines: &[String], old_lines: &[&str], pos: usize) -> bool
     true
 }
 
-// === 单元测试 ===
+// === Unit Tests ===
 
 #[cfg(test)]
 mod tests {
@@ -1453,7 +1453,7 @@ diff --git a/same.txt b/same.txt
             "line3".to_string(),
         ];
 
-        // Hunk 期望从第 1 行开始，但内容在第 2 行
+        // Hunk expects to start at line 1, but content is at line 2
         let hunk = Hunk {
             old_start: 1, // Wrong position
             old_count: 2,
@@ -1502,7 +1502,7 @@ diff --git a/same.txt b/same.txt
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建测试文件
+        // Create a test file
         fs::write(tmp.path().join("test.txt"), "line1\nline2\nline3\n").expect("write");
 
         let patch = r"--- a/test.txt
@@ -1549,29 +1549,29 @@ diff --git a/same.txt b/same.txt
         assert_eq!(patch_result.touched_files, vec!["test.txt"]);
         assert_eq!(patch_result.hunks_applied, 1);
 
-        // 验证补丁是否已应用
+        // Verify the patch was applied
         let content = fs::read_to_string(tmp.path().join("test.txt")).expect("read");
         assert!(content.contains("modified"));
         assert!(!content.contains("line2"));
-        // 回归测试：文件的尾随换行符必须在补丁后保留。
+        // Regression: the file's trailing newline must survive the patch.
         assert!(content.ends_with('\n'), "trailing newline was dropped");
     }
 
     #[test]
     fn reassemble_preserving_newlines_keeps_style() {
         let lines = vec!["a".to_string(), "b".to_string()];
-        // LF 带尾随换行符。
+        // LF with trailing newline.
         assert_eq!(reassemble_preserving_newlines(&lines, "x\ny\n"), "a\nb\n");
-        // LF 无尾随换行符。
+        // LF without trailing newline.
         assert_eq!(reassemble_preserving_newlines(&lines, "x\ny"), "a\nb");
-        // CRLF 被保留（行尾和尾随换行符）。
+        // CRLF is preserved (endings and trailing).
         assert_eq!(
             reassemble_preserving_newlines(&lines, "x\r\ny\r\n"),
             "a\r\nb\r\n"
         );
-        // 新/空文件获得一个惯例的尾随换行符。
+        // New/empty file gets a conventional trailing newline.
         assert_eq!(reassemble_preserving_newlines(&lines, ""), "a\nb\n");
-        // 空结果保持为空。
+        // Empty result stays empty.
         assert_eq!(reassemble_preserving_newlines(&[], "x\n"), "");
     }
 
@@ -1589,7 +1589,7 @@ diff --git a/same.txt b/same.txt
         assert!(result.success);
         let content = fs::read_to_string(tmp.path().join("crlf.txt")).expect("read");
         assert!(content.contains("modified"));
-        // 回归测试：CRLF 文件不得被翻转为 LF。
+        // Regression: a CRLF file must not be flipped to LF.
         assert!(
             content.contains("\r\n"),
             "CRLF was flipped to LF: {content:?}"
@@ -1909,7 +1909,7 @@ diff --git a/b.txt b/b.txt
 
     #[test]
     fn test_multi_hunk_offset_tracking() {
-        // 有 6 行的文件
+        // File with 6 lines
         let mut lines: Vec<String> = vec![
             "line1".to_string(),
             "line2".to_string(),
@@ -1919,7 +1919,7 @@ diff --git a/b.txt b/b.txt
             "line6".to_string(),
         ];
 
-        // Hunk 1：在 line1 之后添加 2 行（偏移量变为 +2）
+        // Hunk 1: Add 2 lines after line1 (offset becomes +2)
         let hunk1 = Hunk {
             old_start: 1,
             old_count: 2,
@@ -1933,7 +1933,7 @@ diff --git a/b.txt b/b.txt
             ],
         };
 
-        // Hunk 2：修改 line5（原始在位置 5，由于 +2 偏移现在在位置 7）
+        // Hunk 2: Modify line5 (originally at position 5, now at position 7 due to +2 offset)
         let hunk2 = Hunk {
             old_start: 5, // Original position in the diff
             old_count: 1,
@@ -1947,7 +1947,7 @@ diff --git a/b.txt b/b.txt
 
         let mut offset: isize = 0;
 
-        // 应用第一个 hunk
+        // Apply first hunk
         let fuzz1 = apply_hunk(&mut lines, &hunk1, 3, &mut offset).unwrap();
         assert_eq!(fuzz1, 0);
         assert_eq!(offset, 2); // Added 2 lines (4 new - 2 old)
@@ -1958,7 +1958,7 @@ diff --git a/b.txt b/b.txt
             ]
         );
 
-        // 应用第二个 hunk —— 没有偏移追踪这将失败！
+        // Apply second hunk - this would fail without offset tracking!
         let fuzz2 = apply_hunk(&mut lines, &hunk2, 3, &mut offset).unwrap();
         assert_eq!(fuzz2, 0);
         assert!(lines.contains(&"modified5".to_string()));

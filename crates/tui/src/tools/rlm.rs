@@ -1,9 +1,9 @@
-//! 持久化 RLM 会话工具。
+//! Persistent RLM session tools.
 //!
-//! v0.8.33 用 head/hands 表面取代了旧的一次性 `rlm` 工具：
-//! `rlm_open` 在大上下文上创建一个命名的 Python 内核，
-//! `rlm_eval` 针对它运行有界探针，`rlm_configure` 调整运行时
-//! 反馈，`rlm_close` 将其拆除。
+//! v0.8.33 replaces the old one-shot `rlm` tool with a head/hands surface:
+//! `rlm_open` creates a named Python kernel over a large context,
+//! `rlm_eval` runs bounded probes against it, `rlm_configure` adjusts runtime
+//! feedback, and `rlm_close` tears it down.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,9 +28,9 @@ const MAX_INLINE_CONTENT_CHARS: usize = 200_000;
 const FULL_STDOUT_HEAD_CHARS: usize = 4_096;
 const FULL_STDOUT_TAIL_CHARS: usize = 1_024;
 
-/// 当 `rlm_eval` 的 stdout 超过此字符数时，完整内容将
-/// 存储为 `var_handle`，而不是内联到父转录中。
-/// 模型通过返回的句柄使用 `handle_read` 检索内容。
+/// When `rlm_eval` stdout exceeds this many characters the full body is
+/// stored as a `var_handle` instead of inlined into the parent transcript.
+/// The model retrieves the body via `handle_read` using the returned handle.
 const STDOUT_HANDLE_THRESHOLD_CHARS: usize = 1_000;
 const HARD_SUB_RLM_DEPTH_CAP: u32 = 3;
 
@@ -150,7 +150,7 @@ impl ToolSpec for RlmOpenTool {
             let mut msg = String::from(
                 "rlm_open: provide exactly one of `file_path` (local file), `content` (inline text), `url`, or `session_object`",
             );
-            // 常见命名错误的"你是不是想找"提示 (#2655)。
+            // "did you mean" for common misnamings (#2655).
             if let Some(obj) = input.as_object() {
                 let seen: Vec<&str> = [
                     "prompt",
@@ -338,9 +338,9 @@ impl ToolSpec for RlmEvalTool {
         let had_error = round.has_error;
         let rpc_count = round.rpc_count;
         let duration_ms = round.elapsed.as_millis() as u64;
-        // 将大量 stdout/stderr 路由到 var_handle，以避免父转录
-        // 膨胀。模型调用 handle_read 进行有界投影；
-        // 简短的內联说明描述可用性。
+        // Route large stdout/stderr into a var_handle to avoid bloat in
+        // the parent transcript. The model calls handle_read for bounded
+        // projections; a short inline note describes availability.
         fn route_output(
             text: &str,
             feedback: &OutputFeedback,
@@ -354,8 +354,8 @@ impl ToolSpec for RlmEvalTool {
                     (Some(preview_output(text)), None)
                 }
                 (OutputFeedback::Full, _) if !text.trim().is_empty() => {
-                    // 将完整内容存储为句柄，用于带外检索
-                    let name = format!("{tag}_{}", 0); // 单个计数器即可
+                    // Store full body as a handle for out-of-band retrieval
+                    let name = format!("{tag}_{}", 0); // single counter is fine
                     let handle = store.insert_text(session_id, name, text);
                     (
                         Some(format!("{} chars; retrieve via handle_read", text.len())),
@@ -832,8 +832,8 @@ mod tests {
 
     #[tokio::test]
     async fn rlm_open_misnamed_source_field_gets_did_you_mean_hint() {
-        // #2655: 错误的源字段名称会产生可操作的指导，而不仅仅是
-        // 标准的"请只提供其中一个"消息。
+        // #2655: a wrong source field name yields actionable guidance, not just
+        // the canonical "provide exactly one" message.
         let ctx = ctx();
         let err = RlmOpenTool
             .execute(json!({"name": "doc", "prompt": "summarize this"}), &ctx)
@@ -850,7 +850,7 @@ mod tests {
 
     #[tokio::test]
     async fn rlm_eval_missing_code_explains_raw_python() {
-        // #2655: 缺少代码的错误应通过示例来教导如何使用该工具。
+        // #2655: the missing-code error should teach the tool, with an example.
         let ctx = ctx();
         let err = RlmEvalTool::new(None)
             .execute(json!({"name": "doc"}), &ctx)

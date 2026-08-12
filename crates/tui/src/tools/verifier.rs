@@ -1,8 +1,8 @@
-//! 并行验证器集成工具：`run_verifiers`。
+//! Parallel verifier ensemble tool: `run_verifiers`.
 //!
-//! 这是面向代理的"并行化验证器而非生成器"路径：
-//! 一次工具调用分发到常见生态系统中的独立项目检查，
-//! 并返回单个结构化判定结果。
+//! This is the agent-facing path for "parallelize the verifier, not the
+//! generator": one tool call fans out to independent project checks across
+//! common ecosystems and returns a single structured verdict.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -26,7 +26,7 @@ const DEFAULT_MAX_PYTHON_FILES: usize = 200;
 const MAX_CUSTOM_GATES: usize = 12;
 const BACKGROUND_GATE_TIMEOUT_MS: u64 = 600_000;
 
-/// 用于并发运行独立验证器门控的工具。
+/// Tool for running independent verifier gates concurrently.
 pub struct RunVerifiersTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -435,7 +435,7 @@ impl ToolSpec for RunVerifiersTool {
     }
 }
 
-/// 在工作流成功完成后运行快速自动验证器门控（#4013）。
+/// Run quick auto verifier gates after a successful workflow completion (#4013).
 pub(crate) async fn run_workflow_completion_gates(
     context: &ToolContext,
 ) -> Result<Value, ToolError> {
@@ -1489,8 +1489,9 @@ mod tests {
         if !crate::dependencies::RustC::available() {
             return;
         }
-        // 生成的 `rustc` 通常是 rustup 封装器（shim），它通过 $HOME 解析其工具链。
-        // 持有进程级环境互斥锁，防止临时交换 HOME 的测试破坏子进程。
+        // The spawned `rustc` is usually the rustup shim, which resolves its
+        // toolchain through $HOME. Hold the process-wide env mutex so tests
+        // that temporarily swap HOME cannot break the child process.
         let _env_lock = crate::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path());

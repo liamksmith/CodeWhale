@@ -1,4 +1,4 @@
-//! 计划工具实现，包含步骤跟踪与验证
+//! Plan tool implementation with step tracking and validation
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,9 +12,9 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-// === 类型 ===
+// === Types ===
 
-/// 计划步骤的状态。
+/// Status of a plan step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
@@ -46,14 +46,14 @@ impl StepStatus {
     }
 }
 
-/// 计划条目的输入表示。
+/// Input representation for a plan item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanItemArg {
     pub step: String,
     pub status: StepStatus,
 }
 
-/// 计划工具使用的更新载荷。
+/// Update payload used by the plan tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdatePlanArgs {
     #[serde(default)]
@@ -82,21 +82,21 @@ pub struct UpdatePlanArgs {
     pub plan: Vec<PlanItemArg>,
 }
 
-// === 计划状态 ===
+// === Plan State ===
 
-/// 包含计时信息的计划步骤
+/// A plan step with timing information
 #[derive(Debug, Clone)]
 pub struct PlanStep {
     pub text: String,
     pub status: StepStatus,
-    /// 步骤开始的时间（转换为 `InProgress` 时）
+    /// When the step was started (transitioned to `InProgress`)
     pub started_at: Option<Instant>,
-    /// 步骤完成的时间
+    /// When the step was completed
     pub completed_at: Option<Instant>,
 }
 
 impl PlanStep {
-    /// 创建一个新的计划步骤。
+    /// Create a new plan step.
     pub fn new(text: String, status: StepStatus) -> Self {
         Self {
             text,
@@ -106,7 +106,7 @@ impl PlanStep {
         }
     }
 
-    /// 获取已用时间（如果步骤有计时信息）
+    /// Get the elapsed time if the step has timing info
     #[must_use]
     pub fn elapsed(&self) -> Option<Duration> {
         match (self.started_at, self.completed_at) {
@@ -116,7 +116,7 @@ impl PlanStep {
         }
     }
 
-    /// 格式化已用时间以便显示
+    /// Format elapsed time for display
     #[must_use]
     pub fn elapsed_str(&self) -> String {
         match self.elapsed() {
@@ -135,7 +135,7 @@ impl PlanStep {
     }
 }
 
-/// 可序列化的快照，用于展示
+/// Serializable snapshot for display
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlanSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,8 +181,9 @@ impl PlanSnapshot {
             && self.items.is_empty()
     }
 
-    /// 将面向用户/模型的 `update_plan` 载荷解析为可展示的快照。
-    /// 这是有意宽容的，以便保存的对话记录回放可以保持旧版和部分流式传输的载荷可见。
+    /// Parse the user/model-facing `update_plan` payload into a displayable
+    /// snapshot. This is intentionally tolerant so saved transcript replay can
+    /// keep legacy and partially streamed payloads visible.
     #[must_use]
     pub fn from_tool_input(input: &serde_json::Value) -> Self {
         let mut items = Vec::new();
@@ -225,7 +226,7 @@ impl PlanSnapshot {
     }
 }
 
-/// 当前计划的状态跟踪
+/// State tracking for the current plan
 #[derive(Debug, Clone, Default)]
 pub struct PlanState {
     title: Option<String>,
@@ -243,7 +244,7 @@ pub struct PlanState {
 }
 
 impl PlanState {
-    /// 检查计划是否为空。
+    /// Check whether the plan is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
@@ -282,11 +283,11 @@ impl PlanState {
             if step_text.is_empty() {
                 continue;
             }
-            // 尝试查找现有步骤以保留计时
+            // Try to find existing step to preserve timing
             let existing = self.steps.iter().find(|s| s.text == step_text);
 
             let mut status = item.status;
-            // 强制只有一个进行中的步骤
+            // Enforce single in_progress
             if status == StepStatus::InProgress {
                 if in_progress_seen {
                     status = StepStatus::Pending;
@@ -300,7 +301,7 @@ impl PlanState {
                 let old_status = s.status.clone();
                 s.status = status.clone();
 
-                // 跟踪计时转换
+                // Track timing transitions
                 if old_status == StepStatus::Pending && status == StepStatus::InProgress {
                     s.started_at = Some(now);
                 }
@@ -355,7 +356,7 @@ impl PlanState {
         &self.steps
     }
 
-    /// 按状态获取步骤计数
+    /// Get counts of steps by status
     pub fn counts(&self) -> (usize, usize, usize) {
         let mut pending = 0;
         let mut in_progress = 0;
@@ -370,7 +371,7 @@ impl PlanState {
         (pending, in_progress, completed)
     }
 
-    /// 获取进度百分比
+    /// Get progress as a percentage
     pub fn progress_percent(&self) -> u8 {
         if self.steps.is_empty() {
             return 0;
@@ -399,7 +400,7 @@ fn clean_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// 计划转换的验证结果
+/// Validation result for plan transitions
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum PlanValidation {
@@ -408,7 +409,7 @@ pub enum PlanValidation {
     Error(String),
 }
 
-/// 验证计划更新
+/// Validate a plan update
 #[allow(dead_code)]
 pub fn validate_plan_update(current: &PlanState, update: &UpdatePlanArgs) -> PlanValidation {
     let current_steps: std::collections::HashMap<_, _> = current
@@ -419,7 +420,7 @@ pub fn validate_plan_update(current: &PlanState, update: &UpdatePlanArgs) -> Pla
 
     for item in &update.plan {
         if let Some(old_status) = current_steps.get(&item.step) {
-            // 检查无效的转换
+            // Check for invalid transitions
             match (old_status, &item.status) {
                 (StepStatus::Completed, StepStatus::Pending) => {
                     return PlanValidation::Warning(format!(
@@ -441,17 +442,17 @@ pub fn validate_plan_update(current: &PlanState, update: &UpdatePlanArgs) -> Pla
     PlanValidation::Ok
 }
 
-// === UpdatePlanTool - ToolSpec 实现 ===
+// === UpdatePlanTool - ToolSpec implementation ===
 
-/// `PlanState` 的共享引用，用于跨工具使用
+/// Shared reference to `PlanState` for use across tools
 pub type SharedPlanState = Arc<Mutex<PlanState>>;
 
-/// 创建一个新的共享 `PlanState`
+/// Create a new shared `PlanState`
 pub fn new_shared_plan_state() -> SharedPlanState {
     Arc::new(Mutex::new(PlanState::default()))
 }
 
-/// 用于更新实施计划的工具
+/// Tool for updating the implementation plan
 pub struct UpdatePlanTool {
     plan_state: SharedPlanState,
 }

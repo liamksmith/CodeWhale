@@ -1,4 +1,4 @@
-//! 持久化任务、门控和 PR 尝试工具。
+//! Durable task, gate, and PR-attempt tools.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -781,8 +781,8 @@ impl ToolSpec for PrAttemptPreflightTool {
         })
         .await
         .map_err(|join_err| {
-            // 将原本丢弃的 join 错误暴露出来以供调试；
-            // 返回的 ToolError（以及面向用户的行为）保持不变。
+            // Surface the otherwise-discarded join error for debugging; the
+            // returned ToolError (and thus user-facing behavior) is unchanged.
             tracing::debug!(error = %join_err, "git apply --check spawn_blocking task failed to join");
             ToolError::execution_failed(format!("git apply --check panicked: {join_err}"))
         })?
@@ -860,8 +860,8 @@ async fn write_runtime_artifact(
     })
     .await
     .map_err(|e| {
-        // 将原本丢弃的 join 错误暴露出来以供调试；
-        // 返回的 ToolError（以及面向用户的行为）保持不变。
+        // Surface the otherwise-discarded join error for debugging; the
+        // returned ToolError (and thus user-facing behavior) is unchanged.
         tracing::debug!(error = %e, "artifact write spawn_blocking task failed to join");
         ToolError::execution_failed(format!("artifact write task panicked: {e}"))
     })?
@@ -951,8 +951,8 @@ async fn git_output(workspace: &Path, args: &[&str]) -> Result<String, ToolError
     })
     .await
     .map_err(|e| {
-        // 将原本丢弃的 join 错误暴露出来以供调试；
-        // 返回的 ToolError（以及面向用户的行为）保持不变。
+        // Surface the otherwise-discarded join error for debugging; the
+        // returned ToolError (and thus user-facing behavior) is unchanged.
         tracing::debug!(error = %e, "git spawn_blocking task failed to join");
         ToolError::execution_failed(format!("git task panicked: {e}"))
     })?

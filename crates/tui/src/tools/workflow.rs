@@ -1,7 +1,7 @@
-//! 面向模型的 Workflow 执行器，运行在实时子代理运行时之上。
+//! Model-facing Workflow runner over the live sub-agent runtime.
 //!
-//! JS VM 位于 `codewhale-workflow-js` 中；此模块提供 TUI
-//! 驱动，将每个 `task(...)` 调用转化为真实的 `SubAgentManager` 派发。
+//! The JS VM stays in `codewhale-workflow-js`; this module supplies the TUI
+//! driver that turns each `task(...)` call into a real `SubAgentManager` spawn.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -199,15 +199,15 @@ enum WorkflowUiEventKind {
 struct WorkflowTaskStartedEvent {
     task_id: String,
     label: Option<String>,
-    /// 步骤上声明的舰队角色（如有）(#4177)。
+    /// Fleet role declared on the step, if any (#4177).
     role: Option<String>,
     profile: Option<String>,
     model: Option<String>,
     strength: Option<String>,
     thinking: Option<String>,
-    /// 花名册解析后的实际舰队角色 (#4177)。
+    /// Resolved fleet role after roster lookup (#4177).
     resolved_role: Option<String>,
-    /// 舰队解析后的实际 AgentProfile id (#4177)。
+    /// Resolved AgentProfile id after fleet resolution (#4177).
     resolved_profile: Option<String>,
     resolved_provider: String,
     resolved_model: String,
@@ -217,13 +217,13 @@ struct WorkflowTaskStartedEvent {
     git_branch: Option<String>,
     parent_task_id: Option<String>,
     depth: u32,
-    /// 准入此子任务的工作流运行 (#4119)。
+    /// Workflow run that admitted this child (#4119).
     workflow_run_id: Option<String>,
-    /// 生成时的活跃阶段标题/id（或在任务上声明的）(#4119)。
+    /// Phase title/id active (or declared on the task) at spawn (#4119).
     workflow_phase_id: Option<String>,
-    /// 类型化任务标签 — UI 应优先使用此项而非提示文本 (#4119)。
+    /// Typed task label — UI must prefer this over prompt text (#4119).
     workflow_task_label: Option<String>,
-    /// 此运行子任务中基于 0 的准入顺序 (#4119)。
+    /// 0-based admission order among children of this run (#4119).
     workflow_child_index: Option<u32>,
 }
 
@@ -266,10 +266,10 @@ struct WorkflowRunRecord {
     verify_on_complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verification: Option<Value>,
-    /// 可持久化的提权方案审批收据，用于审计 (#4126)。
+    /// Durable elevated-plan approval receipt for audit (#4126).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_approval: Option<WorkflowPlanApprovalReceipt>,
-    /// 紧凑的车道门控状态，用于 status/面板展示 (#4179)。
+    /// Compact lane gate state for status / panel surfaces (#4179).
     #[serde(default)]
     gate_status: Vec<GateStatusLine>,
 }
@@ -469,14 +469,14 @@ impl ToolSpec for WorkflowTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // 默认姿态：提权启动需要审批。具体输入
-        // 通过 `approval_requirement_for` 细化 (#4126)。
+        // Default posture: elevated starts require approval. Concrete inputs
+        // refine this via `approval_requirement_for` (#4126).
         ApprovalRequirement::Required
     }
 
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
-        // 当工具没有实时 Config 句柄时 [workflow] 的产品默认值。
-        // YOLO/bypass 仍会在本检查之前短路。
+        // Product defaults for [workflow] when the tool has no live Config
+        // handle. YOLO/bypass still short-circuit upstream of this check.
         let config = codewhale_config::WorkflowConfigToml::default();
         workflow_approval_requirement_for(input, &config)
     }
@@ -548,8 +548,8 @@ async fn start_workflow(
         .map(|spec| spec.gates.clone())
         .unwrap_or_default();
 
-    // 捕获已批准的方案信封，用于审计/收据 (#4126)。到达
-    // execute 意味着审批门控已通过（或 YOLO/auto-start）。
+    // Capture the approved plan envelope for audit/receipt (#4126). Reaching
+    // execute means the approval gate already passed (or YOLO/auto-start).
     let workflow_cfg = codewhale_config::WorkflowConfigToml::default();
     let summary = source
         .spec
@@ -585,8 +585,8 @@ async fn start_workflow(
         record.events.push(started.clone());
         runs_guard.insert(run_id.clone(), record.clone());
         state.record_snapshot(&record);
-        // #4122: 立即发送 RunStarted，以便面板和历史卡片在
-        // 第一个任务/阶段之前打开（包括 wait:false 的即发即弃）。
+        // #4122: emit RunStarted immediately so the panel + history card open
+        // before the first task/phase (including wait:false fire-and-forget).
         if let Some(tx) = runtime.event_tx.as_ref()
             && let Ok(mut value) = serde_json::to_value(&started)
         {
@@ -702,9 +702,9 @@ async fn cancel_workflow(
         record.clone()
     };
     state.record_snapshot(&snapshot);
-    // VM 可能在取消竞争期间发布其终端 `run_completed` 事件。
-    // 始终在其后流式传输权威的取消事件，以便
-    // 实时面板最终确定运行中的行，不会停留在视觉上的失败状态。
+    // The VM may publish its terminal `run_completed` event while cancellation
+    // is racing it. Always stream the authoritative cancellation afterward so
+    // the live panel finalizes running rows and cannot remain visually failed.
     if let Some(controller) = controller.as_ref() {
         controller.driver.emit_ui_event(&cancelled_event);
     }
@@ -779,8 +779,8 @@ fn apply_named_fleet_to_task_request(
     Ok(())
 }
 
-// 已有派生签名，增加了 `vm_cancel` 用于取消中断
-// 接线；参数镜像一个工作流运行的上下文，且只消费一次。
+// Pre-existing spawn signature that grew `vm_cancel` for the cancel-interrupt
+// wiring; the args mirror one workflow run's context and are consumed once.
 #[allow(clippy::too_many_arguments)]
 async fn run_workflow_vm(
     run_id: String,
@@ -864,8 +864,8 @@ async fn run_workflow_vm(
                 });
                 record.events.push(budget_event.clone());
                 record.events.push(completed.clone());
-                // 即使是在 driver 辅助函数之外记录的，也要实时流式传输终端事件
-                // （完成路径）。
+                // Live stream terminal events even when recorded outside the
+                // driver helper (completion path).
                 driver.emit_ui_event(&budget_event);
                 driver.emit_ui_event(&completed);
             }
@@ -906,7 +906,7 @@ fn workflow_result_for(
         "gate_count": summary.gate_count,
         "blocked_gate_count": summary.blocked_gate_count,
         "gate_status": summary.gate_status,
-        // #4126: 可持久化的方案审批收据，用于审计/收据消费者。
+        // #4126: durable plan-approval receipt for audit/receipt consumers.
         "plan_approval": record.plan_approval,
     }));
     Ok(result)
@@ -950,11 +950,11 @@ fn workflow_source(input: &Value, context: &ToolContext) -> Result<WorkflowSourc
     }
 }
 
-/// 规划器到工作流的结构化启动路径 (#4124)。
+/// Planner-to-workflow structured launch path (#4124).
 ///
-/// 接受产品形态的计划（`goal` + `phases`/`children`）或 IR 形态的
-/// 计划（`goal` + `nodes`），验证它们，并降级为使用 `parallel()`（部分成功）
-/// 而非原始 `Promise.all()` 的命令式 JS。
+/// Accepts product-shaped plans (`goal` + `phases`/`children`) or IR-shaped
+/// plans (`goal` + `nodes`), validates them, and lowers to imperative JS that
+/// uses `parallel()` (partial success) rather than raw `Promise.all()`.
 fn workflow_source_from_plan(plan_value: &Value) -> Result<WorkflowSource, ToolError> {
     let spec = structured_plan_to_workflow_spec(plan_value)?;
     let lowered = lower_declarative_workflow_to_imperative_js(&spec)?;
@@ -978,10 +978,10 @@ struct StructuredWorkflowPlan {
     phases: Vec<StructuredPlanPhase>,
     #[serde(default)]
     children: Vec<StructuredPlanChild>,
-    /// 逃生口：完整的工作流 IR 节点（kind/spec 或 JS 编辑形态）。
+    /// Escape hatch: full Workflow IR nodes (kind/spec or JS authoring shapes).
     #[serde(default)]
     nodes: Option<Value>,
-    /// 可选的 Workflow 自有门控规格 (#4179)。
+    /// Optional Workflow-owned gate specs (#4179).
     #[serde(default)]
     gates: Vec<GateSpec>,
 }
@@ -1008,7 +1008,7 @@ struct StructuredPlanChild {
     prompt: String,
     #[serde(default, alias = "type", alias = "agent_type")]
     agent_type: Option<String>,
-    /// 舰队角色名称 (#4177)。首选的步骤身份；通过花名册解析。
+    /// Fleet role name (#4177). Preferred step identity; resolved via roster.
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -1036,7 +1036,7 @@ fn structured_plan_to_workflow_spec(plan_value: &Value) -> Result<WorkflowSpec, 
         ));
     }
 
-    // IR/声明式节点逃生口：重新解析为 workflow({...}) 对象。
+    // IR / declarative nodes escape hatch: re-parse as workflow({...}) object.
     if let Some(nodes) = plan.nodes.as_ref() {
         if !nodes.is_array() {
             return Err(ToolError::invalid_input(
@@ -1170,8 +1170,8 @@ fn plan_risk_to_mode(risk: Option<&str>) -> Result<TaskMode, ToolError> {
         Some("writes") | Some("write") | Some("read_write") | Some("readwrite")
         | Some("medium") => Ok(TaskMode::ReadWrite),
         Some("elevated") | Some("high") | Some("shell") | Some("network") => {
-            // 提升的风险仍然以 read_write 启动；审批门控 (#4126)
-            // 通过计划描述消费风险字符串。
+            // Elevated risk still launches as read_write; approval gates (#4126)
+            // consume the risk string via plan description.
             Ok(TaskMode::ReadWrite)
         }
         Some(other) => Err(ToolError::invalid_input(format!(
@@ -1372,10 +1372,10 @@ fn adapt_workflow_source(
 }
 
 fn looks_like_declarative_workflow(source: &str) -> bool {
-    // 匹配任意行上的顶级 `workflow(...)` / `export default workflow(...)` 调用，
-    // 忽略前导缩进，以便缩进的（非第 0 列）声明式调用
-    // 仍能被识别，而不会被误执行为命令式脚本
-    // (#dogfood 0.8.67)。
+    // Match a top-level `workflow(...)` / `export default workflow(...)` call on
+    // any line, ignoring leading indentation, so an indented (non-column-0)
+    // declarative call is still recognized rather than misrun as an imperative
+    // script (#dogfood 0.8.67).
     source.lines().any(|line| {
         let trimmed = line.trim_start();
         trimmed.starts_with("workflow(") || trimmed.starts_with("export default workflow(")
@@ -1459,13 +1459,13 @@ impl DeclarativeWorkflowLowerer {
                 };
                 leaves.push(leaf);
             }
-            // #4124: 使用 Workflow `parallel()`（all-settled / 部分成功）
-            // 而非原始 Promise.all，后者会在第一个失败时中止兄弟任务。
+            // #4124: use Workflow `parallel()` (all-settled / partial success)
+            // instead of raw Promise.all, which aborts siblings on first failure.
             let temp = self.next_temp("parallel");
             self.line(format!("const {temp} = await parallel(["));
             for leaf in &leaves {
-                // 可并行写入的子任务默认使用工作树隔离
-                // (#4120)，除非计划显式设置 isolation: shared。
+                // Parallel write-capable children default to worktree isolation
+                // (#4120) unless the plan explicitly sets isolation: shared.
                 self.line(format!(
                     "  () => task({}),",
                     leaf_task_options_expression(leaf, Some(&spec.id), /* parallel */ true)?
@@ -1579,8 +1579,8 @@ fn leaf_task_options_expression(
         leaf_subagent_type(spec)?,
         spec.role.as_deref(),
         spec.profile.as_deref(),
-        // 可并行写入的子任务默认使用工作树隔离 (#4120)。
-        // 显式设置 isolation: shared 是批准的同工作树覆盖。
+        // Parallel write-capable children default to worktree isolation (#4120).
+        // Explicit isolation: shared is the approved same-worktree override.
         leaf_wants_worktree(spec, parallel),
         spec.budget.max_tokens,
         &spec.id,
@@ -1692,8 +1692,8 @@ fn is_write_or_shell_tool(tool: &str) -> bool {
     )
 }
 
-// 已有的构建器，增加了 `allowed_tools`；每个参数 1:1 映射到
-// 生成的 JS options 字面量的一个可选字段。
+// Pre-existing builder that grew `allowed_tools`; each arg maps 1:1 onto one
+// optional field of the generated JS options literal.
 #[allow(clippy::too_many_arguments)]
 fn task_options_expression(
     description_expr: String,
@@ -1775,22 +1775,23 @@ struct SubAgentWorkflowDriver {
     completion_tx: mpsc::UnboundedSender<SubAgentCompletion>,
     completion_state: Arc<Mutex<CompletionState>>,
     child_ids: Arc<Mutex<Vec<String>>>,
-    /// 用于 `workflow_child_index` 的单调递增、基于 0 的子任务准入计数器。
+    /// Monotonic 0-based child admission counter for `workflow_child_index`.
     child_counter: AtomicU32,
-    /// 此运行上观察到的最新 `phase(...)` 标题（当任务省略显式的 `phase` 选项时使用）。
+    /// Latest `phase(...)` title observed on this run (used when a task omits
+    /// an explicit `phase` option).
     current_phase: Mutex<Option<String>>,
     task_records: Arc<Mutex<HashMap<String, RuntimeTaskRecord>>>,
     total_budget: Option<u64>,
     last_budget_event: Arc<Mutex<Option<BudgetSnapshot>>>,
-    /// 为此运行安装的工作流自有门控 (#4179)。
+    /// Workflow-owned gates installed for this run (#4179).
     gate_specs: Arc<Vec<GateSpec>>,
-    /// 以 run id 为键的车道门控和交接状态。
+    /// Lane-scoped gate and handoff state keyed by run id.
     gate_board: Arc<Mutex<LaneGateBoard>>,
-    /// 限制此运行中同时活跃的 `task()` 子任务数量（产品值：16）。
+    /// Caps concurrently live `task()` children for this run (product: 16).
     concurrent_gate: Arc<Semaphore>,
-    /// 持有进行中的子任务的许可；完成/取消时释放。
+    /// Held permits for in-flight children; released on completion/cancel.
     spawn_permits: Mutex<HashMap<String, OwnedSemaphorePermit>>,
-    /// 可选的命名舰队花名册，用于解析工作流任务角色 (#4177/#4178)。
+    /// Optional named Fleet roster for resolving Workflow task roles (#4177/#4178).
     fleet_name: Option<String>,
     fleet_roles: Option<FleetRoleMap>,
 }
@@ -1901,12 +1902,12 @@ impl SubAgentWorkflowDriver {
         if recorded {
             self.state.record_event(&self.run_id, &event);
         }
-        // #4122: 将类型化事件实时流式传输到面板和历史卡片中。
+        // #4122: stream typed events live into the panel + history card.
         self.emit_ui_event(&event);
     }
 
-    /// 将扁平化的 WorkflowUiEvent 发布到引擎事件总线上，以便 TUI
-    /// 在工具仍在运行时更新面板。
+    /// Publish a flattened WorkflowUiEvent on the engine event bus so the TUI
+    /// can hydrate the panel while the tool is still running.
     fn emit_ui_event(&self, event: &WorkflowUiEvent) {
         let Some(tx) = self.runtime.event_tx.as_ref() else {
             return;
@@ -2066,8 +2067,8 @@ impl SubAgentWorkflowDriver {
         metadata: &WorkflowTaskSpawnMetadata,
         result: &crate::tools::subagent::SubAgentResult,
     ) {
-        // 优先使用类型化生成元数据而非请求字段，以便面板/历史
-        // 无需从子提示文本重新推导标签 (#4119)。
+        // Prefer typed spawn metadata over request fields so panel/history never
+        // need to re-derive labels from the child prompt (#4119).
         let label = metadata
             .workflow_task_label
             .clone()
@@ -2081,7 +2082,7 @@ impl SubAgentWorkflowDriver {
                 model: request.model.clone(),
                 strength: request.model_strength.clone(),
                 thinking: request.thinking.clone(),
-                // 优先使用生成元数据（舰队解析的）；回退到请求。
+                // Prefer spawn metadata (fleet-resolved); fall back to request.
                 resolved_role: metadata
                     .resolved_role
                     .clone()
@@ -2221,7 +2222,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             },
         )?;
         self.prepare_request_for_gates(&mut request)?;
-        // 等待并发槽位（每运行最多 16 个活跃子任务）。
+        // Wait for a concurrent slot (max 16 live children per run).
         let permit = self
             .concurrent_gate
             .clone()
@@ -2337,7 +2338,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
         }
         self.state.record_progress(&self.run_id, &message);
         self.state.record_event(&self.run_id, &ui_event);
-        // #4122: 阶段/模式/日志进度实时流式传输到面板路径。
+        // #4122: phase/schema/log progress streams into the live panel path.
         self.emit_ui_event(&ui_event);
     }
 }
@@ -2763,7 +2764,7 @@ mod journal {
     const CODEWHALE_DIR: &str = ".codewhale";
     const WORKFLOW_RUNS_FILE: &str = "workflow-runs.jsonl";
 
-    /// 跨工具注册表重建共享的每工作区工作流状态。
+    /// Per-workspace workflow state shared across tool-registry rebuilds.
     pub(super) struct WorkflowWorkspaceState {
         pub runs: SharedWorkflowRuns,
         pub controllers: SharedWorkflowControllers,
@@ -2822,8 +2823,8 @@ mod journal {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     enum WorkflowJournalRecord {
-        // Boxed：完整的运行记录比 progress 变体大得多
-        // (clippy::large_enum_variant)。
+        // Boxed: a full run record dwarfs the progress variant
+        // (clippy::large_enum_variant).
         Snapshot {
             run: Box<WorkflowRunRecord>,
         },
@@ -2898,8 +2899,8 @@ mod journal {
                     }
                 }
             }
-            // 日志中记录为 Running 的运行属于一个已经不存在的进程；
-            // 如果没有此处理，重启后会永远显示为活跃状态。
+            // A run journaled as Running belongs to a process that is gone;
+            // without this it would show as live forever after a restart.
             for run in runs.values_mut() {
                 if run.status == WorkflowRunStatus::Running {
                     run.status = WorkflowRunStatus::Failed;
@@ -3064,17 +3065,17 @@ mod tests {
 
     #[test]
     fn declarative_detection_matches_indented_and_nonleading_workflow_calls() {
-        // 第 0 列形式
+        // column-0 forms
         assert!(looks_like_declarative_workflow("workflow({ tasks: [] })"));
         assert!(looks_like_declarative_workflow(
             "export default workflow({})"
         ));
-        // #dogfood 0.8.67: 前导语句/注释后面跟着缩进的顶级 workflow( 调用
-        // 仍必须检测为声明式。
+        // #dogfood 0.8.67: a leading statement/comment followed by an INDENTED
+        // top-level workflow( call must still be detected as declarative.
         assert!(looks_like_declarative_workflow(
             "// build the run\n  workflow({\n    tasks: [],\n  })"
         ));
-        // 命令式脚本不得被误检测为声明式
+        // imperative scripts must not be misdetected as declarative
         assert!(!looks_like_declarative_workflow(
             "return await parallel([() => task({ description: \"x\" })]);"
         ));
@@ -3156,7 +3157,7 @@ mod tests {
 
     #[test]
     fn parallel_write_children_default_to_worktree_isolation() {
-        // #4120: 可写入的并行叶子节点默认获得 worktree: true。
+        // #4120: write-capable parallel leaves get worktree: true by default.
         let source = r#"
 export default workflow({
   "goal": "parallel write isolation default",
@@ -3213,7 +3214,7 @@ export default workflow({
             "lowered JS should request worktree isolation:\n{}",
             adapted.source
         );
-        // 两个并行子任务都应携带工作树标志。
+        // Both parallel children should carry the worktree flag.
         assert_eq!(
             adapted.source.matches("worktree: true").count(),
             2,
@@ -3224,7 +3225,7 @@ export default workflow({
 
     #[test]
     fn parallel_write_same_worktree_requires_explicit_shared_isolation() {
-        // #4120: isolation: shared 是批准的同工作树覆盖。
+        // #4120: isolation: shared is the approved same-worktree override.
         let source = r#"
 export default workflow({
   "goal": "parallel write same-worktree override",
@@ -3282,7 +3283,7 @@ export default workflow({
         assert_eq!(leaves[1].isolation, IsolationMode::Worktree);
         assert!(leaf_wants_worktree(leaves[1], true));
 
-        // 只有显式指定工作树子任务才应发出 worktree: true。
+        // Only the explicit worktree child should emit worktree: true.
         assert_eq!(
             adapted.source.matches("worktree: true").count(),
             1,
@@ -3390,7 +3391,7 @@ export default workflow({
 
     #[test]
     fn structured_plan_lowers_to_parallel_not_promise_all() {
-        // #4124: 规划器计划 → 使用 parallel() 部分成功语义的 JS。
+        // #4124: planner plan → JS with parallel() partial-success semantics.
         let ctx = ToolContext::new(".");
         let source = workflow_source(
             &json!({
@@ -3669,7 +3670,7 @@ export default workflow({
         assert_eq!(task_started["worktree"], false);
         assert!(task_started["parent_task_id"].is_null());
         assert_eq!(task_started["depth"], 1);
-        // #4119: 生成时的 workflow 身份 / task_started 元数据。
+        // #4119: workflow identity on spawn / task_started metadata.
         assert_eq!(
             task_started["workflow_run_id"].as_str(),
             payload["run_id"].as_str()
@@ -3695,8 +3696,8 @@ export default workflow({
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn workflow_spawn_records_carry_child_index_and_phase_metadata() {
-        // #4119: 顺序子任务获得单调递增的 workflow_child_index，
-        // 并在任务选项省略 `phase` 时继承当前活跃阶段。
+        // #4119: sequential children get monotonic workflow_child_index and
+        // inherit the active phase when task options omit `phase`.
         let _retry_guard = workflow_test_retry_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
@@ -3743,7 +3744,7 @@ export default workflow({
         assert_eq!(started[0]["label"], "one");
 
         assert_eq!(started[1]["workflow_run_id"], payload["run_id"]);
-        // 显式的任务阶段优先于驱动器的当前阶段。
+        // Explicit task phase wins over the driver's current phase.
         assert_eq!(started[1]["workflow_phase_id"], "beta-explicit");
         assert_eq!(started[1]["workflow_task_label"], "two");
         assert_eq!(started[1]["workflow_child_index"], 1);
@@ -3753,9 +3754,9 @@ export default workflow({
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn declarative_parallel_spawn_failure_nulls_slot_and_continues() {
-        // #4124: parallel() 是 all-settled — 被拒绝的生成变为空槽位
-        // （带有面包屑消息），而不是像原始 Promise.all 那样
-        // 中止脚本的其余部分。下游 reduce 仍会在部分结果上运行。
+        // #4124: parallel() is all-settled — a rejected spawn becomes a null slot
+        // (with a breadcrumb) instead of aborting the rest of the script the way
+        // raw Promise.all would. Downstream reduce still runs on partial results.
         let _retry_guard = workflow_test_retry_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());

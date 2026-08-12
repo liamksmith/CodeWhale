@@ -1,7 +1,7 @@
-//! 文件系统工具：`read_file`、`write_file`、`edit_file`、`list_dir`
+//! File system tools: `read_file`, `write_file`, `edit_file`, `list_dir`
 //!
-//! 这些工具在工作区内提供安全的文件系统操作，
-//! 并通过路径验证防止逃逸工作区边界。
+//! These tools provide safe file system operations within the workspace,
+//! with path validation to prevent escaping the workspace boundary.
 
 use super::diff_format::make_unified_diff;
 use super::spec::{
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 // === ReadFileTool ===
 
-/// 用于读取工作区内 UTF-8 文件的工具。
+/// Tool for reading UTF-8 files from the workspace.
 pub struct ReadFileTool;
 
 #[async_trait]
@@ -78,9 +78,9 @@ impl ToolSpec for ReadFileTool {
             return read_image_via_ocr(&file_path, path_str);
         }
 
-        // 在参数解析前打开文件，这样当文件缺失时，
-        // 无论其他参数如何，都能保持历史上
-        // "Failed to read …" 的错误格式。
+        // Open before parameter parsing so a missing file keeps the
+        // historical "Failed to read …" error shape regardless of the other
+        // arguments.
         let file = fs::File::open(&file_path).map_err(|e| {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
@@ -91,9 +91,9 @@ impl ToolSpec for ReadFileTool {
             .or_else(|| input.get("max_lines"))
             .is_some();
 
-        // 小文件快速路径。仅在调用者未传递显式范围时适用——
-        // 否则，在小文件上显式指定 `start_line = 5`
-        // 会静默忽略请求。
+        // Small-file fast path. Only applies when the caller didn't pass an
+        // explicit range — otherwise an explicit `start_line = 5` on a
+        // tiny file would silently ignore the request.
         if !explicit_range && file_bytes <= SMALL_FILE_BYTES as u64 {
             drop(file);
             let contents = fs::read_to_string(&file_path).map_err(|e| {
@@ -110,8 +110,8 @@ impl ToolSpec for ReadFileTool {
                 return Ok(ToolResult::success(contents));
             }
 
-            // 字节数小但行数过多：
-            // 直接从内存内容渲染默认窗口。
+            // Small in bytes but too many lines: render the default window
+            // straight from the in-memory contents.
             let window: Vec<String> = contents
                 .lines()
                 .take(DEFAULT_READ_LINES)
@@ -157,10 +157,10 @@ impl ToolSpec for ReadFileTool {
             None => DEFAULT_READ_LINES,
         };
 
-        // 针对范围/大文件的有界读取：通过 BufReader 跳过和取行，
-        // 而不是将整个文件实例化。流仍然运行到 EOF，
-        // 因此总行数和全文件 UTF-8 验证
-        // 与历史上的 read_to_string 行为一致。
+        // Bounded read for ranged/large files: skip and take lines through a
+        // BufReader instead of materializing the whole file. The stream still
+        // runs to EOF so the total line count and whole-file UTF-8 validation
+        // match the historical read_to_string behavior.
         let (window, total_lines) =
             read_window_streaming(file, start_line, max_lines).map_err(|e| {
                 ToolError::execution_failed(format!(
@@ -171,9 +171,9 @@ impl ToolSpec for ReadFileTool {
             })?;
         context.note_file_read(&file_path);
 
-        // `start_line > total_lines` 不是错误——
-        // 它让模型可以翻页到末尾之后而不报错。
-        // 返回一个空内容标记，以便后续读取可以停止。
+        // `start_line > total_lines` is not an error — it lets the model
+        // page past the end without raising. Returns an empty-content
+        // sentinel so subsequent reads can stop.
         if start_line > total_lines {
             let output = format!(
                 "<file path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"none\" truncated=\"false\">\n\
@@ -194,24 +194,24 @@ impl ToolSpec for ReadFileTool {
     }
 }
 
-// 针对大文件的有界输出。小文件快速路径保持历史上
-// "返回未修改内容"的行为，这样现有流程
-// （小配置文件、单个源文件等）不会突然开始
-// 看到包裹后的输出。一旦文件变大或调用者请求
-// 显式范围，我们就切换到一个带编号、行标记的
-// 窗口，并附上继续提示，这样模型可以在不每轮
-// 重新加载整个文件的情况下翻页。
-// 来自 PR #1451 by @Oliver-ZPLiu，关闭 #1450 的一部分。
+// Bounded output for large files. The small-file fast path keeps the
+// historical "return contents unchanged" behavior so existing flows
+// (small configs, single source files, etc.) don't suddenly start
+// seeing wrapped output. Once a file is large or the caller asks
+// for an explicit range, we switch to a numbered, line-tagged
+// window with continuation hints so the model can page through
+// without re-loading the entire file on every turn. Harvested
+// from PR #1451 by @Oliver-ZPLiu, closes part of #1450.
 const DEFAULT_READ_LINES: usize = 200;
 const HARD_MAX_READ_LINES: usize = 500;
 const MAX_VISIBLE_BYTES: usize = 16 * 1024;
 const SMALL_FILE_LINES: usize = 200;
 const SMALL_FILE_BYTES: usize = 16 * 1024;
 
-/// 从 `file` 中流式读取行窗口：跳过 `start_line - 1` 行，
-/// 收集最多 `max_lines` 行，然后继续计数（并验证 UTF-8）直到 EOF。
-/// 返回收集到的窗口及总行数。
-/// 只有窗口数据会保留在内存中。
+/// Stream a line window out of `file`: skip `start_line - 1` lines, collect
+/// up to `max_lines`, then keep counting (and validating UTF-8) to EOF.
+/// Returns the collected window plus the total line count. Only the window
+/// is ever held in memory.
 fn read_window_streaming(
     file: fs::File,
     start_line: usize,
@@ -231,8 +231,8 @@ fn read_window_streaming(
         if n == 0 {
             break;
         }
-        // 镜像 `str::lines`：去掉末尾的 '\n'，
-        // 并且仅当 '\r' 紧随 '\n' 之前时也去掉。
+        // Mirror `str::lines`: strip the trailing '\n', and a '\r' only when
+        // it directly precedes that '\n'.
         let mut end = raw.len();
         if raw[..end].ends_with(b"\n") {
             end -= 1;
@@ -240,8 +240,8 @@ fn read_window_streaming(
                 end -= 1;
             }
         }
-        // 验证每一行，这样文件中任何位置的无效 UTF-8
-        // 都会像之前全文件 read_to_string 那样失败。
+        // Validate every line so invalid UTF-8 anywhere in the file fails
+        // exactly like the previous whole-file read_to_string did.
         let line = std::str::from_utf8(&raw[..end]).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -257,9 +257,9 @@ fn read_window_streaming(
     Ok((window, total_lines))
 }
 
-/// 将收集到的行窗口渲染成用于范围/大文件读取的
-/// `<file …>` 包装器。`window` 必须包含
-/// `start_line..start_line + max_lines` 范围内的行（已钳制到 EOF）。
+/// Render a collected line window into the `<file …>` wrapper used for
+/// ranged/large reads. `window` must hold the lines for
+/// `start_line..start_line + max_lines` (clamped to EOF).
 fn render_line_window(
     path_str: &str,
     window: &[String],
@@ -278,7 +278,7 @@ fn render_line_window(
         numbered.push_str(&format!("{line_no:>6}│ {line}\n"));
     }
 
-    // 对渲染范围进行 UTF-8 安全的字节截断。
+    // UTF-8-safe byte truncation of the rendered range.
     let truncated_by_bytes = numbered.len() > MAX_VISIBLE_BYTES;
     let shown_content = if truncated_by_bytes {
         let mut end = MAX_VISIBLE_BYTES;
@@ -324,9 +324,9 @@ fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolResult, T
     )))
 }
 
-/// 通过扩展名或嗅探 `%PDF-` 魔数来检测 PDF。
-/// 没有扩展名的文件在头部匹配时
-/// 仍会被识别为 PDF。
+/// Detect a PDF by extension OR by sniffing the `%PDF-` magic bytes.
+/// Files without an extension are still recognized as PDFs when the header
+/// matches.
 fn is_pdf(path: &Path) -> Result<bool, ToolError> {
     if path
         .extension()
@@ -335,8 +335,8 @@ fn is_pdf(path: &Path) -> Result<bool, ToolError> {
     {
         return Ok(true);
     }
-    // 嗅探前 4 个字节。如果文件不存在则不报错——
-    // 让调用者的 `read_to_string` 产生标准的未找到错误。
+    // Sniff first 4 bytes. Don't error if the file doesn't exist — let the
+    // caller's `read_to_string` produce the canonical not-found error.
     let mut buf = [0u8; 4];
     let result = match fs::File::open(path) {
         Ok(mut f) => {
@@ -380,11 +380,11 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// 清理 PDF 提取的文本以供 TUI 显示：合并连续空白行
-/// （超过 1 行变为 1 行），将 NUL 字节替换为 U+FFFD，
-/// 将不换行空格替换为普通空格，并修剪每行末尾的空白。
-/// 生成的输出不会用垂直间隙或不可见控制字符
-/// 使会话记录变得杂乱。
+/// Clean PDF-extracted text for TUI display: collapse consecutive blank
+/// lines (more than 1 becomes 1), replace NUL bytes with U+FFFD, replace
+/// non-breaking spaces with regular spaces, and trim trailing whitespace
+/// on each line. Produces output that won't clutter the transcript with
+/// vertical gaps or invisible control characters.
 fn clean_pdf_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut blank_run = 0usize;
@@ -399,8 +399,8 @@ fn clean_pdf_text(raw: &str) -> String {
         } else {
             blank_run = 0;
             any_content = true;
-            // 直接推送清理后的字符——
-            // 避免每行临时分配 String。
+            // Push cleaned characters directly — avoids a per-line
+            // temporary String allocation.
             for c in trimmed.chars() {
                 match c {
                     '\0' => out.push('\u{FFFD}'),
@@ -411,11 +411,11 @@ fn clean_pdf_text(raw: &str) -> String {
             out.push('\n');
         }
     }
-    // 仅修剪前导空行——不要使用 str::trim()，
-    // 因为它也会去掉有意的缩进（例如居中的标题）。
+    // Trim leading blank lines only — don't use str::trim() which
+    // would also strip intentional indentation (e.g. centred titles).
     if any_content {
         let start = out.find(|c: char| c != '\n').unwrap_or(0);
-        // 从末尾往回走，找到最后一个非换行字符。
+        // Walk back from end to find the last non-newline character.
         let end = out.rfind(|c: char| c != '\n').map_or(out.len(), |i| {
             i + out[i..].chars().next().map_or(1, |c| c.len_utf8())
         });
@@ -426,8 +426,8 @@ fn clean_pdf_text(raw: &str) -> String {
 }
 
 fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
-    // 提前验证一次 `pages` 参数，
-    // 这样两个提取路径在输入错误时都会产生相同的错误格式。
+    // Validate the `pages` spec once, up front, so both extractor paths
+    // surface the same error shape on bad input.
     let page_range = match pages {
         Some(spec) => match parse_pages_arg(spec) {
             Some((start, end)) => Some((start, end)),
@@ -440,14 +440,14 @@ fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
         None => None,
     };
 
-    // 默认使用捆绑的纯 Rust `pdf-extract` 读取器：
-    // 它移除了困扰每个新用户的安装 poppler 的前置条件，
-    // 且该 crate 已经是工作区依赖（`web_run` 的 URL 获取路径也在使用）。
-    // 对于列密集/复杂表格的 PDF（学术论文、财务文件），
-    // 用户可以通过在 `~/.codewhale/settings.toml` 中设置
-    // `prefer_external_pdftotext = true` 来选择使用历史上的
-    // `pdftotext -layout` 路径
-    // （旧版：`~/.config/deepseek/settings.toml`）。
+    // Default to the bundled pure-Rust `pdf-extract` reader: it removes
+    // the install-poppler prerequisite that bit every new user, and the
+    // crate is already a workspace dep (used by `web_run`'s URL fetch
+    // path). Users with column-heavy / complex-table PDFs (academic
+    // papers, financial filings) can opt into the historical
+    // `pdftotext -layout` route by setting
+    // `prefer_external_pdftotext = true` in `~/.codewhale/settings.toml`
+    // (legacy: `~/.config/deepseek/settings.toml`).
     let prefer_external = crate::settings::Settings::load()
         .map(|s| s.prefer_external_pdftotext)
         .unwrap_or(false);
@@ -472,11 +472,11 @@ fn read_pdf_via_pdf_extract(
     page_range: Option<(u32, u32)>,
 ) -> Result<ToolResult, ToolError> {
     let text = if let Some((start, end)) = page_range {
-        // 逐页提取，这样我们可以切出请求的窗口，
-        // 而不必将每一页都拖入调用者上下文。
-        // pdf-extract 按文档顺序返回页面；`start`/`end` 是基于 1 的闭区间
-        // （上面已验证过），因此我们转换为
-        // 基于 0 的半开区间切片并进行边界钳制。
+        // Page-by-page extraction so we can slice the requested window
+        // without dragging every page through the caller's context.
+        // pdf-extract returns pages in document order; `start`/`end` are
+        // 1-indexed inclusive (validated above), so we convert to a
+        // 0-indexed half-open slice with bounds clamping.
         let pages = guard_pdf_extract(|| pdf_extract::extract_text_by_pages(path)).map_err(|e| {
             ToolError::execution_failed(format!(
                 "pdf-extract failed on {}: {e} (set `prefer_external_pdftotext = true` in settings.toml to retry via pdftotext)",
@@ -496,10 +496,10 @@ fn read_pdf_via_pdf_extract(
             }
         }
     } else {
-        // 即使调用者想要所有页面，也调用 extract_text_by_pages：
-        // extract_text 使用的内部代码路径可能在某些 PDF
-        // 交叉引用表或字体编码上挂起（#2641）。
-        // 逐页路径避免了该挂起问题，并在合并后产生相同的输出。
+        // Call extract_text_by_pages even when the caller wants every page:
+        // extract_text uses an internal codepath that can hang on certain PDF
+        // cross-reference tables or font encodings (#2641). The per-page path
+        // avoids that hang and produces identical output when joined.
         guard_pdf_extract(|| pdf_extract::extract_text_by_pages(path))
             .map(|pages| pages.join("\n"))
             .map_err(|e| {
@@ -549,7 +549,7 @@ fn read_pdf_via_pdftotext(
         cmd.arg("-l").arg(end.to_string());
     }
 
-    cmd.arg(path).arg("-"); // 输出到 stdout
+    cmd.arg(path).arg("-"); // output to stdout
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -557,9 +557,9 @@ fn read_pdf_via_pdftotext(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // 结构化的"二进制不可用"——
-            // 仅在用户明确选择了外部路径时才可达。
-            // 同时提示安装命令和树内默认方案。
+            // Structured "binary unavailable" — only reachable when the
+            // user explicitly opted into the external path. Hints back at
+            // both the install command and the in-tree default.
             return ToolResult::json(&json!({
                 "type": "binary_unavailable",
                 "path": path.display().to_string(),
@@ -596,7 +596,7 @@ fn read_pdf_via_pdftotext(
 
 // === WriteFileTool ===
 
-/// 用于向工作区写入 UTF-8 文件的工具。
+/// Tool for writing UTF-8 files to the workspace.
 pub struct WriteFileTool;
 
 #[async_trait]
@@ -644,8 +644,8 @@ impl ToolSpec for WriteFileTool {
 
         let file_path = context.resolve_path(path_str)?;
 
-        // 在覆盖之前对现有内容（如果有）拍照——
-        // 用于在工具结果中渲染内联差异。
+        // Snapshot the existing contents (if any) before we overwrite — used
+        // to render an inline diff in the tool result.
         let existed_before = file_path.exists();
         let prior_contents = if existed_before {
             fs::read_to_string(&file_path).unwrap_or_default()
@@ -653,7 +653,7 @@ impl ToolSpec for WriteFileTool {
             String::new()
         };
 
-        // 如有需要则创建父目录
+        // Create parent directories if needed
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 ToolError::execution_failed(format!(
@@ -682,7 +682,7 @@ impl ToolSpec for WriteFileTool {
             format!("{diff}\n{summary}")
         };
 
-        // 启用时，为写入的文件附加 LSP 诊断信息（#428）。
+        // Append LSP diagnostics for the written file when enabled (#428).
         let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
         let full_body = if diag_block.is_empty() {
             body
@@ -696,7 +696,7 @@ impl ToolSpec for WriteFileTool {
 
 // === EditFileTool ===
 
-/// 用于对文件进行搜索/替换编辑的工具。
+/// Tool for search/replace editing of files.
 pub struct EditFileTool;
 
 #[async_trait]
@@ -767,7 +767,7 @@ impl ToolSpec for EditFileTool {
 
         let count = contents.matches(search).count();
         let (updated, count, fuzz_kind) = if count == 0 {
-            // 第一次回退：容忍缩进差异。
+            // First fallback: tolerate indentation differences.
             let indent_matches = leading_whitespace_fuzzy_matches(&contents, search);
             match indent_matches.as_slice() {
                 [(start, end)] => {
@@ -776,11 +776,11 @@ impl ToolSpec for EditFileTool {
                     (updated, 1, Some("indentation"))
                 }
                 [] => {
-                    // 第二次回退：容忍排版标点漂移
-                    // （智能引号、长破折号、不换行空格）。
-                    // 处理复制粘贴失败场景：浏览器/聊天客户端
-                    // 静默地将文件中实际包含的 ASCII 标点
-                    // 替换成了 Unicode 标点。
+                    // Second fallback: tolerate typographic-punctuation
+                    // drift (smart quotes, em-dashes, NBSP). Picks up the
+                    // copy-paste failure mode where a browser/chat client
+                    // silently substituted Unicode punctuation in for the
+                    // ASCII the file actually contains.
                     let punct_matches = punctuation_normalized_matches(&contents, search);
                     match punct_matches.as_slice() {
                         [] => {
@@ -843,7 +843,7 @@ impl ToolSpec for EditFileTool {
             format!("{diff}\n{summary}")
         };
 
-        // 启用时，为编辑的文件附加 LSP 诊断信息（#428）。
+        // Append LSP diagnostics for the edited file when enabled (#428).
         let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
         let full_body = if diag_block.is_empty() {
             body
@@ -905,16 +905,16 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
         let Some(&mapped_start) = byte_map.get(norm_start) else {
             break;
         };
-        // 使用实际的匹配起始位置，仅在规范化文本中
-        // 匹配始于行边界时才扩展到行首。
-        // 这可以防止在去掉空白后匹配从行中间开始时，
-        // 破坏同一行前面的文本。
+        // Use the actual match start position, expanding to line start only
+        // when the match begins at a line boundary in the normalized text.
+        // This prevents destroying preceding text on the same line when
+        // the match starts mid-line after whitespace stripping.
         let original_start =
             if norm_start == 0 || normalized_contents.as_bytes()[norm_start - 1] == b'\n' {
-                // 匹配始于行边界——使用行首进行整行替换。
+                // Match starts at a line boundary — use line start for full-line replacement.
                 line_start_before(contents, mapped_start)
             } else {
-                // 匹配始于行中间——使用精确映射位置。
+                // Match starts mid-line — use the exact mapped position.
                 mapped_start
             };
         let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
@@ -924,16 +924,17 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
     matches
 }
 
-/// 将排版标点规范化为其 ASCII 对应字符：
+/// Normalize typographic punctuation to its ASCII counterpart:
 ///
 /// * `"` `"` / U+201C U+201D → `"`
 /// * `'` `'` / U+2018 U+2019 → `'`
 /// * `–` `—` / U+2013 U+2014 → `-`
-/// * U+00A0（不换行空格）→ ASCII 空格
+/// * U+00A0 (non-breaking space) → ASCII space
 ///
-/// 返回规范化后的字符串和一个大小为 `normalized.len()` 的字节映射，
-/// 其中第 i 个条目是产生规范化字节 i 的字符的原始字节偏移量。
-/// 用于在规范化空间中找到匹配后恢复原始字节范围。
+/// Returns the normalized string plus a byte-map sized to
+/// `normalized.len()` whose i-th entry is the original byte offset of
+/// the character that produced normalized byte i. Used to recover the
+/// original-byte range after finding a match in normalized space.
 fn punctuation_normalized_with_map(input: &str) -> (String, Vec<usize>) {
     let mut normalized = String::with_capacity(input.len());
     let mut byte_map = Vec::with_capacity(input.len());
@@ -954,18 +955,18 @@ fn punctuation_normalized_with_map(input: &str) -> (String, Vec<usize>) {
     (normalized, byte_map)
 }
 
-/// 在对两者都进行排版标点规范化后，
-/// 尝试在 `contents` 中找到 `search`。
-/// 捕获复制粘贴失败场景：浏览器、文字处理器或聊天客户端
-/// 静默地将 ASCII 引号/破折号转换为其 Unicode"美观"形式。
+/// Try to find `search` inside `contents` after normalizing typographic
+/// punctuation in both. Catches the copy-paste failure mode where a
+/// browser, word processor, or chat client silently converted ASCII
+/// quotes/dashes to their Unicode "pretty" forms.
 fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, usize)> {
     let (norm_contents, byte_map) = punctuation_normalized_with_map(contents);
     let (norm_search, _) = punctuation_normalized_with_map(search);
     if norm_search.is_empty() {
         return Vec::new();
     }
-    // 如果规范化没有改变任何内容，
-    // 精确匹配阶段已经考虑过这种情况——跳过以避免重复报告。
+    // If normalization didn't change anything, the exact-match pass
+    // already considered this case — skip to avoid double-reporting.
     if norm_contents == contents && norm_search == search {
         return Vec::new();
     }
@@ -987,16 +988,16 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
 
 // === ListDirTool ===
 
-/// 用于列出目录内容的工具。
+/// Tool for listing directory contents.
 pub struct ListDirTool;
 
 const LIST_DIR_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 单次 `list_dir` 调用返回的条目上限，
-/// 防止巨大目录（node_modules、构建输出、照片转储）使工具结果膨胀。
-/// 镜像了 `read_file` 的 `HARD_MAX_READ_LINES` 的有界输出惯用做法。
-/// 不超过上限的目录保持历史上的纯数组响应；
-/// 更大的目录返回包含截断元数据的对象。
+/// Cap on entries returned by a single `list_dir` call so a huge directory
+/// (node_modules, build output, photo dumps) can't balloon the tool result.
+/// Mirrors the bounded-output idiom of `read_file`'s `HARD_MAX_READ_LINES`.
+/// Directories at or under the cap keep the historical plain-array response;
+/// larger ones return an object with truncation metadata.
 const LIST_DIR_MAX_ENTRIES: usize = 500;
 
 #[async_trait]
@@ -1107,8 +1108,8 @@ fn list_dir_entries(
 
         let entry = entry.map_err(|e| ToolError::execution_failed(e.to_string()))?;
         total_entries += 1;
-        // 超过上限后，继续计数以获取截断元数据，
-        // 但停止构建条目。
+        // Past the cap, keep counting for the truncation metadata but stop
+        // materializing entries.
         if entries.len() >= LIST_DIR_MAX_ENTRIES {
             continue;
         }
@@ -1151,7 +1152,7 @@ fn list_dir_timeout(timeout: Duration) -> ToolError {
     }
 }
 
-// === 单元测试 ===
+// === Unit Tests ===
 
 #[cfg(test)]
 mod tests {
@@ -1170,7 +1171,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建一个测试文件
+        // Create a test file
         let test_file = tmp.path().join("test.txt");
         fs::write(&test_file, "hello world").expect("write");
 
@@ -1223,24 +1224,24 @@ mod tests {
     fn parse_pages_arg_accepts_range() {
         assert_eq!(parse_pages_arg("1-5"), Some((1, 5)));
         assert_eq!(parse_pages_arg("10-20"), Some((10, 20)));
-        // 破折号两侧的空白是被容忍的，
-        // 因此手写的 `pages: "1 - 5"` 仍然有效。
+        // Whitespace around either side of the dash is tolerated so
+        // hand-typed `pages: "1 - 5"` still works.
         assert_eq!(parse_pages_arg(" 1 - 5 "), Some((1, 5)));
     }
 
     #[test]
     fn parse_pages_arg_rejects_invalid_ranges() {
-        // 否则调用者会传入 `pdftotext -f 5 -l 1`，
-        // 它不会输出任何内容——大声失败以便模型可以重新发起。
+        // Caller would otherwise feed `pdftotext -f 5 -l 1`, which
+        // prints nothing — fail loudly so the model can re-issue.
         assert!(parse_pages_arg("5-1").is_none(), "end < start must reject");
-        // pdftotext 中没有基于 0 的页码概念；
-        // 拒绝它以避免调用者得到令人困惑的"无输出"静默失败。
+        // 0-indexed pages aren't a thing in pdftotext; reject so the
+        // caller doesn't get a confusing "no output" silent fail.
         assert!(
             parse_pages_arg("0").is_none(),
             "zero single-page must reject"
         );
         assert!(parse_pages_arg("0-3").is_none(), "zero start must reject");
-        // 空/仅空白/非数字输入必须拒绝。
+        // Empty / whitespace-only / non-numeric inputs must reject.
         assert!(parse_pages_arg("").is_none());
         assert!(parse_pages_arg("   ").is_none());
         assert!(parse_pages_arg("abc").is_none());
@@ -1249,9 +1250,9 @@ mod tests {
 
     #[test]
     fn parse_pages_arg_rejects_half_open_ranges() {
-        // 像 `1-` 或 `-5` 这样的半开范围几乎肯定是
-        // `1-N`/`N` 的打字错误，而非有意输入。
-        // 拒绝它们，而不是静默地扩展到 u32::MAX 或 0。
+        // Half-open ranges like `1-` or `-5` are almost certainly a
+        // typo for `1-N`/`N` rather than intentional input. Reject
+        // them rather than silently extending to u32::MAX or 0.
         assert!(parse_pages_arg("1-").is_none());
         assert!(parse_pages_arg("-5").is_none());
         assert!(parse_pages_arg("-").is_none());
@@ -1259,9 +1260,9 @@ mod tests {
 
     #[test]
     fn parse_pages_arg_rejects_negative_numbers() {
-        // u32::parse 对负数字面量返回 Err，
-        // 因此函数返回 `None` 而不是包装成一个巨大的正数——
-        // 防御性但值得固定测试。
+        // u32::parse on a negative literal returns Err, so the
+        // function reports `None` rather than wrapping into a giant
+        // positive number — defensive but worth pinning.
         assert!(parse_pages_arg("-3-5").is_none());
     }
 
@@ -1278,10 +1279,10 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_small_file_returns_unwrapped_contents() {
-        // 小文件（≤ 200 行且 ≤ 16KB，无显式范围）保持
-        // 历史上"返回未修改内容"的行为，
-        // 这样现有提示不会突然看到 <file> 标签出现。
-        // 来自 #1451——固定快速路径契约。
+        // Small files (≤ 200 lines AND ≤ 16KB, no explicit range) keep
+        // the historical "return contents unchanged" behavior so
+        // existing prompts don't suddenly see <file> tags appear.
+        // Harvested from #1451 — pin the fast-path contract.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let file = tmp.path().join("small.txt");
@@ -1388,7 +1389,7 @@ mod tests {
             .execute(json!({ "path": "bigish.txt", "max_lines": 5000 }), &ctx)
             .await
             .expect("execute");
-        // 硬上限是 500 行；第 500 行必须出现，第 501 行必须不出现。
+        // Hard cap is 500 lines; line 500 must appear, line 501 must not.
         assert!(
             result.content.contains("   500│ L500"),
             "line 500 should be in the window (max_lines clamped to 500)"
@@ -1403,9 +1404,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_large_file_without_range_uses_default_window() {
-        // 超过 200 行/16KB 且没有显式范围的文件
-        // 仍然获取默认窗口，而不是无限制的原始内容——
-        // 这就是该补丁的全部意义（token 预算控制）。
+        // A file over 200 lines / 16KB with no explicit range still
+        // gets the default window, not the unbounded raw content —
+        // this is the entire point of the patch (token-budget control).
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let file = tmp.path().join("big.txt");
@@ -1429,9 +1430,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_streamed_range_on_large_file_matches_windowed_contract() {
-        // 超过 16KB 即使没有显式范围
-        // 也会强制走流式 BufRead 路径；
-        // 断言范围输出与历史上的全量读取实现保持字节兼容。
+        // Over 16KB forces the streamed BufRead path even without an
+        // explicit range; assert the ranged output stays byte-compatible
+        // with the historical full-read implementation.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let file = tmp.path().join("large.txt");
@@ -1461,7 +1462,7 @@ mod tests {
             "[TRUNCATED] Showing lines 1500-1509 of 2000. To continue, call read_file with path=\"large.txt\" start_line=1510 max_lines=10"
         ));
 
-        // 同一大文件上的默认窗口（无范围）从第 1 行开始。
+        // Default window (no range) on the same large file starts at line 1.
         let default_window = tool
             .execute(json!({ "path": "large.txt" }), &ctx)
             .await
@@ -1470,7 +1471,7 @@ mod tests {
         assert!(default_window.content.contains("next_start_line=\"201\""));
         assert!(default_window.content.contains("     1│ line 1"));
 
-        // 翻页到 EOF 之后返回无内容标记，而不是错误。
+        // Paging past EOF returns the no-content sentinel, not an error.
         let past_end = tool
             .execute(json!({ "path": "large.txt", "start_line": 5000 }), &ctx)
             .await
@@ -1484,8 +1485,8 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let file = tmp.path().join("mixed.bin");
-        // 有效的前几行，后面是无效字节：
-        // 流式路径仍必须像 read_to_string 那样使整个读取失败。
+        // Valid first lines, invalid bytes later: the streamed path must
+        // still fail the whole read like read_to_string did.
         let mut bytes = b"good line\n".repeat(5);
         bytes.extend_from_slice(&[0xFF, 0xFE, b'\n']);
         fs::write(&file, &bytes).expect("write");
@@ -1553,10 +1554,10 @@ mod tests {
         assert_eq!(parse_pages_arg("abc"), None);
     }
 
-    /// 仓库附带的示例 PDF，用于与纯 Rust 提取器进行一致性测试。
-    /// 38 页，数字原生 LaTeX（arXiv 2512.24601）。
-    /// 路径相对于工作区根目录，
-    /// 因为测试夹具位于 tui crate 外部。
+    /// Sample PDF shipped with the repo for parity tests against the
+    /// pure-Rust extractor. 38 pages, born-digital LaTeX (arXiv 2512.24601).
+    /// Path is workspace-root-relative because the fixture lives outside
+    /// the tui crate.
     const SAMPLE_PDF_PATH: &str = "../../docs/2512.24601v2.pdf";
 
     fn sample_pdf_present() -> bool {
@@ -1602,11 +1603,11 @@ mod tests {
 
     #[test]
     fn read_pdf_via_pdf_extract_finds_known_title() {
-        // 当测试夹具未被检出时跳过
-        // （稀疏克隆、浅工作树）。本地开发和 CI 都有它。
+        // Skip when the fixture isn't checked out (sparse clones, shallow
+        // worktrees). Local dev + CI both have it.
         if !sample_pdf_present() {
-            // 测试夹具不存在（稀疏/浅检出）。
-            // 静默跳过——`cargo test` 无论如何都报告同样的 `ok`。
+            // Fixture not present (sparse / shallow checkout). Silent
+            // skip — `cargo test` reports the same `ok` either way.
             return;
         }
         let path = std::path::PathBuf::from(SAMPLE_PDF_PATH);
@@ -1622,8 +1623,8 @@ mod tests {
     #[test]
     fn read_pdf_via_pdf_extract_respects_pages_window() {
         if !sample_pdf_present() {
-            // 测试夹具不存在（稀疏/浅检出）。
-            // 静默跳过——`cargo test` 无论如何都报告同样的 `ok`。
+            // Fixture not present (sparse / shallow checkout). Silent
+            // skip — `cargo test` reports the same `ok` either way.
             return;
         }
         let path = std::path::PathBuf::from(SAMPLE_PDF_PATH);
@@ -1631,15 +1632,15 @@ mod tests {
         let two = read_pdf_via_pdf_extract(&path, Some((1, 2))).expect("two pages");
         assert!(single.success);
         assert!(two.success);
-        // 两页切片必须至少与一页切片一样长
-        // （大多数文档在第 1 页之后都有非平凡的正文）。
+        // A two-page slice must be at least as long as the one-page slice
+        // (most documents have non-trivial body text past page 1).
         assert!(
             two.content.len() >= single.content.len(),
             "expected pages 1-2 ({} bytes) >= page 1 ({} bytes)",
             two.content.len(),
             single.content.len()
         );
-        // 标题文本在第 1 页——必须在窗口裁剪后仍然存在。
+        // Title text lives on page 1 — must survive the window crop.
         assert!(single.content.contains("Recursive Language Models"));
     }
 
@@ -1657,15 +1658,14 @@ mod tests {
     #[tokio::test]
     async fn read_file_pdf_path_uses_pdf_extract_by_default() {
         if !sample_pdf_present() {
-            // 测试夹具不存在（稀疏/浅检出）。
-            // 静默跳过——`cargo test` 无论如何都报告同样的 `ok`。
+            // Fixture not present (sparse / shallow checkout). Silent
+            // skip — `cargo test` reports the same `ok` either way.
             return;
         }
-        // 测试夹具位于 tui crate 外部，因此我们将 ToolContext
-        // 指向工作区根目录并通过相对路径读取。
-        // 这会在捆绑提取器上执行完整的
-        // ReadFileTool::execute → is_pdf → read_pdf 调度
-        //（测试主机上无需 pdftotext）。
+        // The fixture lives outside the tui crate, so we point ToolContext
+        // at the workspace root and read by relative path. This exercises
+        // the full ReadFileTool::execute → is_pdf → read_pdf dispatch on
+        // the bundled extractor (no pdftotext required on the test host).
         let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
         let ctx = ToolContext::new(workspace);
         let result = ReadFileTool
@@ -1691,7 +1691,7 @@ mod tests {
     }
     impl Drop for ConfigPathEnvGuard {
         fn drop(&mut self) {
-            // SAFETY: 限定在测试进程内；恢复为捕获的值。
+            // Safety: scoped to test process; reverts to the captured value.
             match &self.prior {
                 Some(v) => unsafe { std::env::set_var("DEEPSEEK_CONFIG_PATH", v) },
                 None => unsafe { std::env::remove_var("DEEPSEEK_CONFIG_PATH") },
@@ -1701,16 +1701,16 @@ mod tests {
 
     #[test]
     fn read_pdf_routes_to_pdftotext_when_setting_opted_in() {
-        // 一个测试中的两个关注点：
-        // 当 `prefer_external_pdftotext = true` 时，
-        // 调度必须 (a) 在 pdftotext 存在时调用它，
-        // 以及 (b) 在 pdftotext 缺失时返回结构化的 `binary_unavailable` 响应。
-        // 同步测试（直接调用 `read_pdf`，而非异步的 ReadFileTool 包装器），
-        // 这样 env-var 锁永远不会跨 `.await` 持有。
-        // 必须持有进程级环境锁，而非模块级锁：
-        // 其他测试模块在 `lock_test_env` 下重定向
-        // `DEEPSEEK_CONFIG_PATH`/`HOME`，
-        // 模块级互斥锁会使此测试的重定向与它们的交错。
+        // Two concerns in one test: with `prefer_external_pdftotext = true`
+        // the dispatch must (a) call pdftotext when present, and (b) return
+        // the structured `binary_unavailable` response when pdftotext is
+        // missing.
+        // Sync test (calls `read_pdf` directly, not the async ReadFileTool
+        // wrapper) so the env-var lock is never held across an `.await`.
+        // Must hold the process-wide env lock, not a module-local one:
+        // other test modules redirect `DEEPSEEK_CONFIG_PATH`/`HOME` under
+        // `lock_test_env`, and a module-local mutex would let this test's
+        // redirect interleave with theirs.
         let _lock = crate::test_support::lock_test_env();
         let _guard = ConfigPathEnvGuard::capture();
 
@@ -1719,13 +1719,13 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         fs::write(&config_path, "").unwrap();
-        // 同级的 settings.toml 是 Settings::load() 读取的文件。
+        // The sibling settings.toml is what Settings::load() reads.
         fs::write(
             config_dir.join("settings.toml"),
             "prefer_external_pdftotext = true\n",
         )
         .unwrap();
-        // SAFETY: 由进程级测试环境锁序列化；由 guard 恢复。
+        // Safety: serialised by the process-wide test env lock; reverted by guard.
         unsafe {
             std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
         }
@@ -1742,11 +1742,11 @@ mod tests {
             .is_ok();
 
         if pdftotext_present {
-            // pdftotext 在桩 `%PDF-1.7\n%%EOF` 上找不到真正的
-            // trailer/xref 表并以 `exit 1` 失败。
-            // 该失败文本显式提到 pdftotext——
-            // 证明我们路由经过 Poppler 而不是回退到捆绑提取器。
-            // 通过检查错误消息来验证。
+            // pdftotext on a stub `%PDF-1.7\n%%EOF` cannot find a real
+            // trailer/xref table and fails with `exit 1`. That failure
+            // text mentions pdftotext explicitly — proof we routed
+            // through Poppler rather than falling back to the bundled
+            // extractor. Validate by inspecting the error message.
             let err = outcome.expect_err("malformed PDF must surface the pdftotext error");
             let msg = err.to_string();
             assert!(
@@ -1780,8 +1780,8 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        // 新文件 → "Created …" 摘要；
-        // 摘要上方的统一差异为 TUI 的差异感知渲染器做准备（#505）。
+        // New file → "Created …" summary; the unified diff above the summary
+        // primes the TUI's diff-aware renderer (#505).
         assert!(result.content.contains("Created"), "{}", result.content);
         assert!(result.content.contains("--- a/"), "{}", result.content);
         assert!(
@@ -1790,7 +1790,7 @@ mod tests {
             result.content
         );
 
-        // 验证文件已写入
+        // Verify file was written
         let written = fs::read_to_string(tmp.path().join("output.txt")).expect("read");
         assert_eq!(written, "test content");
     }
@@ -1811,7 +1811,7 @@ mod tests {
 
         assert!(result.success);
 
-        // 验证嵌套文件已创建
+        // Verify nested file was created
         let written = fs::read_to_string(tmp.path().join("subdir/nested/file.txt")).expect("read");
         assert_eq!(written, "nested content");
     }
@@ -1821,7 +1821,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建一个要编辑的文件
+        // Create a file to edit
         let test_file = tmp.path().join("edit_me.txt");
         fs::write(&test_file, "hello world").expect("write");
         read_before_edit(&ctx, "edit_me.txt").await;
@@ -1837,8 +1837,8 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("Replaced 1 occurrence"));
-        // 内联差异（#505）——统一差异位于摘要行上方，
-        // 以便 TUI 的差异感知渲染器生效。
+        // Inline diff (#505) — the unified diff lands above the summary
+        // line so the TUI's diff-aware renderer kicks in.
         assert!(result.content.contains("--- a/"), "{}", result.content);
         assert!(
             result.content.contains("-hello world"),
@@ -1847,7 +1847,7 @@ mod tests {
         );
         assert!(result.content.contains("+hi world"), "{}", result.content);
 
-        // 验证编辑已生效
+        // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "hi world");
     }
@@ -2051,9 +2051,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_file_fuzz_tolerates_smart_quote_substitution() {
-        // 磁盘上的文件有 ASCII 引号。
-        // 搜索内容来自浏览器的粘贴，带有花引号。
-        // 精确匹配失败；标点规范化的回退应该仍然能够完成编辑。
+        // The file on disk has ASCII quotes. The search comes from a
+        // browser paste with curly quotes. Exact match fails; the
+        // punctuation-normalized fallback should still land the edit.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
@@ -2066,7 +2066,7 @@ mod tests {
             .execute(
                 json!({
                     "path": "smart.rs",
-                    // \u{201C} \u{201D} 是花双引号对。
+                    // \u{201C} \u{201D} are the curly double-quote pair.
                     "search": "let s = \u{201C}hello world\u{201D};",
                     "replace": "let s = \"hello universe\";",
                     "fuzz": true
@@ -2121,7 +2121,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let test_file = tmp.path().join("dash.md");
-        // 文件有一个 ASCII 连字符和 ASCII 空格。
+        // File has an ASCII hyphen and ASCII space.
         fs::write(&test_file, "alpha - beta\n").expect("write");
         read_before_edit(&ctx, "dash.md").await;
 
@@ -2130,8 +2130,8 @@ mod tests {
             .execute(
                 json!({
                     "path": "dash.md",
-                    // 搜索使用长破折号 + NBSP，
-                    // 这在从样式文档复制粘贴后很常见。
+                    // Search uses em-dash + NBSP, common after a copy-paste
+                    // from a styled document.
                     "search": "alpha\u{00A0}\u{2014}\u{00A0}beta",
                     "replace": "alpha - gamma",
                     "fuzz": true
@@ -2151,7 +2151,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建一个不包含搜索字符串的文件
+        // Create a file without the search string
         let test_file = tmp.path().join("no_match.txt");
         fs::write(&test_file, "foo bar baz").expect("write");
         read_before_edit(&ctx, "no_match.txt").await;
@@ -2200,9 +2200,9 @@ mod tests {
         assert_eq!(unchanged, "a := \"foo\"");
     }
 
-/// #157 — 当模型使用 `replacement` 而不是 `replace` 时，
-/// 错误应指出提供的字段名，
-/// 以便模型无需第二次往返就能自我修正。
+    /// #157 — When the model uses `replacement` instead of `replace`,
+    /// the error should name the provided fields so the model can
+    /// self-correct without a second round-trip.
     #[tokio::test]
     async fn test_edit_file_wrong_param_name_shows_provided_fields() {
         let tmp = tempdir().expect("tempdir");
@@ -2212,7 +2212,7 @@ mod tests {
         fs::write(&test_file, "hello world").expect("write");
 
         let tool = EditFileTool;
-        // 模型使用 `replacement` 而不是 `replace`。
+        // Model uses `replacement` instead of `replace`.
         let result = tool
             .execute(
                 json!({"path": "test.txt", "search": "hello", "replacement": "hi"}),
@@ -2222,7 +2222,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        // 错误必须同时指出缺失的字段和已提供的字段。
+        // The error must name both the missing field AND the provided ones.
         assert!(
             err.contains("missing required field 'replace'"),
             "error must name the missing field: {err}"
@@ -2238,7 +2238,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建一些文件和目录
+        // Create some files and directories
         fs::write(tmp.path().join("file1.txt"), "").expect("write");
         fs::write(tmp.path().join("file2.txt"), "").expect("write");
         fs::create_dir(tmp.path().join("subdir")).expect("mkdir");
@@ -2262,7 +2262,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建一个包含文件的子目录
+        // Create a subdirectory with files
         let subdir = tmp.path().join("mydir");
         fs::create_dir(&subdir).expect("mkdir");
         fs::write(subdir.join("nested.txt"), "").expect("write");
@@ -2409,7 +2409,7 @@ mod tests {
 
     #[test]
     fn test_input_schemas() {
-        // 验证所有工具都有有效的 JSON schema
+        // Verify all tools have valid JSON schemas
         let read_schema = ReadFileTool.input_schema();
         assert!(read_schema.get("type").is_some());
         assert!(read_schema.get("properties").is_some());
@@ -2445,6 +2445,6 @@ mod tests {
             .get("required")
             .and_then(|value| value.as_array())
             .expect("list schema should include required array");
-        assert!(required.is_empty()); // path 是可选的
+        assert!(required.is_empty()); // path is optional
     }
 }

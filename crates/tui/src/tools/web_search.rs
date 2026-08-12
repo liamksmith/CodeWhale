@@ -1,14 +1,14 @@
-//! 由多个提供商支持的网页搜索工具：Bing HTML 抓取、DuckDuckGo
-//!（Bing 后备的 HTML 抓取）、Tavily API、Bocha（博查）API、
-//! Metaso API（<https://metaso.cn>）、SearXNG JSON API、百度 AI 搜索、
-//! 火山引擎 Ark 和 Sofya（<https://sofya.co>）。
+//! Web search tool backed by multiple providers: Bing HTML scrape, DuckDuckGo
+//! (HTML scrape with Bing fallback), Tavily API, Bocha (博查) API,
+//! Metaso API (<https://metaso.cn>), SearXNG JSON API, Baidu AI Search,
+//! Volcengine Ark, and Sofya (<https://sofya.co>).
 //!
-//! 这是代理的主要网页搜索接口。对于浏览工作流
-//!（打开页面、点击、截图），请改用直接 URL 方式。
+//! This is the primary web search surface for agents. For browsing workflows
+//! (page open, click, screenshot) use a direct URL approach instead.
 //!
-//! 在 config.toml 中设置 `[search]` 以切换提供商：
-//!   provider = "duckduckgo"  # 或 tavily/bocha/metaso/searxng/baidu/volcengine/sofya
-//!   base_url = "https://search.example/"  # DDG 兼容 URL 或 SearXNG 实例
+//! Set `[search]` in config.toml to switch providers:
+//!   provider = "duckduckgo"  # or tavily/bocha/metaso/searxng/baidu/volcengine/sofya
+//!   base_url = "https://search.example/"  # DDG-compatible URL or SearXNG instance
 //!   api_key = "tvly-..."
 
 use super::spec::{
@@ -32,13 +32,13 @@ const METASO_ENDPOINT: &str = "https://metaso.cn/api/v1";
 const BAIDU_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
 const VOLCENGINE_RESPONSES_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/v3/responses";
 const SOFYA_ENDPOINT: &str = "https://sofya.co/v1/search";
-/// Metaso 为开源/社区使用提供的公开默认密钥。
-/// 在配置和环境变量之后的最後手段。限速约 100 次搜索/天。
+/// Intentionally public default key provided by Metaso for open-source/community use.
+/// Last-resort fallback after config and env var. Rate-limited to ~100 searches/day.
 const METASO_DEFAULT_API_KEY: &str = "mk-E384C1DD5E8501BB7EFE27C949AFDE5B";
 const ERROR_BODY_PREVIEW_BYTES: usize = 512;
 
-/// 如果策略允许调用则返回 `Ok(())`，否则返回 `ToolError`。
-/// 当未附加策略时静默通过（向后兼容）。
+/// Returns `Ok(())` if the policy allows the call, or a `ToolError` otherwise.
+/// Falls through silently when no policy is attached (back-compat).
 fn check_policy(decider: Option<&NetworkPolicyDecider>, host: &str) -> Result<(), ToolError> {
     let Some(decider) = decider else {
         return Ok(());
@@ -55,7 +55,7 @@ fn check_policy(decider: Option<&NetworkPolicyDecider>, host: &str) -> Result<()
     }
 }
 
-// 用于 HTML 解析的缓存正则表达式模式
+// Cached regex patterns for HTML parsing
 static TITLE_RE: OnceLock<Regex> = OnceLock::new();
 static SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
 static TAG_RE: OnceLock<Regex> = OnceLock::new();
@@ -215,8 +215,8 @@ impl ToolSpec for WebSearchTool {
             )));
         }
 
-        // 在构建 Bing/DuckDuckGo 使用的 HTML 抓取客户端之前，
-        // 分发到已配置的基于 API 的搜索提供商。
+        // Dispatch to the configured API-backed search providers before
+        // building the HTML-scraping client used by Bing/DuckDuckGo.
         match context.search_provider {
             SearchProvider::Tavily => {
                 let decider = context.network_policy.as_ref();
@@ -277,7 +277,8 @@ impl ToolSpec for WebSearchTool {
                 ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
             })?;
 
-        // 记录 Bing 是否已尝试并返回零结果，以便在结果消息中显示后备信息（#2130）。
+        // Track whether Bing was tried and returned zero, so we can surface
+        // the fallback in the result message (#2130).
         let mut bing_was_empty = false;
 
         if matches!(context.search_provider, SearchProvider::Bing) {
@@ -286,15 +287,15 @@ impl ToolSpec for WebSearchTool {
             if !results.is_empty() {
                 return search_tool_result(query, "bing", results, None);
             }
-            // Bing 返回了零结果——回退到 DuckDuckGo。
+            // Bing returned zero results — fall through to DuckDuckGo.
             bing_was_empty = true;
         }
 
-        // 按域名的网络策略门控（#135）。网页搜索的"host"是
-        // 上游搜索引擎域名——优先 DuckDuckGo 兼容端点，
-        // Bing 作为后备。我们在此门控已配置的端点；Bing
-        // 在后备路径中单独门控，这样对一个引擎的拒绝
-        // 不会静默允许另一个。
+        // Per-domain network policy gate (#135). The "host" for web search is
+        // the upstream search engine domain — DuckDuckGo-compatible first,
+        // Bing on fallback. We gate the configured endpoint here; Bing is
+        // gated separately inside the fallback path so a deny on one engine
+        // doesn't silently allow the other.
         let (url, duckduckgo_host) =
             duckduckgo_search_url(context.search_base_url.as_deref(), &query)?;
         let allow_bing_fallback =
@@ -333,8 +334,8 @@ impl ToolSpec for WebSearchTool {
         };
         let mut message_suffix: Option<&str> = None;
 
-        // 当 Bing 返回零结果且我们回退到 DuckDuckGo 时，
-        // 在结果消息中显示后备信息（#2130）。
+        // When Bing returned zero and we fell through to DuckDuckGo, surface
+        // the fallback in the result message (#2130).
         if bing_was_empty && !results.is_empty() {
             message_suffix = Some("Bing returned no results; used DuckDuckGo fallback");
         }
@@ -347,8 +348,8 @@ impl ToolSpec for WebSearchTool {
         }
 
         if results.is_empty() && allow_bing_fallback {
-            // Bing 是独立的主机——单独门控，这样 DuckDuckGo 的拒绝
-            // 不会静默放行 Bing（反之亦然）。
+            // Bing is a separate host — gate it independently so a deny on
+            // DuckDuckGo doesn't silently let Bing through (and vice versa).
             check_policy(decider, BING_HOST)?;
             match run_bing_search(&client, &query, max_results).await {
                 Ok(fallback_results) if !fallback_results.is_empty() => {
@@ -408,11 +409,11 @@ fn search_tool_result(
 }
 
 impl WebSearchTool {
-    /// 通过配置的 SearXNG JSON API 搜索。
+    /// Search via a configured SearXNG JSON API.
     ///
-    /// SearXNG 暴露 `/search?q=...&format=json`，但公共实例通常
-    /// 禁用 JSON 输出或对自动化进行限速。因此 CodeWhale 仅使用
-    /// 在 `[search] base_url` 中配置的可信实例。
+    /// SearXNG exposes `/search?q=...&format=json`, but public instances often
+    /// disable JSON output or rate-limit automation. CodeWhale therefore uses
+    /// only the trusted instance configured in `[search] base_url`.
     async fn run_searxng_search(
         &self,
         query: &str,
@@ -470,7 +471,7 @@ impl WebSearchTool {
         search_tool_result(query.to_string(), "searxng", results, Some(&suffix))
     }
 
-    /// 通过 Tavily AI 搜索 API（<https://tavily.com>）搜索。
+    /// Search via Tavily AI Search API (<https://tavily.com>).
     async fn run_tavily_search(
         &self,
         query: &str,
@@ -495,7 +496,7 @@ impl WebSearchTool {
             })?;
 
         let payload = json!({
-            "api_key": api_key, // noqa: body 中的 API 密钥
+            "api_key": api_key, // noqa: api-key-in-body
             "query": query,
             "search_depth": "basic",
             "max_results": max_results,
@@ -567,11 +568,11 @@ impl WebSearchTool {
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
-    /// 通过 Sofya 网页搜索 API（<https://sofya.co>）搜索。
+    /// Search via Sofya web search API (<https://sofya.co>).
     ///
-    /// Sofya 返回完整的提取页面内容而非摘要。API 密钥（`ay_live_...`）
-    /// 来自 `[search] api_key`，回退到 `SOFYA_API_KEY` 环境变量，
-    /// 并以 `Bearer` 令牌形式发送。
+    /// Sofya returns full extracted page content rather than snippets. The API
+    /// key (`ay_live_...`) comes from `[search] api_key`, falling back to the
+    /// `SOFYA_API_KEY` env var, and is sent as a `Bearer` token.
     async fn run_sofya_search(
         &self,
         query: &str,
@@ -649,7 +650,7 @@ impl WebSearchTool {
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
-    /// 通过博查 AI 搜索 API（<https://bochaai.com>）搜索。
+    /// Search via Bocha AI Search API (<https://bochaai.com>).
     async fn run_bocha_search(
         &self,
         query: &str,
@@ -730,8 +731,9 @@ impl WebSearchTool {
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
-    /// 通过 Metaso AI 搜索 API（<https://metaso.cn>）搜索。如果没有设置配置密钥，
-    /// 则回退到 `METASO_API_KEY` 环境变量，然后是内置默认密钥。
+    /// Search via Metaso AI Search API (<https://metaso.cn>). Falls back to
+    /// `METASO_API_KEY` env var then a built-in default key if no config key
+    /// is set.
     async fn run_metaso_search(
         &self,
         query: &str,
@@ -792,7 +794,7 @@ impl WebSearchTool {
             ToolError::execution_failed(format!("Failed to parse Metaso response: {e}"))
         })?;
 
-        // 检查响应体中的业务逻辑错误码。
+        // Check business-logic error codes in the response body.
         if let Some(code) = parsed.get("code").and_then(|v| v.as_i64())
             && code != 0
         {
@@ -832,7 +834,7 @@ impl WebSearchTool {
         search_tool_result(query.to_string(), "metaso", results, None)
     }
 
-    /// 通过百度 AI 搜索 API（<https://qianfan.baidubce.com>）搜索。
+    /// Search via Baidu AI Search API (<https://qianfan.baidubce.com>).
     async fn run_baidu_search(
         &self,
         query: &str,
@@ -899,14 +901,15 @@ impl WebSearchTool {
         search_tool_result(query.to_string(), "baidu", results, None)
     }
 
-    /// 通过火山引擎 Ark Responses API 的 web_search 工具搜索。
-    /// 使用严格的 JSON 提示约束从模型的搜索增强响应中提取结构化结果。
+    /// Search via Volcengine Ark Responses API web_search tool.
+    /// Uses strict JSON prompt constraints to extract structured results
+    /// from the model's search-augmented response.
     ///
-    /// 将用户提供的超时覆盖为至少 90 秒，因为
-    /// Responses API 管道（网页搜索→模型推理→JSON 生成）
-    /// 本质上比简单的搜索 API 往返更慢。单独的 15 秒
-    /// `connect_timeout` 让 DNS/TLS 故障快速暴露。
-    /// 瞬态传输错误将使用指数退避重试两次。
+    /// Overrides the user-supplied timeout to a minimum of 90 s because the
+    /// Responses API pipeline (web search → model inference → JSON generation)
+    /// is inherently slower than simple search-API round-trips.  A separate
+    /// `connect_timeout` of 15 s lets DNS/TLS failures surface quickly.
+    /// Transient transport errors are retried twice with exponential backoff.
     async fn run_volcengine_search(
         &self,
         query: &str,
@@ -930,8 +933,9 @@ impl WebSearchTool {
                 )
             })?;
 
-        // 火山引擎 Responses API 管道（搜索+模型推理）速度较慢，
-        // 因此强制至少 90 秒。仅在调用方值超过 90_000 ms 时才使用调用方的值。
+        // Volcengine Responses API pipeline (search + model inference) is
+        // slow, so enforce a floor of 90 s. The caller's value is used only
+        // when it exceeds 90_000 ms.
         let effective_timeout = timeout_ms.max(90_000);
 
         let client = crate::tls::reqwest_client_builder()
@@ -948,8 +952,8 @@ impl WebSearchTool {
 
         let payload = volcengine_search_payload(query, max_results);
 
-        // 重试瞬态传输错误（DNS、连接重置、超时）
-        // 最多 2 次，使用指数退避：1 秒、2 秒。
+        // Retry transient transport errors (DNS, connection reset, timeout)
+        // up to 2 times with exponential backoff: 1 s, 2 s.
         let mut last_err: Option<ToolError> = None;
         for attempt in 0..3 {
             if attempt > 0 {
@@ -1015,7 +1019,7 @@ impl WebSearchTool {
             }
         }
 
-        // 不可达——最后一次迭代总是会从上方返回。
+        // Unreachable — the final iteration always returns above.
         Err(last_err.unwrap_or_else(|| {
             ToolError::execution_failed("Volcengine search: unexpected retry exit")
         }))
@@ -1253,7 +1257,7 @@ fn volcengine_search_payload(query: &str, max_results: usize) -> Value {
     })
 }
 
-/// 从火山引擎 Responses API 输出中提取模型的文本响应。
+/// Extracts the model's text response from a Volcengine Responses API output.
 fn volcengine_extract_text(parsed: &Value) -> Option<String> {
     parsed
         .get("output")
@@ -1271,7 +1275,7 @@ fn volcengine_extract_text(parsed: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 检查火山引擎 Responses API 响应中的业务逻辑错误。
+/// Checks for business-logic errors in a Volcengine Responses API response.
 fn volcengine_error_message(parsed: &Value) -> Option<String> {
     let error = parsed.get("error")?;
     let code = error
@@ -1285,7 +1289,7 @@ fn volcengine_error_message(parsed: &Value) -> Option<String> {
     Some(format!("Volcengine API error (code {code}: {message})"))
 }
 
-/// 将火山引擎模型生成的 JSON 结果解析为 `WebSearchEntry` 条目。
+/// Parses Volcengine model-generated JSON results into `WebSearchEntry` items.
 fn parse_volcengine_results(response_text: &str, max_results: usize) -> Vec<WebSearchEntry> {
     let json_text = extract_json_block(response_text).unwrap_or(response_text);
 
@@ -1321,7 +1325,8 @@ fn parse_volcengine_results(response_text: &str, max_results: usize) -> Vec<WebS
         .collect()
 }
 
-/// 尝试从可能被 markdown 围栏（```json ... ```）包裹或包含周围说明文字的文本中提取 JSON 块。
+/// Attempts to extract a JSON block from text that may be wrapped in
+/// markdown fences (```json ... ```) or contain surrounding commentary.
 fn extract_json_block(text: &str) -> Option<&str> {
     if let Some(start) = text.find("```json") {
         let inner = &text[start + 7..];
@@ -1456,8 +1461,9 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<WebSearchEntr
     }
 
     if is_likely_spam_results(&results) {
-        // 与 Bing 路径相同的防御（#964）：当上游降级时，DDG 后备页面
-        // 也可能提供单域名填充的结果集。丢弃而非误导模型。
+        // Same defence as the Bing path (#964): a DDG fallback page can
+        // also serve a single-domain stuffed result set when the upstream
+        // is degraded. Drop rather than mislead the model.
         return Vec::new();
     }
     results
@@ -1499,21 +1505,23 @@ fn parse_bing_results(html: &str, max_results: usize) -> Vec<WebSearchEntry> {
     }
 
     if is_likely_spam_results(&results) {
-        // Bing 的抓取端点偶尔会提供一个填充页面，
-        // 其中同一个低质量域名占据大部分 b_algo 条目——
-        // #964 报告了来自 `astralia.forumgratuit.org` 的连续八个无关查询结果。
-        // 将该批次视为"无结果"，以便调用方显示干净的失败消息，
-        // 而不是将模型引向垃圾信息。
+        // Bing's scraping endpoint occasionally serves a stuffed page
+        // where the same low-quality domain owns most of the b_algo
+        // entries — #964 reported eight in a row from
+        // `astralia.forumgratuit.org` for unrelated queries. Treat the
+        // batch as "no results" so the caller surfaces a clean failure
+        // message instead of routing the model toward junk.
         return Vec::new();
     }
     results
 }
 
-/// 针对抓取的 SERP HTML 的启发式垃圾检测器（#964）。
+/// Heuristic spam detector for scraped SERP HTML (#964).
 ///
-/// 当一个根域名拥有至少 60% 的结果集且至少有三个结果时返回 `true`。
-/// 来自 Google/Bing/DDG 的真实前五页面会混合多个域名；
-/// 由一个主机主导的结果页面几乎总是 SEO 垃圾信息或机器人检测填充的替代页面。
+/// Returns `true` when one root domain owns at least 60% of the result
+/// set and there are at least three results. A real-world top-five page
+/// from Google/Bing/DDG mixes domains; a result page dominated by one
+/// host is almost always SEO spam or a bot-detection-stuffed substitute.
 fn is_likely_spam_results(results: &[WebSearchEntry]) -> bool {
     if results.len() < 3 {
         return false;
@@ -1527,14 +1535,14 @@ fn is_likely_spam_results(results: &[WebSearchEntry]) -> bool {
     let Some(&max) = counts.values().max() else {
         return false;
     };
-    // 60% 阈值：3/5、4/6、5/8 均触发；2/5 不触发。
+    // 60% threshold: 3-of-5, 4-of-6, 5-of-8 all trip; 2-of-5 doesn't.
     max * 5 >= results.len() * 3
 }
 
-/// 从 URL 中提取可注册的根域名（eTLD+1 近似值），
-/// 以便垃圾检测将 `astralia.forumgratuit.org` 与
-/// `russia.forumgratuit.org` 分组。返回小写主机减去最左侧标签，
-/// 或当只有两个标签时返回裸主机。
+/// Extract the registrable root domain (eTLD+1 approximation) from a URL
+/// so spam detection groups `astralia.forumgratuit.org` with
+/// `russia.forumgratuit.org`. Returns lowercase host minus the leftmost
+/// label, or the bare host when there are only two labels.
 fn root_domain(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let host = after_scheme.split(['/', '?', '#']).next()?;
@@ -1567,12 +1575,12 @@ fn normalize_url(href: &str) -> String {
 }
 
 fn normalize_bing_url(href: &str) -> String {
-    // Bing 将每个 SERP 结果 URL 包裹在 `/ck/a?...&u=<base64>` 点击跟踪
-    // 重定向中，在原始 HTML 中，分隔符是 `&amp;` 实体。如果不先解码实体，
-    // `extract_query_param` 会查找 `u`，但实际键是 `amp;u`，
-    // 因此真实 URL 永远无法恢复：每个结果都崩溃为 `bing.com` 根域名，
-    // 然后垃圾启发式会拒绝它——导致默认 Bing 后端返回零结果。
-    // 在解析之前解码实体。
+    // Bing wraps every SERP result URL in a `/ck/a?...&u=<base64>` click-tracking
+    // redirect, and in the raw HTML the separators are `&amp;` entities. Without
+    // decoding entities first, `extract_query_param` looks for `u` but the actual
+    // key is `amp;u`, so the real URL is never recovered: every result collapses to
+    // a `bing.com` root domain, which the spam heuristic then rejects — yielding
+    // zero results for the default Bing backend. Decode entities before parsing.
     let href = decode_html_entities(href);
     let href = href.as_str();
     if let Some(encoded) = extract_query_param(href, "u") {
@@ -1761,10 +1769,11 @@ mod tests {
     };
     use serde_json::json;
 
-    // 回归防护：Bing /ck/a 重定向 href 使用 HTML 实体编码（`&amp;`）。
-    // normalize_bing_url 必须在提取 `u=` base64 负载之前解码实体，
-    // 否则真实 URL 永远无法恢复，结果的根域名崩溃为 bing.com
-    //（然后作为垃圾信息丢弃 → 默认 Bing 后端得到 0 个结果）。
+    // Regression guard: Bing /ck/a redirect hrefs are HTML-entity-encoded
+    // (`&amp;`). normalize_bing_url must decode entities before extracting the
+    // `u=` base64 payload, otherwise the real URL is never recovered and the
+    // result's root domain collapses to bing.com (then dropped as spam → 0
+    // results for the default Bing backend).
     #[test]
     fn bing_ckurl_with_html_entities_decodes_real_url() {
         let href = "https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&amp;ntb=1";
@@ -1814,7 +1823,7 @@ mod tests {
 
     #[test]
     fn spam_detector_flags_single_domain_dominance() {
-        // #964 重现：5/5 的结果来自同一个低质量主机。
+        // #964 reproduction: 5/5 results from the same low-quality host.
         let r = vec![
             entry("https://astralia.forumgratuit.org/page1"),
             entry("https://russia.forumgratuit.org/page2"),
@@ -1827,7 +1836,7 @@ mod tests {
 
     #[test]
     fn spam_detector_passes_diverse_serp() {
-        // 正常的 SERP 混合了多个域名；没有标记任何内容。
+        // A normal SERP mixes domains; nothing flagged.
         let r = vec![
             entry("https://example.com/a"),
             entry("https://wikipedia.org/b"),
@@ -1840,8 +1849,9 @@ mod tests {
 
     #[test]
     fn spam_detector_passes_short_result_set() {
-        // 来自同一域名的两个结果不足以构成信号——对合法的双链接答案（文档+首页）
-        // 产生误报的伤害比放行它们更大。
+        // Two results from the same domain isn't enough signal — false
+        // positives on legitimate two-link answers (docs + homepage)
+        // would hurt more than letting them through.
         let r = vec![
             entry("https://example.com/a"),
             entry("https://example.com/b"),
@@ -1851,7 +1861,7 @@ mod tests {
 
     #[test]
     fn spam_detector_threshold_is_sixty_percent() {
-        // 3/5 同域名触发 60% 阈值。
+        // 3-of-5 same domain trips the 60% threshold.
         let r3of5 = vec![
             entry("https://spam.example.com/a"),
             entry("https://spam.example.com/b"),
@@ -1860,7 +1870,7 @@ mod tests {
             entry("https://third.com/e"),
         ];
         assert!(is_likely_spam_results(&r3of5));
-        // 2/5 不触发阈值。
+        // 2-of-5 does NOT trip the threshold.
         let r2of5 = vec![
             entry("https://spam.example.com/a"),
             entry("https://spam.example.com/b"),
@@ -1940,9 +1950,9 @@ mod tests {
 
     #[test]
     fn optional_max_results_prefers_top_level_value() {
-        // 顶级 `max_results` 优先于数组形式的兄弟字段，
-        // 因为使用数组形式的调用方通常会整体复制粘贴它，
-        // 然后随后调整外层的 max_results。
+        // Top-level `max_results` wins over the array-form sibling
+        // because callers using the array form usually copy-paste it
+        // wholesale and then tweak the outer max_results afterwards.
         assert_eq!(
             optional_search_max_results(
                 &json!({"query": "x", "max_results": 8, "search_query": [{"q": "y", "max_results": 2}]})
@@ -1953,8 +1963,9 @@ mod tests {
 
     #[test]
     fn optional_max_results_falls_back_to_array_form() {
-        // 当只有数组形式设置了 max_results 时，该值应该是
-        // 到达调用方的值。这是 V4 在发出结构化 `search_query: [{…}]` 形状时使用的路径。
+        // When only the array form sets max_results, that value is the
+        // one that should reach the caller. This is the path V4 uses
+        // when it emits the structured `search_query: [{…}]` shape.
         assert_eq!(
             optional_search_max_results(&json!({"search_query": [{"q": "y", "max_results": 3}]})),
             3,
@@ -1963,8 +1974,9 @@ mod tests {
 
     #[test]
     fn optional_max_results_uses_default_when_neither_set() {
-        // 没有任何显式限制 → 应用默认值（当前为 5），
-        // 这样模型就不能仅仅通过省略该字段来意外拉取 MAX_RESULTS 的带宽。
+        // No explicit bound anywhere → the DEFAULT (currently 5)
+        // applies, so the model can't accidentally pull MAX_RESULTS
+        // worth of bandwidth just by omitting the field.
         assert_eq!(optional_search_max_results(&json!({"query": "x"})), 5);
         assert_eq!(
             optional_search_max_results(&json!({"search_query": [{"q": "y"}]})),
@@ -1974,9 +1986,10 @@ mod tests {
 
     #[test]
     fn optional_max_results_only_reads_first_array_entry() {
-        // 子搜索支持是未来的功能；目前忽略第一个之后的数组条目。
-        // 固定此行为，以便未来的多查询实现必须有意更新此测试，
-        // 而不是静默开始分发。
+        // Sub-search support is a future feature; for now the array
+        // entries beyond the first are ignored. Pin so a future
+        // multi-query implementation has to update this test
+        // intentionally rather than silently start fanning out.
         assert_eq!(
             optional_search_max_results(
                 &json!({"search_query": [{"q": "first", "max_results": 1}, {"q": "second", "max_results": 9}]})
@@ -1987,8 +2000,8 @@ mod tests {
 
     #[test]
     fn extract_search_query_trims_whitespace_from_array_form_q_alias() {
-        // "修剪"约定是辅助函数不变式的一部分——
-        // 模型有时会使用 heredoc 的换行符填充 `q`。
+        // The "trimmed" contract is part of the helper's invariant —
+        // a model sometimes pads `q` with newlines from a heredoc.
         let q = extract_search_query(&json!({"search_query": [{"q": "  deepseek tui  "}]}))
             .expect("array form should parse with trim");
         assert_eq!(q, "deepseek tui");
@@ -1996,8 +2009,9 @@ mod tests {
 
     #[test]
     fn extract_search_query_rejects_empty_query() {
-        // 空字符串查询进入 extract_search_query → 作为 missing_field 传播，
-        // 而不是在下面几层出现令人困惑的引擎错误。锁定此失败模式。
+        // A "" query lands in extract_search_query → propagates as
+        // missing_field rather than a confusing engine error a few
+        // layers down. Lock the failure mode.
         for body in [json!({"query": ""}), json!({"q": "   "}), json!({})] {
             let err = extract_search_query(&body).expect_err("empty query must reject");
             let msg = format!("{err}");
@@ -2264,9 +2278,11 @@ mod tests {
 
     #[tokio::test]
     async fn tavily_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        // 信任边界固定：如果用户已选择 Tavily 但忘记了 api_key，
-        // 该工具绝不能静默回退到 DuckDuckGo（这会将查询暴露给用户授权之外的不同提供商）。
-        // 相反，它返回一个明确命名缺失密钥的 ToolError。
+        // Trust-boundary pin: if a user has opted into Tavily but
+        // forgot the api_key, the tool must NOT silently fall through
+        // to DuckDuckGo (which would expose the query to a different
+        // provider than the user authorised). Instead it returns a
+        // ToolError that names the missing key explicitly.
         use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 
@@ -2287,7 +2303,7 @@ mod tests {
 
     #[tokio::test]
     async fn bocha_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        // 与 Bocha 相同的信任边界固定。
+        // Same trust-boundary pin for Bocha.
         use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 
@@ -2338,13 +2354,14 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn sofya_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
-        // 与 Tavily/Bocha 相同的信任边界固定：选择 Sofya 但没有密钥
-        // 必须返回一个命名提供商的 ToolError，而不是静默回退到 DuckDuckGo。
+        // Same trust-boundary pin as Tavily/Bocha: opting into Sofya without a
+        // key must surface a ToolError naming the provider, not silently fall
+        // through to DuckDuckGo.
         use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 
-        // 此测试在等待工具执行期间持有进程环境锁，
-        // 因为工具在该调用期间读取 SOFYA_API_KEY。
+        // This test holds the process-env lock through the awaited tool
+        // execution because the tool reads SOFYA_API_KEY during that call.
         let _guard = crate::test_support::lock_test_env();
         let prev = std::env::var_os("SOFYA_API_KEY");
         unsafe { std::env::remove_var("SOFYA_API_KEY") };
@@ -2376,9 +2393,10 @@ mod tests {
         use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 
-        // 此测试有意在等待工具执行期间持有进程环境锁，
-        // 因为工具在该调用期间读取环境变量回退。
-        // 在 await 之前释放锁会重新引入与其他修改环境变量的测试的竞态条件。
+        // This test intentionally keeps the process-env lock through the
+        // awaited tool execution because the tool reads env fallbacks during
+        // that call. Dropping the lock before await would reintroduce races
+        // with other env-mutating tests.
         let _guard = crate::test_support::lock_test_env();
         let prev_volc = std::env::var_os("VOLCENGINE_API_KEY");
         let prev_volc_ark = std::env::var_os("VOLCENGINE_ARK_API_KEY");
@@ -2421,9 +2439,10 @@ mod tests {
 
     #[tokio::test]
     async fn metaso_provider_uses_built_in_key_when_no_config_key_set() {
-        // 与 Tavily/Bocha 不同，Metaso 回退到内置默认值，
-        // 因此调用不应该返回与 API 密钥相关的错误——
-        // 它应该成功或出现网络级错误，但绝不会是缺失密钥错误。
+        // Unlike Tavily/Bocha, Metaso falls back to a built-in default, so
+        // the call should NOT return an API-key-related error — it should
+        // either succeed or fail with a network-level error, but never a
+        // missing-key error.
         use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 

@@ -1,33 +1,34 @@
-//! 工具 `input_schema` 在发送给供应商 API 之前的模式清理器。
+//! Schema sanitizer for tool `input_schema` before sending to provider APIs.
 //!
-//! DeepSeek 的 `/beta/chat/completions` 严格工具模式很苛刻。MCP 工具
-//! 模式经常带有 Pydantic 风格的 `anyOf:[{type:"string"},
-//! {type:"null"}]` 联合类型、没有 `properties` 的裸 `{type:"object"}`，
-//! 或者 `required` 条目不在 `properties` 中出现。这些脏模式
-//! 会导致用户无法诊断的静默 400 错误。
+//! DeepSeek's `/beta/chat/completions` strict tool mode is harsh. MCP tool
+//! schemas frequently arrive with Pydantic-style `anyOf:[{type:"string"},
+//! {type:"null"}]` unions, bare `{type:"object"}` with no `properties`, or
+//! `required` entries that don't appear in `properties`. These dirty schemas
+//! cause silent 400s that users can't diagnose.
 //!
-//! 默认清理器在 `ToolRegistry::tools_for_api()` 返回每个模式之前，
-//! 对它们进行原地处理。下面的供应商专用辅助函数在其请求形状需要时，
-//! 添加更严格的 DeepSeek 和 OpenAI Responses 兼容性处理。
+//! The default sanitizer runs in-place on every schema returned by
+//! `ToolRegistry::tools_for_api()` before the registry hands them off.
+//! Provider-specific helpers below add stricter DeepSeek and OpenAI Responses
+//! compatibility passes where their request shapes need it.
 
 use serde_json::{Map, Value};
 
 use crate::models::Tool;
 
-/// 对 JSON Schema 进行原地清理，以确保 DeepSeek 严格工具兼容性。
+/// Sanitize a JSON Schema in-place for DeepSeek strict-tool compatibility.
 ///
-/// 应用一系列保持语义的规范化处理：
-/// - 折叠 `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`
-/// - 在裸对象模式上注入 `"properties": {}`
-/// - 修剪悬空的 `required` 条目
-/// - 折叠单元素 `oneOf` / `allOf`
-/// - 递归遍历所有子模式
+/// Applies a sequence of normalisations chosen to be semantics-preserving:
+/// - Collapse `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`
+/// - Inject `"properties": {}` on bare-object schemas
+/// - Prune dangling `required` entries
+/// - Collapse single-element `oneOf` / `allOf`
+/// - Walk recursively through all subschemas
 pub fn sanitize(schema: &mut Value) {
     collapse_nullable_unions(schema);
     inject_properties_on_bare_objects(schema);
     prune_dangling_required(schema);
     collapse_single_element_unions(schema);
-    // 递归到所有子模式
+    // Recurse into all sub-schemas
     if let Some(obj) = schema.as_object_mut() {
         for (_, v) in obj.iter_mut() {
             sanitize(v);
@@ -39,11 +40,11 @@ pub fn sanitize(schema: &mut Value) {
     }
 }
 
-/// 为 DeepSeek 严格函数调用准备完整的活动工具集。
+/// Prepare a complete active tool set for DeepSeek strict function-calling.
 ///
-/// 每个工具独立评估：兼容的模式被清理并标记为严格，
-/// 而不兼容的模式保持不变且非严格。
-/// 仅当集合中的每个工具都能使用严格模式时返回 `true`。
+/// Each tool is evaluated independently: compatible schemas are sanitized and
+/// marked strict, while incompatible schemas remain unchanged and non-strict.
+/// Returns `true` only when every tool in the set can use strict mode.
 pub fn prepare_tools_for_strict_mode(tools: &mut [Tool]) -> bool {
     let mut all_strict = true;
     for tool in tools {
@@ -58,26 +59,26 @@ pub fn prepare_tools_for_strict_mode(tools: &mut [Tool]) -> bool {
     all_strict
 }
 
-/// 为 DeepSeek 严格函数调用清理模式。
+/// Sanitize a schema for DeepSeek strict function-calling.
 ///
-/// 这扩展了通用清理器，增加了官方的严格模式对象规则：
-/// 每个对象必须设置 `additionalProperties: false`，并且每个属性
-/// 必须列在 `required` 中。
+/// This extends the general sanitizer with the official strict-mode object
+/// rules: every object must set `additionalProperties: false`, and every
+/// property must be listed in `required`.
 pub fn sanitize_for_strict(schema: &mut Value) {
     sanitize(schema);
     enforce_strict_subset(schema);
 }
 
-/// 为 OpenAI Responses 函数工具清理模式。
+/// Sanitize a schema for OpenAI Responses function tools.
 ///
-/// Responses API 要求顶层 `parameters` 模式是一个对象，
-/// 并拒绝顶层的 `oneOf` / `anyOf` / `allOf` / `enum` / `not`。保持
-/// 模式宽松而非更改工具语义：合并我们能看到的任何根级别
-/// 替代属性，然后移除仅根级别的组合关键字，
-/// 同时保留嵌套模式。
+/// The Responses API requires the top-level `parameters` schema to be an object
+/// and rejects top-level `oneOf` / `anyOf` / `allOf` / `enum` / `not`. Keep the
+/// schema permissive rather than changing tool semantics: merge any root
+/// alternative properties we can see, then remove the root-only composition
+/// keywords while preserving nested schemas.
 ///
-/// 当丢弃带有有意义 `required` 组的根组合约束时，
-/// 返回一个简短描述注释。
+/// Returns a short description note when root composition constraints with
+/// meaningful `required` groups are dropped.
 pub fn sanitize_for_responses(schema: &mut Value) -> Option<String> {
     let constraint_note = schema
         .as_object()
@@ -129,10 +130,10 @@ fn has_strict_incompatible_composition(schema: &Value, is_root: bool) -> bool {
     })
 }
 
-/// 折叠 `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`。
+/// Collapse `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`.
 ///
-/// 对 `oneOf` 同样处理。仅当恰好有一个非 null
-/// 成员且恰好有一个 null 类型成员时才折叠。
+/// Same treatment for `oneOf`. Only collapses when exactly one non-null
+/// member and exactly one null-type member are present.
 fn collapse_nullable_unions(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
@@ -164,8 +165,8 @@ fn is_null_type(v: &Value) -> bool {
         == Some("null")
 }
 
-/// 裸 `{"type": "object"}`（没有 `properties`，没有 `additionalProperties`）
-/// → 注入 `"properties": {}` 以免 DeepSeek 的严格验证器返回 400。
+/// Bare `{"type": "object"}` (no `properties`, no `additionalProperties`)
+/// → inject `"properties": {}` so DeepSeek's strict validator doesn't 400.
 fn inject_properties_on_bare_objects(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
@@ -179,12 +180,12 @@ fn inject_properties_on_bare_objects(schema: &mut Value) {
     obj.insert("properties".into(), Value::Object(Map::new()));
 }
 
-/// 从 `required` 中移除不在 `properties` 中的键条目。
+/// Remove entries from `required` that aren't keys in `properties`.
 fn prune_dangling_required(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
     };
-    // 先收集已知属性名（不可变借用），再修剪。
+    // Collect known property names first (immutable borrow), then prune.
     let known_keys: Vec<String> = obj
         .get("properties")
         .and_then(|v| v.as_object())
@@ -203,10 +204,10 @@ fn prune_dangling_required(schema: &mut Value) {
     }
 }
 
-/// 折叠 `{"oneOf": [X]}` → X，`allOf` 同理。
+/// Collapse `{"oneOf": [X]}` → X, same for `allOf`.
 ///
-/// 单元素联合类型在语义上等价于元素本身；
-/// DeepSeek 的严格验证器并不总会展平它们。
+/// Single-element unions are semantically equivalent to the element itself;
+/// DeepSeek's strict validator doesn't always flatten them.
 fn collapse_single_element_unions(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
@@ -431,8 +432,9 @@ mod tests {
         });
         let mut schema = original.clone();
         sanitize(&mut schema);
-        // 多类型 anyOf 在递归遍历后本应折叠为单个元素
-        // —— 但这里两者都不是 null，因此折叠不会触发。anyOf 数组本身保留。
+        // Multi-typed anyOf should collapse to single element after
+        // recursive walk — but here neither is null so the collapse
+        // doesn't trigger. The anyOf array itself remains.
         assert!(schema.get("anyOf").is_some());
     }
 
@@ -538,7 +540,7 @@ mod tests {
 
     #[test]
     fn nested_anyof_in_anyof_collapses() {
-        // Pydantic 可以嵌套联合类型：Optional[Union[str, int]]。
+        // Pydantic can nest unions: Optional[Union[str, int]].
         let mut schema = json!({
             "anyOf": [
                 {
@@ -551,8 +553,8 @@ mod tests {
             ]
         });
         sanitize(&mut schema);
-        // 外层 anyOf 是单个非 null → 已折叠。内层 anyOf 是
-        // 多类型 → 已保留，但外层的 null 已被处理。
+        // Outer anyOf is single non-null → collapsed. Inner anyOf is
+        // multi-typed → preserved, but the outer null is handled.
         assert_eq!(schema["nullable"], true);
         assert!(schema.get("anyOf").is_some());
     }
@@ -953,25 +955,27 @@ mod tests {
     }
 }
 
-/// 为 Kimi / Moonshot API 兼容性规范化工具的函数模式。
+/// Normalize a tool's function schema for Kimi / Moonshot API compatibility.
 ///
-/// Kimi 的 API 强制执行更严格的 JSON Schema 验证：当模式使用
-/// `anyOf` / `oneOf` 时，`type` 字段必须放在每个 item 内部
-/// 而非父对象上。此函数遍历模式根节点和任何嵌套对象，
-/// 将 `"type": "object"` 下推到存在的 `anyOf` / `oneOf` item 中。
+/// Kimi's API enforces stricter JSON Schema validation: when a schema uses
+/// `anyOf` / `oneOf`, the `type` field must be placed inside each item rather
+/// than on the parent object.  This function walks the schema root and any
+/// nested objects, pushing `"type": "object"` down into `anyOf` / `oneOf`
+/// items when present.
 ///
-/// 不变性：仅修改带有顶层 `type` + `anyOf` 或 `oneOf` 数组的对象
-/// ——没有条件替代的纯模式保持不变。
+/// Invariant: only mutates objects that carry a top-level `type` + an
+/// `anyOf` or `oneOf` array — pure schemas without conditional alternatives
+/// are left untouched.
 pub fn sanitize_for_kimi(schema: &mut serde_json::Value) {
     if let Some(obj) = schema.as_object_mut() {
-        // 先递归，以便注入到此对象备选中的类型
-        // 不会因为处理刚变异的 item 而被立即再次移除。
+        // Recurse first so a type injected into this object's alternatives is
+        // not immediately removed again by processing that freshly-mutated item.
         for (_, v) in obj.iter_mut() {
             sanitize_for_kimi(v);
         }
 
-        // 如果此对象有 `type` + `anyOf`/`oneOf`，将 `type` 推入
-        // 每个 item 并从父对象移除。否则保持不变。
+        // If this object has `type` + `anyOf`/`oneOf`, push `type` into
+        // each item and remove it from the parent. Otherwise leave it alone.
         let should_push =
             obj.contains_key("type") && (obj.contains_key("anyOf") || obj.contains_key("oneOf"));
         if should_push && let Some(type_val) = obj.remove("type") {
@@ -994,32 +998,34 @@ pub fn sanitize_for_kimi(schema: &mut serde_json::Value) {
     }
 }
 
-/// 规范化完整的 Kimi / Moonshot `function.parameters` 对象。
+/// Normalize a complete Kimi / Moonshot `function.parameters` object.
 ///
-/// Kimi / Moonshot 要求参数根节点上有 `"type": "object"`，
-/// 无论模式使用 `properties`、`$ref`、`anyOf`、`allOf` 还是 `oneOf`。
-/// 我们先运行 `sanitize_for_kimi` 以确保嵌套的 `anyOf` / `oneOf` 处理正确，
-/// 然后无条件确保根节点上存在 `type: object`（#3281）。
+/// Kimi / Moonshot requires `"type": "object"` on the parameters root
+/// regardless of whether the schema uses `properties`, `$ref`, `anyOf`,
+/// `allOf`, or `oneOf`.  We run `sanitize_for_kimi` first so nested
+/// `anyOf` / `oneOf` handling is correct, then unconditionally ensure
+/// `type: object` is present at the root (#3281).
 ///
-/// 这仅限于根节点，因为递归地将 `type: object` 注入到每个空对象中
-/// 会破坏 JSON Schema 映射，例如 `"properties": {}`。
+/// This is root-only because recursively injecting `type: object` into
+/// every empty object would corrupt JSON Schema maps such as
+/// `"properties": {}`.
 pub fn sanitize_for_kimi_parameters(parameters: &mut serde_json::Value) {
     if !parameters.is_object() {
         *parameters = serde_json::Value::Object(Map::new());
     }
 
-    // 先运行通用 Kimi 处理，以便嵌套的 `anyOf` / `oneOf` 能在我们
-    // 在根节点重新添加 `type` *之前* 从父对象获取其 `type`。
+    // Run the generic Kimi pass first so nested `anyOf` / `oneOf` receive
+    // their `type` from the parent *before* we re-add it at the root.
     sanitize_for_kimi(parameters);
 
-    // 始终确保参数根节点上有 `type: object`。Kimi/Moonshot
-    // 拒绝任何缺少它的参数模式（#3265, #3281）。
+    // Always ensure `type: object` at the parameters root.  Kimi/Moonshot
+    // rejects any parameters schema missing it (#3265, #3281).
     //
-    // 对于裸 `$ref` 模式（例如 `{"$ref": "#/definitions/FileArgs"}`），
-    // 我们无法添加同级的 `type`，因为 JSON Schema 禁止在 `$ref`
-    // 旁使用同级关键字。相反，我们将 `$ref` 包装在 `allOf` 数组中
-    // 并在根节点注入 `type: object` —— 这是一种保留 `$ref` 语义的
-    // 标准 JSON Schema 模式。
+    // For bare `$ref` schemas (e.g. `{"$ref": "#/definitions/FileArgs"}`),
+    // we cannot add a sibling `type` because JSON Schema forbids sibling
+    // keywords alongside `$ref`.  Instead we wrap the $ref in an `allOf`
+    // array and inject `type: object` at the root — a standard JSON Schema
+    // pattern that preserves the $ref semantics.
     if let Some(obj) = parameters.as_object_mut()
         && !obj.contains_key("type")
     {
@@ -1033,7 +1039,8 @@ pub fn sanitize_for_kimi_parameters(parameters: &mut serde_json::Value) {
                 "allOf".to_string(),
                 serde_json::Value::Array(vec![serde_json::json!({"$ref": ref_val})]),
             );
-            // 保留原始对象可能有的任何其他键（例如 "description"）在新根节点中。
+            // Preserve any other keys the original object may have had
+            // (e.g. "description") in the new root.
             for (k, v) in obj.iter() {
                 if k != "$ref" {
                     new_root.insert(k.clone(), v.clone());
@@ -1158,8 +1165,8 @@ mod kimi_tests {
         assert!(schema["properties"].get("type").is_none());
     }
 
-    // #3281：使用 $ref、allOf、anyOf、oneOf 的根模式也必须
-    // 获得 type: object，以便 Kimi/Moonshot 不会拒绝它们。
+    // #3281: root schemas using $ref, allOf, anyOf, oneOf must also
+    // receive type: object so Kimi/Moonshot does not reject them.
 
     #[test]
     fn kimi_parameters_add_type_to_anyof_root() {
@@ -1203,8 +1210,8 @@ mod kimi_tests {
     fn kimi_parameters_wraps_ref_in_allof_with_type_object() {
         let mut schema = json!({"$ref": "#/definitions/FileArgs"});
         sanitize_for_kimi_parameters(&mut schema);
-        // 根据 JSON Schema，$ref 不能有同级关键字，因此我们将其
-        // 包装在 allOf 中并在根节点注入 type: object（#3281）。
+        // $ref cannot have sibling keywords per JSON Schema, so we wrap
+        // it in allOf and inject type: object at the root (#3281).
         assert_eq!(schema["type"], "object");
         assert!(schema["allOf"].is_array());
         assert_eq!(schema["allOf"][0]["$ref"], "#/definitions/FileArgs");

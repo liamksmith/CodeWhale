@@ -1,7 +1,7 @@
-//! 搜索工具：用于代码搜索的 `grep_files`
+//! Search tools: `grep_files` for code search
 //!
-//! 这些工具在工作区内提供强大的代码搜索能力，
-//! 类似于 ripgrep/grep 的功能。
+//! These tools provide powerful code search capabilities within the workspace,
+//! similar to ripgrep/grep functionality.
 
 use super::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
@@ -18,18 +18,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// 返回结果的最大数量，避免输出过多
+/// Maximum number of results to return to avoid overwhelming output
 const MAX_RESULTS: usize = 100;
 
-/// 可搜索的最大文件大小（跳过大型二进制文件）
+/// Maximum file size to search (skip large binaries)
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
-/// 单次 grep_files 运行的硬性上限。目录遍历和每个文件的正则匹配
-/// 是同步阻塞操作；没有这个限制，在大目录树上可能会运行数分钟。
-/// 与 file_search 工具保持一致，使两个阻塞搜索的行为相同。
+/// Hard cap on a single grep_files run. The directory walk plus per-file regex
+/// is synchronous blocking work; without this it can run for minutes on a large
+/// tree. Mirrors the file_search tool so both blocking searches behave the same.
 const GREP_FILES_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// grep 匹配的结果
+/// Result of a grep match
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
     pub file: String,
@@ -39,7 +39,7 @@ pub struct GrepMatch {
     pub context_after: Vec<String>,
 }
 
-/// 使用正则表达式模式搜索文件的工具
+/// Tool for searching files using regex patterns
 pub struct GrepFilesTool;
 
 #[async_trait]
@@ -109,7 +109,7 @@ impl ToolSpec for GrepFilesTool {
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64))
             .unwrap_or(MAX_RESULTS);
 
-        // 解析包含模式
+        // Parse include patterns
         let include_patterns: Vec<String> = input
             .get("include")
             .and_then(|v| v.as_array())
@@ -120,13 +120,14 @@ impl ToolSpec for GrepFilesTool {
             })
             .unwrap_or_default();
 
-        // 解析排除模式
+        // Parse exclude patterns
         let exclude_patterns: Vec<String> =
             input.get("exclude").and_then(|v| v.as_array()).map_or_else(
                 || {
-                    // 常用非代码目录的默认排除项。
-                    // 裸目录名完全跳过该目录的遍历；
-                    // 如果目录已在遍历中，`dir/*` 则过滤内部文件（双重保障——参见 #2200）。
+                    // Default exclusions for common non-code directories.
+                    // Bare directory names skip the directory traversal entirely;
+                    // `dir/*` filters files inside if the directory is already
+                    // being walked (belt-and-suspenders — see #2200).
                     vec![
                         "node_modules".to_string(),
                         "node_modules/*".to_string(),
@@ -155,7 +156,7 @@ impl ToolSpec for GrepFilesTool {
                 },
             );
 
-        // 构建正则表达式
+        // Build regex
         let regex_pattern = if case_insensitive {
             format!("(?i){pattern_str}")
         } else {
@@ -165,23 +166,23 @@ impl ToolSpec for GrepFilesTool {
         let regex = Regex::new(&regex_pattern)
             .map_err(|e| ToolError::invalid_input(format!("Invalid regex pattern: {e}")))?;
 
-        // 解析搜索路径
+        // Resolve search path
         let search_path = context.resolve_path(path_str)?;
 
         let workspace = context.workspace.clone();
         let cancel_token = context.cancel_token.clone();
         let follow_symlinks = context.follow_symlinks;
 
-        // 目录遍历和逐文件正则匹配是同步阻塞操作。
-        // 在受硬性超时限制的阻塞工作线程上运行它们，这样大目录树
-        // 就不会卡住异步运行时导致停止按钮无响应。
+        // The directory walk and per-file regex are synchronous blocking work.
+        // Run them on a blocking worker bounded by a hard timeout so a huge tree
+        // can't pin the async runtime and leave the stop button unresponsive.
         let result = run_blocking_grep(GREP_FILES_TIMEOUT, cancel_token.clone(), move || {
             let cancel_token = cancel_token.as_ref();
 
-            // 流式遍历：每个文件在被发现时立即搜索，
-            // 一旦匹配预算耗尽就停止遍历。
-            // 文件从不整体加载到大 Vec 中，文件内容逐行读取，
-            // 因此内存占用受结果集大小限制。
+            // Stream the walk: each file is searched as it is discovered and
+            // the traversal stops as soon as the match budget is exhausted.
+            // Files are never materialized in a big Vec and file contents are
+            // read line-by-line, so memory stays bounded by the result set.
             let mut results: Vec<GrepMatch> = Vec::new();
             let mut files_searched = 0;
             let mut total_matches = 0;
@@ -198,14 +199,14 @@ impl ToolSpec for GrepFilesTool {
                     }
                     check_cancelled(cancel_token)?;
 
-                    // 跳过过大的文件
+                    // Skip files that are too large
                     if let Ok(metadata) = fs::metadata(file_path)
                         && metadata.len() > MAX_FILE_SIZE
                     {
                         return Ok(WalkControl::Continue);
                     }
 
-                    // 获取相对于工作区的路径
+                    // Get relative path from workspace
                     let relative_path = file_path
                         .strip_prefix(&workspace)
                         .unwrap_or(file_path)
@@ -222,7 +223,7 @@ impl ToolSpec for GrepFilesTool {
                         cancel_token,
                     )?
                     else {
-                        return Ok(WalkControl::Continue); // 跳过二进制或不可读文件
+                        return Ok(WalkControl::Continue); // Skip binary or unreadable files
                     };
 
                     files_searched += 1;
@@ -237,9 +238,9 @@ impl ToolSpec for GrepFilesTool {
                 .map(|item| grep_match_to_json(item, context_lines))
                 .collect();
 
-            // 构建结果。当 context_lines == 1 时，将单个上下文行
-            // 作为字符串返回，而不是单元素数组。这使常见的
-            // "仅显示相邻行"情况对模型调用者更易读取。
+            // Build result. When context_lines == 1, return the single context
+            // line as a string instead of a one-item array. That keeps the common
+            // "show just the adjacent line" case easy for model callers to read.
             Ok(json!({
                 "matches": matches_json,
                 "total_matches": total_matches,
@@ -253,8 +254,8 @@ impl ToolSpec for GrepFilesTool {
     }
 }
 
-/// 在阻塞工作线程上运行同步 grep 遍历，可通过 token 取消
-/// 并由 `timeout` 限制。镜像 `run_blocking_file_search`。
+/// Run the synchronous grep walk on a blocking worker, cancellable via the
+/// token and bounded by `timeout`. Mirrors `run_blocking_file_search`.
 async fn run_blocking_grep<F>(
     timeout: Duration,
     cancel_token: Option<CancellationToken>,
@@ -312,14 +313,15 @@ fn grep_match_to_json(item: &GrepMatch, context_lines: usize) -> Value {
     }
 }
 
-/// 使用小型环形缓冲区逐行搜索单个文件以保存前向上下文，
-/// 因此文件内容永远不会整体加载到内存中。
+/// Search a single file line-by-line with a small ring buffer for
+/// before-context, so file contents are never fully materialized.
 ///
-/// 当文件不可读或包含无效 UTF-8 时返回 `Ok(None)`
-/// —— 与之前的 `read_to_string` 实现具有相同的"跳过二进制或不可读文件"语义，
-/// 该实现在贡献任何匹配之前要求整个文件有效。
-/// 最多记录 `budget` 个匹配；扫描仍然运行到文件末尾，
-/// 以便后续无效字节使文件失效并完成待处理的后向上下文。
+/// Returns `Ok(None)` when the file is unreadable or contains invalid UTF-8
+/// anywhere — the same "skip binary or unreadable files" semantics as the
+/// previous `read_to_string` implementation, which required the whole file to
+/// be valid before contributing any match. At most `budget` matches are
+/// recorded; the scan still runs to EOF so late invalid bytes disqualify the
+/// file and pending after-context is completed.
 fn search_file_streaming(
     path: &Path,
     relative_path: &str,
@@ -335,8 +337,8 @@ fn search_file_streaming(
     let mut raw: Vec<u8> = Vec::new();
     let mut before: VecDeque<String> = VecDeque::new();
     let mut matches: Vec<GrepMatch> = Vec::new();
-    // 仍在等待后向上下文行的匹配：(`matches` 中的索引,
-    // 仍需的行数)。条目按 FIFO 顺序完成。
+    // Matches still waiting for after-context lines: (index into `matches`,
+    // lines still needed). Entries complete in FIFO order.
     let mut pending: VecDeque<(usize, usize)> = VecDeque::new();
     let mut line_idx = 0usize;
 
@@ -351,8 +353,8 @@ fn search_file_streaming(
         }
         check_cancelled(cancel_token)?;
 
-        // 镜像 `str::lines`：去掉末尾的 '\n'，以及仅当 '\r' 直接
-        // 位于 '\n' 之前时也去掉 '\r'。
+        // Mirror `str::lines`: strip the trailing '\n', and a '\r' only when
+        // it directly precedes that '\n'.
         let mut end = raw.len();
         if raw[..end].ends_with(b"\n") {
             end -= 1;
@@ -400,14 +402,15 @@ fn search_file_streaming(
     Ok(Some(matches))
 }
 
-/// 流式文件遍历的流程控制。
+/// Flow control for the streaming file walk.
 enum WalkControl {
     Continue,
     Stop,
 }
 
-/// 遍历匹配包含/排除模式的文件，按遍历顺序对每个文件调用 `visit`。
-/// 当 `visit` 返回 [`WalkControl::Stop`] 时提前停止遍历。
+/// Walk files matching the include/exclude patterns, invoking `visit` for
+/// each one in traversal order. The walk stops early when `visit` returns
+/// [`WalkControl::Stop`].
 fn visit_files(
     root: &Path,
     include_patterns: &[String],
@@ -478,17 +481,18 @@ fn visit_files_recursive(
             continue;
         }
 
-        // 获取相对路径用于模式匹配
+        // Get relative path for pattern matching
         let relative = path.strip_prefix(root).unwrap_or(&path);
         let relative_str = relative.to_string_lossy();
 
-        // 检查排除规则
+        // Check exclusions
         if should_exclude(&relative_str, exclude_patterns) {
             continue;
         }
 
-        // 当追踪符号链接时，解析目录和文件的目标类型，
-        // 以便遍历符号链接的目录并包含符号链接的文件。
+        // When following symlinks, resolve the target type for directories
+        // and files so symlinked dirs are traversed and symlinked files are
+        // included.
         let effective_type = if file_type.is_symlink() && follow_symlinks {
             match fs::metadata(&path) {
                 Ok(meta) => meta.file_type(),
@@ -521,7 +525,7 @@ fn visit_files_recursive(
                 return Ok(WalkControl::Stop);
             }
         } else if effective_type.is_file() {
-            // 检查包含规则（如果有指定）
+            // Check inclusions (if any specified)
             if (include_patterns.is_empty() || should_include(&relative_str, include_patterns))
                 && let WalkControl::Stop = visit(&path)?
             {
@@ -542,7 +546,7 @@ fn check_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolE
     Ok(())
 }
 
-/// 检查路径是否匹配任何排除模式
+/// Check if a path matches any of the exclude patterns
 fn should_exclude(path: &str, patterns: &[String]) -> bool {
     for pattern in patterns {
         if matches_glob(path, pattern) {
@@ -552,7 +556,7 @@ fn should_exclude(path: &str, patterns: &[String]) -> bool {
     false
 }
 
-/// 检查路径是否匹配任何包含模式
+/// Check if a path matches any of the include patterns
 fn should_include(path: &str, patterns: &[String]) -> bool {
     for pattern in patterns {
         if matches_glob(path, pattern) {
@@ -562,10 +566,10 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
     false
 }
 
-/// 简单的 glob 模式匹配
-/// 支持：*（任意字符）、**（任意路径）、?（单个字符）
+/// Simple glob pattern matching
+/// Supports: * (any chars), ** (any path), ? (single char)
 pub(crate) fn matches_glob(path: &str, pattern: &str) -> bool {
-    // 处理 ** 表示任意路径
+    // Handle ** for any path
     if pattern.contains("**") {
         let parts: Vec<&str> = pattern.split("**").collect();
         if parts.len() == 2 {
@@ -585,23 +589,23 @@ pub(crate) fn matches_glob(path: &str, pattern: &str) -> bool {
         }
     }
 
-    // 处理类似 "*.rs" 的模式——仅匹配文件名
+    // Handle patterns like "*.rs" - match against filename only
     if pattern.starts_with('*') && !pattern.contains('/') {
         let filename = path.rsplit('/').next().unwrap_or(path);
         return matches_simple_glob(filename, pattern);
     }
 
-    // 处理包含路径组件的模式
+    // Handle patterns with path components
     if pattern.contains('/') {
         return matches_simple_glob(path, pattern);
     }
 
-    // 匹配文件名
+    // Match against filename
     let filename = path.rsplit('/').next().unwrap_or(path);
     matches_simple_glob(filename, pattern)
 }
 
-/// 单个路径组件的简单 glob 匹配
+/// Simple glob matching for single path component
 fn matches_simple_glob(text: &str, pattern: &str) -> bool {
     let mut text_chars = text.chars().peekable();
     let mut pattern_chars = pattern.chars().peekable();
@@ -609,35 +613,35 @@ fn matches_simple_glob(text: &str, pattern: &str) -> bool {
     while let Some(p) = pattern_chars.next() {
         match p {
             '*' => {
-                // 匹配零个或多个字符
+                // Match zero or more characters
                 let next_pattern: String = pattern_chars.collect();
                 if next_pattern.is_empty() {
                     return true;
                 }
 
-                // 在每个位置尝试匹配（使用 char-indices 保持在
-                // UTF-8 边界上——字节索引切片会在像 冰糖 这样的多字节
-                // 字符上 panic，参见 #249）。
+                // Try matching at each position (use char-indices to stay on
+                // UTF-8 boundaries — byte-index slicing panics on multi-byte
+                // characters like 冰糖, see #249).
                 let remaining: String = text_chars.collect();
                 for (i, _) in remaining.char_indices() {
                     if matches_simple_glob(&remaining[i..], &next_pattern) {
                         return true;
                     }
                 }
-                // 也尝试在字符串末尾匹配空后缀
+                // Also try the empty suffix at end of string
                 if matches_simple_glob("", &next_pattern) {
                     return true;
                 }
                 return false;
             }
             '?' => {
-                // 精确匹配一个字符
+                // Match exactly one character
                 if text_chars.next().is_none() {
                     return false;
                 }
             }
             c => {
-                // 匹配字面字符
+                // Match literal character
                 if text_chars.next() != Some(c) {
                     return false;
                 }
@@ -648,7 +652,7 @@ fn matches_simple_glob(text: &str, pattern: &str) -> bool {
     text_chars.next().is_none()
 }
 
-// === 单元测试 ===
+// === Unit Tests ===
 
 #[cfg(test)]
 mod tests {
@@ -689,18 +693,18 @@ mod tests {
         assert!(!matches_glob("lib/main.rs", "src/*.rs"));
     }
 
-    /// #249 的回归测试：字节索引切片在文件名中的多字节字符
-    ///（如 `dialogue_line__冰糖.mp3`）上 panic。
+    /// Regression for #249: byte-index slicing panics on multi-byte
+    /// characters inside filenames like `dialogue_line__冰糖.mp3`.
     #[test]
     fn test_matches_glob_unicode_filename() {
         let filename = "dialogue_line__冰糖.mp3";
-        // 文件名应匹配 *.mp3 且不 panic。
+        // The filename should match *.mp3 without panicking.
         assert!(matches_glob(filename, "*.mp3"));
-        // 星号匹配多字节字符必须成功。
+        // Asterisk matching against multi-byte characters must succeed.
         assert!(matches_glob(filename, "dialogue_line__*"));
-        // 模式中的字面多字节字符必须匹配。
+        // Literal multi-byte characters inside the pattern must match.
         assert!(matches_glob(filename, "*冰糖*"));
-        // 不匹配的模式也不能 panic。
+        // Non-matching pattern must not panic either.
         assert!(!matches_glob(filename, "nonexistent*"));
     }
 
@@ -709,7 +713,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 创建测试文件
+        // Create test files
         fs::write(
             tmp.path().join("test.rs"),
             "fn main() {\n    println!(\"hello\");\n}\n",
@@ -750,8 +754,8 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        assert!(result.content.contains("line2")); // 前向上下文
-        assert!(result.content.contains("line4")); // 后向上下文
+        assert!(result.content.contains("line2")); // context before
+        assert!(result.content.contains("line4")); // context after
 
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         let matches = parsed["matches"].as_array().unwrap();
@@ -800,7 +804,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        // 应找到全部 3 行
+        // Should find all 3 lines
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 3);
     }
@@ -820,7 +824,7 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        // 应只匹配 .rs 文件
+        // Should only match .rs file
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
@@ -949,8 +953,8 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 两个文件各有许多匹配；一旦预算耗尽，遍历必须停止，
-        // 且不丢失最后一个匹配的上下文。
+        // Two files with many matches each; the walk must stop once the
+        // budget is exhausted without dropping context for the last match.
         for name in ["a.txt", "b.txt"] {
             let body: String = (1..=20).map(|n| format!("needle {n}\n")).collect();
             fs::write(tmp.path().join(name), body).expect("write");
@@ -967,14 +971,14 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 5);
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 5);
-        // 所有五个匹配必须来自第一个被遍历的文件，按文件顺序
-        //（流式遍历保持遍历顺序）。
+        // All five matches must come from the first file walked, in file
+        // order (streaming preserves walk order).
         let first_file = matches[0]["file"].as_str().unwrap().to_string();
         for m in matches {
             assert_eq!(m["file"].as_str().unwrap(), first_file);
         }
-        // 预算内的最后一个匹配仍然获得完整的后向上下文，
-        // 即使匹配预算在它上面已耗尽。
+        // The final in-budget match still gets its full after-context even
+        // though the match budget was exhausted on it.
         assert_eq!(
             matches[4]["context_after"],
             json!(["needle 6", "needle 7"]),
@@ -987,9 +991,9 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 文件开头、中间和结尾的匹配分别测试了
-        // 部分前向上下文（环形缓冲区未满）和
-        // 截断后向上下文（文件结束）的路径。
+        // Matches at the start, middle, and end of the file exercise the
+        // partial before-context (ring not yet full) and truncated
+        // after-context (EOF) paths.
         fs::write(
             tmp.path().join("ctx.txt"),
             "MATCH first\nb1\nb2\nb3\nMATCH mid\na1\na2\na3\nMATCH last\n",
@@ -1019,8 +1023,8 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        // 匹配行之后的无效 UTF-8：整个文件必须被跳过，
-        // 与历史的 read_to_string 行为一致。
+        // Invalid UTF-8 after a matching line: the whole file must be
+        // skipped, matching the historical read_to_string behavior.
         fs::write(
             tmp.path().join("binary.txt"),
             [b"needle\n".as_slice(), &[0xFF, 0xFE, 0x00]].concat(),

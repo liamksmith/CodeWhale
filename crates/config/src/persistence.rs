@@ -52,7 +52,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.write_all(bytes)
         .with_context(|| format!("写入 {} 的临时文件失败", path.display()))?;
     tmp.flush()
-        .with_context(|| format!("刷新 {} 的临时文件失败", path.display()))?;
+        .with_context(|| format("刷新 {} 的临时文件失败", path.display()))?;
 
     #[cfg(unix)]
     {

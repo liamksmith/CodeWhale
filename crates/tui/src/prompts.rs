@@ -1290,26 +1290,6 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
              - **Read once, refer back.** Re-reading the same file produces a different tool-result envelope than the prior read; it's cheaper to scroll back than to re-fetch.\n\
              - **Footer chip:** the `cache hit %` chip turns red below 40% and yellow below 80%. If it's been red for several turns, that's a signal to consolidate."
         );
-        /*
-        ## 上下文管理
-
-        当对话变长时（你会看到上下文使用量指示器），你可以：
-        1. 使用 `/compact` 总结早期上下文并释放空间
-        2. 系统会保留重要信息（你正在处理的文件、最近的消息、工具结果）
-        3. 压缩后，你会看到讨论内容的摘要，并可以无缝继续
-
-        如果你注意到上下文变长了（持续工作中超过60%），主动建议用户使用 `/compact` 或 Ctrl+L。如果启用了 auto_compact，引擎可以在配置的阈值被超过后、下一次发送前进行压缩。
-
-        ### 提示缓存感知
-
-        DeepSeek 会对每个请求中最长的 *字节稳定前缀* 进行缓存，缓存命中的 token 收费约为未命中的 1/100。上述系统提示是按“最静态优先”分层排列的，专门确保前缀在轮次间保持稳定。为了保持高缓存命中率：
-        - **工作集位置：** 当前仓库工作集存储在新的用户消息中的 `<turn_meta>` 块内。将其视为高优先级的轮次元数据，而非稳定的系统提示部分。
-        - **追加，不要重排。** 新的上下文放在末尾（最新的用户/工具消息）。重新排列较早的消息或重写其内容，会使该更改之后的所有内容的缓存失效。
-        - **不要 paraphrase 引用的内容。** 如果你已经读取了一个文件，通过路径或行范围来引用它，而不是用不同的格式重新引用它。
-        - **将 `/compact` 用作硬重置，而非微调。** Compaction 旨在缓存已经失效时使用——它会故意将前缀重写为较短的摘要。不要为了微小收益而触发它。
-        - **读取一次，回溯引用。** 重新读取同一个文件会产生与先前读取不同的工具结果包；回溯比重新获取更便宜。
-        - **页脚芯片：** `cache hit %` 芯片在低于 40% 时变红，低于 80% 时变黄。如果连续几轮都保持红色，那就是需要整合的信号。
-         */
     }
 
     // 5. Compaction relay template — so the model knows the format to use

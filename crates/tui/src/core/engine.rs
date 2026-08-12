@@ -3590,23 +3590,15 @@ impl Engine {
     /// - SlopLedger 门控块
     /// - 压缩摘要
     /// 如果有 system_prompt_override 就跳过
-    /// 返回值： 不返回值，只更新Engine::session.system_promp
     fn refresh_system_prompt(&mut self) {
-        // 为系统提示词组合 <user_memory> 块
         let user_memory_block = crate::memory::compose_block(
             self.config.memory_enabled && !self.config.moraine_fallback, // TODO(v0.8.71): remove when Moraine recall stable; see #3490, #3495
             &self.config.memory_path,
         );
-        // 当前目标是什么
         let prompt_goal_objective = goal_objective_for_prompt(
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,
         );
-        // 组装基础 system prompt,包括：
-        // 宪法文本,模式指令（Agent/Plan/Yolo),Locale,项目上下文(AGENTS.md等)，用户宪章
-        // Project Context Pack(工作区的目录结构等)，技能上下文（skills_dir下的md）
-        // 指令源（用户自定义的额外指令），用户记忆（user_memory_block），目标（goal_objective）
-        // MCP工具(MCP服务器注册的工具列表)
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             &self.config.workspace,
             None,
@@ -3629,27 +3621,12 @@ impl Engine {
                 skills_scan_codewhale_only: self.config.skills_scan_codewhale_only,
             },
         );
-        // 合并压缩摘要,将基础 prompt 和压缩摘要合并.
         let mut stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
 
         // SlopLedger completion-gate: inject unresolved slop entries into the
         // system prompt so the agent can autonomously review them before
         // claiming the task is done (#2127).
-        // 检查 SlopLedger（"草率日志"用于追踪AI承诺要做但未完成的事项的简单本地文件）是否有未解决的条目。
-        // 返回 Option<String>。
-        // e.g 
-        // ``` XML
-        //   <slop_ledger>
-        //   注意：以下事项尚未完成，在声明任务完成前请自行审查并处理：
-        //    - [ ] 检查 src/lib.rs 中的类型错误
-        //    - [ ] 更新文档
-        //   </slop_ledger>
-        // ```
-        // 设计意图：SlopLedger 是 #2127 中引入的机制——AI在编码过程中常常"承诺会做某事"但忘记执行。
-        // SlopLedger 文件记录这些未兑现的承诺。slop_ledger_gate_block 读取该文件，如果非空则追加到
-        // system prompt 末尾，作为实时提醒。这样LLM在声称任务完成前会先看到"你还有这些事没做完"，促使
-        // 其自主审查并处理。
         let gate_block = self.slop_ledger_gate_block();
         if let Some(ref block) = gate_block
             && let Some(SystemPrompt::Text(prompt_text)) = &mut stable_prompt
@@ -3660,7 +3637,6 @@ impl Engine {
 
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         if self.session.system_prompt_override {
-            // 如果 system_prompt_override 被设置为 true, 意味着用户/外部系统手动设置了 system prompt
             return;
         }
         if self.session.last_system_prompt_hash != Some(stable_hash) {
@@ -3734,13 +3710,13 @@ fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBu
     default_plugin_tools_dir()
 }
 
-/// 加载插件工具目录下的所有工具
-/// 应用 tool overrides（禁用/替换原生工具）
-/// 返回新加载的工具名集合
 fn configure_plugin_tools(
     tool_registry: &mut crate::tools::ToolRegistry,
     tools_config: Option<&crate::config::ToolsConfig>,
 ) -> std::collections::HashSet<String> {
+    // 加载插件工具目录下的所有工具
+    // 应用 tool overrides（禁用/替换原生工具）
+    // 返回新加载的工具名集合
     let names_before: std::collections::HashSet<String> = tool_registry
         .names()
         .into_iter()
@@ -3815,7 +3791,6 @@ fn sync_goal_state_from_host(
 }
 
 // 获取活跃目标的信息用于注入提示词
-// 如goal_state有值则返回GoalState::Objective，否则返回configured_goal;
 fn goal_objective_for_prompt(
     configured_goal: Option<&str>,
     goal_state: &SharedGoalState,

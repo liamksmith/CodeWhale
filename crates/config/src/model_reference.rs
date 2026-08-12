@@ -1,19 +1,20 @@
-//! 事实型模型参考数据库（#3205, #2300）。
+//! Factual model reference database (#3205, #2300).
 //!
-//! 一个可浏览的、只读的编译目录投影，用于每个产品
-//! "事实卡片"：模型 ID 本身、服务提供商及其种类、
-//! 上下文窗口、价格以及模态（文本 vs 多模态）。它存在的目的
-//! 是回答"这个模型的声明属性是什么？"，仅此而已。
+//! A browsable, read-only projection of the compiled catalog into per-offering
+//! "fact cards": the model id as-is, the serving provider and its kind, the
+//! context window, the price, and the modality (text vs multimodal). It exists
+//! to answer "what are this model's stated attributes?", nothing more.
 //!
-//! 这一层**只有标签**。它不执行选择、路由、分层
-//! 或排序——它从不决定使用哪个模型，并且不携带任何
-//! `strong`/`balanced`/`fast` 或角色概念。它是 [`crate::catalog::CatalogOffering`]
-//! 行的一个无超集视图。
+//! This layer is **labels only**. It performs no selection, routing, tiering,
+//! or ranking — it never decides which model to use, and it carries no
+//! `strong`/`balanced`/`fast` or role concept. It is a superset-free view over
+//! [`crate::catalog::CatalogOffering`] rows.
 //!
-//! 诚实规则（与 #2608 / #3085 共享）：目录层未声明的属性
-//! 报告为 **unknown**，从不猜测。一个没有目录事实的本地/自定义端点
-//! 产生 `Unknown` 模态、`None` 上下文窗口和未知价格——
-//! 其模型 ID 仍然按原样保留。这里没有任何东西是从模型 ID 前缀推断的。
+//! Honesty rule (shared with #2608 / #3085): an attribute the catalog layer did
+//! not state is reported as **unknown**, never guessed. A local/custom endpoint
+//! with no catalog facts yields `Unknown` modality, `None` context window, and
+//! an unknown price — its model id is still preserved verbatim. Nothing here is
+//! inferred from a model-id prefix.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,29 +25,29 @@ use crate::catalog::{CatalogOffering, CatalogSnapshot, CatalogSource, bundled_ca
 use crate::models_dev::ModelsDevModalities;
 use crate::pricing::{Currency, OfferingPricing};
 
-/// 模型的粗略、事实性输入/输出模态标签。
+/// Coarse, factual input/output modality label for a model.
 ///
-/// `text` vs `multimodal` 是从声明的输入/输出模态的并集推导的。
-/// 缺少模态元数据是 [`Modality::Unknown`]，与声明的纯文本模型不同——
-/// "我们没有被告知"不同于"纯文本"。
+/// `text` vs `multimodal` is derived from the union of stated input/output
+/// modalities. Absent modality metadata is [`Modality::Unknown`], distinct from
+/// a stated text-only model — "we were not told" is not "text only".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Modality {
-    /// 每个声明的模态都是文本。
+    /// Every stated modality is text.
     Text,
-    /// 至少一个声明的模态是非文本的（图像/音频/视频/…）。
+    /// At least one stated modality is non-text (image/audio/video/…).
     Multimodal,
-    /// 此行没有声明模态元数据。
+    /// No modality metadata was stated for this row.
     #[default]
     Unknown,
 }
 
 impl Modality {
-    /// 从 Models.dev 形状的模态块分类模态。
+    /// Classify the modality from a Models.dev-shaped modality block.
     ///
-    /// 缺少元数据或空白列表返回 [`Modality::Unknown`]，
-    /// 当任何声明的输入/输出模态不是 `text` 时返回 [`Modality::Multimodal`]，
-    /// 当唯一声明的模态都是文本时返回 [`Modality::Text`]。
+    /// Returns [`Modality::Unknown`] for absent metadata or an empty list,
+    /// [`Modality::Multimodal`] when any stated input/output modality is not
+    /// `text`, and [`Modality::Text`] when the only stated modalities are text.
     #[must_use]
     pub fn from_modalities(modalities: Option<&ModelsDevModalities>) -> Self {
         let Some(modalities) = modalities else {
@@ -66,7 +67,7 @@ impl Modality {
         if saw_any { Self::Text } else { Self::Unknown }
     }
 
-    /// 稳定的小写标签。
+    /// Stable lowercase label.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -77,45 +78,45 @@ impl Modality {
     }
 }
 
-/// 一个提供商产品的事实参考卡片。
+/// A factual reference card for one provider offering.
 ///
-/// 每个字段要么是声明的事实，要么是显式的未知。这是
-/// 一个仅标签的投影：它不承载路由、层级或选择概念。
+/// Every field is either a stated fact or an explicit unknown. This is a
+/// labels-only projection: it carries no routing, tier, or selection concept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelReferenceCard {
-    /// 提供此产品的提供商 ID，与目录行声明完全一致。
+    /// Provider id serving this offering, exactly as the catalog row states it.
     pub provider: String,
-    /// 解析的内置提供商种类，当提供商 ID 映射到一个时。
+    /// Resolved built-in provider kind, when the provider id maps to one.
     ///
-    /// 对于无法识别/用户命名的自定义提供商为 `None`——
-    /// 未知种类，而不是猜测。
+    /// `None` for an unrecognized / user-named custom provider — an unknown
+    /// kind, not a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_kind: Option<ProviderKind>,
-    /// 提供商线路模型 ID，逐字保留。从不规范化或加前缀。
+    /// The provider wire model id, verbatim. Never normalized or prefixed.
     pub model_id: String,
-    /// 规范模型标识，仅当行携带显式连接时。
+    /// Canonical model identity, only when the row carried an explicit join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_model: Option<String>,
-    /// 模型系列/代系，当已声明时。
+    /// Model family / series, when stated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
-    /// 上下文窗口令牌数，当已声明时。
+    /// Context-window tokens, when stated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
-    /// 最大输出令牌数，当已声明时。
+    /// Max-output tokens, when stated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
-    /// 文本 vs 多模态，或未知。
+    /// Text vs multimodal, or unknown.
     pub modality: Modality,
-    /// 每令牌定价事实，当有定价时。`None` 是未知，绝不是免费。
+    /// Per-token pricing facts, when priced. `None` is unknown, never free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<OfferingPricing>,
-    /// 底层目录行的来源（捆绑/实时/覆盖）。
+    /// Provenance of the underlying catalog row (bundled / live / override).
     pub source: CatalogSource,
 }
 
 impl ModelReferenceCard {
-    /// 将目录产品投影到其事实参考卡片。
+    /// Project a catalog offering into its factual reference card.
     #[must_use]
     pub fn from_offering(offering: &CatalogOffering) -> Self {
         Self {
@@ -132,30 +133,31 @@ impl ModelReferenceCard {
         }
     }
 
-    /// 已解析的提供商种类的标签，或 `"unknown"`。
+    /// Label for the resolved provider kind, or `"unknown"`.
     #[must_use]
     pub fn provider_kind_label(&self) -> &'static str {
         self.provider_kind.map_or("unknown", ProviderKind::as_str)
     }
 
-    /// 人类可读的上下文窗口标签，例如 `"1M"`、`"131K"`、`"512"` 或
-    /// `"unknown"`。确切的令牌数保留在 [`Self::context_window`] 上。
+    /// Human context-window label such as `"1M"`, `"131K"`, `"512"`, or
+    /// `"unknown"`. The exact token count remains on [`Self::context_window`].
     #[must_use]
     pub fn context_window_label(&self) -> String {
         humanize_tokens(self.context_window)
     }
 
-    /// 人类可读的最大输出标签，格式与 [`Self::context_window_label`] 相同。
+    /// Human max-output label, same shape as [`Self::context_window_label`].
     #[must_use]
     pub fn max_output_label(&self) -> String {
         humanize_tokens(self.max_output)
     }
 
-    /// 简短的事实价格标签，例如 `"$0.30 / $1.20 per Mtok"`，或
-    /// `"unknown"` 当没有每令牌输入/输出费率来源时。
+    /// Short factual price label, e.g. `"$0.30 / $1.20 per Mtok"`, or
+    /// `"unknown"` when no per-token input/output rate is sourced.
     ///
-    /// 某一位的 `?` 表示该单一费率未知而另一位已声明；
-    /// 完全未知的价格收敛为 `"unknown"` 而不是虚构的零。
+    /// A `?` in one slot means that single rate is unknown while the other is
+    /// stated; a fully unknown price collapses to `"unknown"` rather than a
+    /// fabricated zero.
     #[must_use]
     pub fn price_label(&self) -> String {
         let Some(pricing) = self.pricing.as_ref() else {
@@ -178,20 +180,20 @@ impl ModelReferenceCard {
     }
 }
 
-/// 一个可浏览的、只读的模型产品事实参考数据库。
+/// A browsable, read-only factual reference database of model offerings.
 ///
-/// 卡片按 `(provider, model id)` 排序，并在该标识上
-/// 去重，因此数据库无论输入顺序如何都是确定性的。
+/// Cards are sorted by `(provider, model id)` and de-duplicated on that
+/// identity, so the database is deterministic regardless of input order.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelReferenceDatabase {
     cards: Vec<ModelReferenceCard>,
 }
 
 impl ModelReferenceDatabase {
-    /// 从原始目录产品构建。
+    /// Build from raw catalog offerings.
     ///
-    /// 行按 `(provider, model id)` 键化；具有相同标识的后一行
-    /// 替换前一行，与目录合并语义一致。
+    /// Rows are keyed by `(provider, model id)`; a later row with the same
+    /// identity replaces an earlier one, matching catalog merge semantics.
     #[must_use]
     pub fn from_offerings(offerings: &[CatalogOffering]) -> Self {
         let mut by_identity: BTreeMap<(String, String), ModelReferenceCard> = BTreeMap::new();
@@ -204,40 +206,41 @@ impl ModelReferenceDatabase {
         }
     }
 
-    /// 从编译的目录快照构建（捆绑 < 实时 < 覆盖）。
+    /// Build from a compiled catalog snapshot (bundled < live < overrides).
     #[must_use]
     pub fn from_snapshot(snapshot: &CatalogSnapshot) -> Self {
         Self::from_offerings(&snapshot.offerings)
     }
 
-    /// 从 CodeWhale 的离线/过时捆绑目录快照构建（#4188）。
+    /// Build from CodeWhale's offline/stale bundled catalog snapshot (#4188).
     ///
-    /// 在有可用时优先使用实时/编译的 [`CatalogSnapshot`]。捆绑集
-    /// 无需凭据或网络连接，是每个安装都携带的离线回退。
+    /// Prefer a live/compiled [`CatalogSnapshot`] when available. The bundled
+    /// set needs no credentials or network and remains the offline fallback
+    /// every install carries.
     #[must_use]
     pub fn bundled() -> Self {
         Self::from_offerings(&bundled_catalog_offerings())
     }
 
-    /// 所有卡片，按稳定的 `(provider, model id)` 顺序。
+    /// All cards, in stable `(provider, model id)` order.
     #[must_use]
     pub fn cards(&self) -> &[ModelReferenceCard] {
         &self.cards
     }
 
-    /// 卡片数量。
+    /// Number of cards.
     #[must_use]
     pub fn len(&self) -> usize {
         self.cards.len()
     }
 
-    /// 数据库是否为空。
+    /// Whether the database is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cards.is_empty()
     }
 
-    /// 不同的提供商 ID，排序后返回。
+    /// Distinct provider ids present, sorted.
     #[must_use]
     pub fn providers(&self) -> Vec<&str> {
         self.cards
@@ -248,7 +251,7 @@ impl ModelReferenceDatabase {
             .collect()
     }
 
-    /// 由一个提供商 ID 提供的所有卡片。
+    /// All cards served by one provider id.
     #[must_use]
     pub fn for_provider(&self, provider: &str) -> Vec<&ModelReferenceCard> {
         self.cards
@@ -257,7 +260,7 @@ impl ModelReferenceDatabase {
             .collect()
     }
 
-    /// 按 `(provider, model id)` 查找卡片。
+    /// Find a card by `(provider, model id)`.
     #[must_use]
     pub fn find(&self, provider: &str, model_id: &str) -> Option<&ModelReferenceCard> {
         self.cards
@@ -266,9 +269,9 @@ impl ModelReferenceDatabase {
     }
 }
 
-/// 将令牌数四舍五入为简短的人类可读标签（`"1M"`、`"203K"`、`"512"`），或
-/// 对于缺失的计数返回 `"unknown"`。仅用于显示；需要精确值的调用者
-/// 直接读取 `Option<u64>` 字段。
+/// Round a token count to a short human label (`"1M"`, `"203K"`, `"512"`), or
+/// `"unknown"` for an absent count. Used for display only; callers needing the
+/// exact value read the `Option<u64>` field directly.
 fn humanize_tokens(tokens: Option<u64>) -> String {
     let Some(tokens) = tokens else {
         return "unknown".to_string();
@@ -321,7 +324,7 @@ mod tests {
         assert_eq!(
             Modality::from_modalities(Some(&ModelsDevModalities::default())),
             Modality::Unknown,
-            "空的模态块是未知，而非纯文本"
+            "an empty modality block is unknown, not text-only"
         );
         assert_eq!(
             Modality::from_modalities(Some(&ModelsDevModalities {
@@ -337,7 +340,7 @@ mod tests {
             })),
             Modality::Multimodal
         );
-        // 不区分大小写，容忍仅在输出中存在非文本模态。
+        // Case-insensitive and tolerant of an output-only non-text modality.
         assert_eq!(
             Modality::from_modalities(Some(&ModelsDevModalities {
                 input: vec!["TEXT".to_string()],
@@ -385,9 +388,9 @@ mod tests {
 
     #[test]
     fn custom_local_row_is_all_unknown_but_keeps_model_id_verbatim() {
-        // 用户命名的自定义端点，无目录事实：提供商种类、
-        // 上下文窗口、模态和价格都是未知的——从不猜测——
-        // 模型 ID 精确保留。
+        // A user-named custom endpoint with no catalog facts: provider kind,
+        // context window, modality, and price are all unknown — never guessed —
+        // and the model id is preserved exactly.
         let row = CatalogOffering {
             source: CatalogSource::UserOverride,
             ..offering("my-local-llm", "Vendor/Custom-Model_v1")
@@ -406,13 +409,13 @@ mod tests {
 
     #[test]
     fn unpriced_and_cache_only_rows_report_unknown_price_never_zero() {
-        // 完全没有成本块。
+        // No cost block at all.
         let unpriced = ModelReferenceCard::from_offering(&offering("deepseek", "deepseek-v4-pro"));
         assert_eq!(unpriced.price_label(), "unknown");
         assert!(unpriced.pricing.is_none());
 
-        // 一个仅在缓存类上有定价的成本对象，在标题输入/输出费率标签上
-        // 仍然是未知的。
+        // A cost object priced only on cache classes is still unknown for the
+        // headline input/output rate label.
         let cache_only = CatalogOffering {
             cost: Some(ModelsDevCost {
                 input: None,
@@ -457,7 +460,7 @@ mod tests {
                 ..offering("zai", "GLM-5.2")
             },
             offering("deepseek", "deepseek-v4-pro"),
-            // 具有更高上下文相同标识的重复行获胜（后写优先）。
+            // Duplicate identity with a higher context wins (last-write).
             CatalogOffering {
                 limit: Some(ModelsDevLimit {
                     context: Some(1_000_000),
@@ -469,8 +472,8 @@ mod tests {
         ];
         let db = ModelReferenceDatabase::from_offerings(&rows);
 
-        assert_eq!(db.len(), 2, "重复的 (provider, model) 收敛为一个");
-        // 按 (provider, model id) 排序：deepseek 在 zai 之前。
+        assert_eq!(db.len(), 2, "duplicate (provider, model) collapses to one");
+        // Sorted by (provider, model id): deepseek before zai.
         assert_eq!(db.cards()[0].provider, "deepseek");
         assert_eq!(db.cards()[1].provider, "zai");
         assert_eq!(db.providers(), vec!["deepseek", "zai"]);
@@ -479,7 +482,7 @@ mod tests {
             db.find("zai", "GLM-5.2")
                 .and_then(|card| card.context_window),
             Some(1_000_000),
-            "后写优先保留了更丰富的行"
+            "last-write-wins kept the richer row"
         );
         assert!(db.find("zai", "missing").is_none());
     }
@@ -490,34 +493,34 @@ mod tests {
         assert!(!db.is_empty());
         assert!(
             db.len() >= 20,
-            "捆绑的离线快照应携带种子产品，得到 {}",
+            "bundled offline snapshot should carry seed offerings, got {}",
             db.len()
         );
 
-        // 每张卡片保留非空模型 ID，并为捆绑的（一级）提供商
-        // 解析已知种类。
+        // Every card preserves a non-empty model id and resolves a known kind
+        // for the bundled (first-class) providers.
         for card in db.cards() {
             assert!(!card.model_id.is_empty());
             assert!(
                 card.provider_kind.is_some(),
-                "捆绑提供商 {} 应映射到已知种类",
+                "bundled provider {} should map to a known kind",
                 card.provider
             );
         }
 
-        // 一个 DeepSeek 原生的行：上下文窗口已知，价格诚实未知
-        //（捆绑快照省略了 DeepSeek 原生的每令牌定价）。
+        // A DeepSeek-native row: context window known, price honestly unknown
+        // (the bundled snapshot omits DeepSeek-native per-token pricing).
         let deepseek = db
             .find("deepseek", "deepseek-v4-pro")
-            .expect("捆绑的 deepseek 行");
+            .expect("bundled deepseek row");
         assert_eq!(deepseek.context_window, Some(1_000_000));
         assert_eq!(deepseek.modality, Modality::Text);
         assert_eq!(deepseek.price_label(), "unknown");
 
-        // 一个定价行展示其声明的每令牌费率。
+        // A priced row surfaces its stated per-token rate.
         let minimax = db
             .find("minimax", "MiniMax-M3")
-            .expect("捆绑的 minimax 行");
+            .expect("bundled minimax row");
         assert_eq!(minimax.price_label(), "$0.30 / $1.20 per Mtok");
     }
 

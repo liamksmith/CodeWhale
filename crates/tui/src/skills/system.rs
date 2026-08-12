@@ -1,4 +1,5 @@
-//! 系统技能安装程序：打包第一方技能并在首次启动时自动安装。
+//! System-skill installer: bundles first-party skills and auto-installs them
+//! on first launch.
 
 use std::fs;
 use std::path::Path;
@@ -86,18 +87,19 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     },
 ];
 
-/// 技能名称是否匹配其中一个打包的第一方技能。
+/// Whether a skill name matches one of the bundled first-party skills.
 ///
-/// 由 `/skills` 用于区分用户创建的技能（应突出显示）
-/// 与始终安装的包（当有许多技能时可以紧凑渲染）。
+/// Used by `/skills` to distinguish user-created skills (which should be
+/// surfaced prominently) from the always-installed bundle (which can be
+/// rendered compactly when many skills are present).
 #[must_use]
 pub fn is_bundled_skill_name(name: &str) -> bool {
     BUNDLED_SKILLS.iter().any(|s| s.name == name)
 }
 
-/// 尝试将单个打包技能安装到 `skills_dir`。
+/// Attempt to install a single bundled skill into `skills_dir`.
 ///
-/// 如果发生安装（全新安装或版本升级），返回 `true`。
+/// Returns `true` if installation occurred (fresh install or version bump).
 fn install_one(
     skills_dir: &Path,
     skill: &BundledSkill,
@@ -109,14 +111,15 @@ fn install_one(
     let installed_number = installed_version.and_then(|value| value.parse::<u32>().ok());
 
     let should_install = match (installed_version, installed_number, dir_exists) {
-        // 全新安装：既没有标记也没有目录。
+        // Fresh install: neither marker nor directory.
         (None, _, false) => true,
-        // 新打包的技能：为旧系统技能安装添加。
+        // Newly bundled skill: add it for older system-skill installs.
         (Some(_), Some(version), _) if version < skill.introduced_in => true,
-        // 现有技能的版本升级：仅在用户未有意删除该技能目录时刷新。
+        // Version bump for an existing skill: refresh only if the user has not
+        // intentionally deleted that skill directory.
         (Some(version), _, true) if version != BUNDLED_SKILL_VERSION => true,
-        // 其他所有情况：当前安装、用户删除的目录或
-        // 没有我们标记的预存在用户自有技能。
+        // Every other case: current install, user-deleted dir, or pre-existing
+        // user-owned skill without our marker.
         _ => false,
     };
 
@@ -127,16 +130,19 @@ fn install_one(
     Ok(should_install)
 }
 
-/// 将打包的系统技能安装到 `skills_dir`。
+/// Install bundled system skills into `skills_dir`.
 ///
-/// 行为：
-/// - 全新安装（无标记，无目录）：安装每个打包技能，然后写入版本标记。
-/// - 版本升级（存在具有旧版本的标记）：重新安装任何现有的打包技能
-///   并安装新引入的打包技能。
-/// - 用户删除了一个技能目录而标记仍以相同版本存在：保持删除状态。
-/// - 幂等性：无更改的情况下调用两次是无操作。
+/// Behaviour:
+/// - Fresh install (no marker, no dir): installs every bundled skill, then
+///   writes the version marker.
+/// - Version bump (marker present with older version): re-installs any existing
+///   bundled skill and installs newly introduced bundled skills.
+/// - User deleted a skill dir while marker still present at same version: leaves
+///   it gone.
+/// - Idempotent: calling twice with no changes is a no-op.
 ///
-/// 错误是来自文件系统的 I/O 错误；调用者应记录它们但不中止启动。
+/// Errors are I/O errors from the filesystem; the caller should log them but not
+/// abort startup.
 pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
     let marker = skills_dir.join(".system-installed-version");
 
@@ -156,9 +162,9 @@ pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 删除所有系统技能和版本标记。
+/// Remove all system skills and the version marker.
 ///
-/// 用于测试和 `deepseek setup --clean`。忽略缺失文件。
+/// Intended for tests and `deepseek setup --clean`.  Ignores missing files.
 #[allow(dead_code)]
 pub fn uninstall_system_skills(skills_dir: &Path) -> std::io::Result<()> {
     let marker = skills_dir.join(".system-installed-version");
@@ -192,7 +198,7 @@ mod tests {
         tmp.path().join(".system-installed-version")
     }
 
-    // ── 全新安装 ─────────────────────────────────────────────────────────
+    // ── fresh install ─────────────────────────────────────────────────────────
 
     #[test]
     fn fresh_install_creates_bundled_skills_and_marker() {
@@ -236,7 +242,7 @@ mod tests {
         }
     }
 
-    // ── 幂等性 ───────────────────────────────────────────────────────────
+    // ── idempotence ───────────────────────────────────────────────────────────
 
     #[test]
     fn calling_twice_is_idempotent() {
@@ -264,17 +270,17 @@ mod tests {
         }
     }
 
-    // ── 用户删除了一个目录 ──────────────────────────────────────────────
+    // ── user deleted a directory ──────────────────────────────────────────────
 
     #[test]
     fn user_deleted_dir_is_not_recreated() {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
 
-        // 模拟用户有意删除一个技能目录。
+        // Simulate user deliberately removing one skill directory.
         fs::remove_dir_all(skill_dir(&tmp, "delegate")).unwrap();
 
-        // 重新启动不得重新创建已删除的目录。
+        // Re-launch must NOT recreate the deleted directory.
         install_system_skills(tmp.path()).unwrap();
 
         assert!(
@@ -307,18 +313,18 @@ mod tests {
         }
     }
 
-    // ── 版本升级重新安装 ────────────────────────────────────────────────
+    // ── version bump re-installs ──────────────────────────────────────────────
 
     #[test]
     fn outdated_marker_triggers_reinstall_of_existing_skills() {
         let tmp = TempDir::new().unwrap();
 
-        // 模拟所有技能存在且版本较低的先前安装。
+        // Simulate a previous install at a lower version with all skills present.
         for skill in BUNDLED_SKILLS {
             fs::create_dir_all(skill_dir(&tmp, skill.name)).unwrap();
             fs::write(skill_file(&tmp, skill.name), format!("old-{}", skill.name)).unwrap();
         }
-        fs::write(marker_file(&tmp), "0").unwrap(); // 早于 BUNDLED_SKILL_VERSION
+        fs::write(marker_file(&tmp), "0").unwrap(); // older than BUNDLED_SKILL_VERSION
 
         install_system_skills(tmp.path()).unwrap();
 
@@ -337,13 +343,13 @@ mod tests {
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
     }
 
-    // ── 部分先前的安装 ─────────────────────────────────────────────────
+    // ── partial previous install ─────────────────────────────────────────────
 
     #[test]
     fn version_bump_adds_skills_introduced_after_marker() {
         let tmp = TempDir::new().unwrap();
 
-        // 模拟 v2 的状态：v1/v2 技能存在，v3 技能不存在。
+        // Simulate state from v2: v1/v2 skills exist, v3 skills do not.
         for skill in BUNDLED_SKILLS
             .iter()
             .filter(|skill| skill.introduced_in <= 2)
@@ -369,7 +375,8 @@ mod tests {
     fn version_bump_respects_deleted_existing_skill_while_adding_new_skill() {
         let tmp = TempDir::new().unwrap();
 
-        // 模拟 v2，其中较早的打包技能在后续版本引入更多系统技能之前被有意删除。
+        // Simulate v2 where older bundled skills had been deliberately removed
+        // before later versions introduced more system skills.
         fs::write(marker_file(&tmp), "2").unwrap();
 
         install_system_skills(tmp.path()).unwrap();
@@ -396,7 +403,7 @@ mod tests {
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
     }
 
-    // ── 卸载 ─────────────────────────────────────────────────────────────
+    // ── uninstall ─────────────────────────────────────────────────────────────
 
     #[test]
     fn uninstall_removes_bundled_skills_and_marker() {
@@ -417,7 +424,7 @@ mod tests {
     #[test]
     fn uninstall_on_clean_dir_is_a_noop() {
         let tmp = TempDir::new().unwrap();
-        // 不得 panic 或报错。
+        // Must not panic or error.
         uninstall_system_skills(tmp.path()).unwrap();
     }
 }

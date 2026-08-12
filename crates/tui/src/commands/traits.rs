@@ -1,4 +1,4 @@
-//! 命令 trait 和注册表支持。
+//! Command traits and registry support.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -135,10 +135,10 @@ pub trait CommandGroup: Send + Sync {
 
 pub(crate) type CommandHandler = fn(&mut App, Option<&str>) -> CommandResult;
 
-/// 聚焦的内置命令模块实现的 trait。
+/// Trait implemented by focused built-in command modules.
 ///
-/// 命令模块拥有其元数据，并暴露一个静态执行函数，
-/// 组注册表可以将该函数连接到 [`FunctionCommand`]。
+/// A command module owns its metadata and exposes a static execution function
+/// that the group registry can wire into [`FunctionCommand`].
 pub trait RegisterCommand {
     fn info() -> &'static CommandInfo;
     fn execute(app: &mut App, arg: Option<&str>) -> CommandResult;

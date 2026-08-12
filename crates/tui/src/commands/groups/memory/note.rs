@@ -1,4 +1,4 @@
-//! 笔记命令：管理持久化的工作区笔记。
+//! Note command: manage persistent workspace notes.
 
 use crate::tui::app::App;
 use std::fs;
@@ -9,7 +9,7 @@ use crate::commands::CommandResult;
 
 const USAGE: &str = "/note <text> | /note add <text> | /note list | /note show <n> | /note edit <n> <text> | /note remove <n> | /note clear | /note path";
 
-/// 管理持久化的工作区笔记文件。
+/// Manage the persistent workspace notes file.
 fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     let input = match content {
         Some(c) => c.trim(),
@@ -167,7 +167,7 @@ fn append_note(notes_path: &Path, note_content: &str) -> Result<(), String> {
         }
     };
 
-    // 写入分隔符和笔记内容
+    // Write separator and note content
     if let Err(e) = writeln!(file, "\n---\n{note_content}") {
         return Err(format!("Failed to write note: {e}"));
     }
@@ -374,7 +374,7 @@ mod tests {
         let content = std::fs::read_to_string(&notes_path).unwrap();
         assert!(content.contains("First note"));
         assert!(content.contains("Second note"));
-        // 应该有两个分隔符
+        // Should have two separators
         assert_eq!(content.matches("---").count(), 2);
     }
 

@@ -1,15 +1,16 @@
-//! 工作流门控节点和角色间交接 (#4179)。
+//! Workflow gate nodes and role-to-role handoffs (#4179).
 //!
-//! 门控存在于工作流定义中；Fleet 仅提供角色。
-//! 交接产物是 **lane 范围**的（以 lane id 为键），永远不会是 fleet 范围的。
+//! Gates live in the Workflow definition; Fleet only supplies roles.
+//! Handoff artifacts are **lane-scoped** (keyed by lane id), never fleet-scoped.
 //!
-//! 门控语义：
-//! - **block**——下游角色无法启动，直到门控通过或人工覆盖批准
-//! - **approve**——将产物提升到下一个角色的上下文基质中
-//! - **escalate**——在 N 次重试后，向上级/lane 状态上报
+//! Gate semantics:
+//! - **block** — downstream role cannot start until the gate passes or a human
+//!   override approves
+//! - **approve** — promote an artifact into the next role's context substrate
+//! - **escalate** — after N retries, surface to parent / lane status
 //!
-//! 此模块是纯 IR + 评估。运行时执行和 Lane 状态 UI
-//! 稍后接入；单元测试覆盖 block/approve/retry/escalate 路径。
+//! This module is pure IR + evaluation. Runtime execution and Lane status UI
+//! wire in later; unit tests cover block/approve/retry/escalate paths.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,17 +18,17 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// 门控相对于角色生命周期何时触发。
+/// When a gate fires relative to role lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateOn {
-    /// 在 fleet 角色任务成功完成后。
+    /// After a fleet role task completes successfully.
     RoleComplete,
-    /// 在允许 fleet 角色启动之前。
+    /// Before a fleet role is allowed to start.
     RoleStart,
 }
 
-/// 验证/审查门控的类型。
+/// Kind of verification / review gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateKind {
@@ -39,7 +40,7 @@ pub enum GateKind {
     Approve,
 }
 
-/// 门控失败时的策略。
+/// Policy when a gate fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateOnFail {

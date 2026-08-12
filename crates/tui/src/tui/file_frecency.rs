@@ -1,14 +1,16 @@
-//! @-提及的 frecency 跟踪 (#441)。
+//! @-mention frecency tracking (#441).
 //!
-//! 记录用户 @-提及的每个文件的时间戳和点击次数，分数随时间衰减，
-//! 以使上周热门的文件排在 5 分钟前提及的文件之后，并根据结果分数
-//! 重新排序提及弹出补全。持久化在 `~/.deepseek/file-frecency.jsonl`
-//! 的单个 JSONL 文件中，因此 frecency 在重启后仍然有效。
+//! Records every file the user @-mentions with a timestamp and click count,
+//! decays the score over time so a file that was hot last week ranks below
+//! one mentioned 5 minutes ago, and re-orders mention-popup completions by
+//! the resulting score. Persisted as a single JSONL file at
+//! `~/.deepseek/file-frecency.jsonl` so frecency survives restarts.
 //!
-//! 只追加写入，内存中压缩：加载器将每一行重放到以仓库相对路径为键的
-//! `HashMap<String, FrecencyEntry>` 中，将重复项折叠到最后一条记录。
-//! 我们将内存映射上限设为 1000 条，溢出时驱逐得分最低的条目——
-//! 与 OPENCODE 源代码使用相同的启发式策略。
+//! Append-only on the wire, compacted in memory: the loader replays every
+//! line into a `HashMap<String, FrecencyEntry>` keyed by repo-relative path,
+//! folding duplicates into the last record. We cap the in-memory map at
+//! 1000 entries and evict the lowest-scored on overflow — same heuristic
+//! the OPENCODE source uses.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -19,22 +21,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// 我们跟踪的路径数量硬上限（#441 的验收标准）。
-/// 映射超出此限制时，较旧/得分较低的条目将被驱逐。
+/// Hard cap on the number of paths we track (the acceptance criterion for
+/// #441). Older / lower-scored entries are evicted when the map exceeds
+/// this.
 const FRECENCY_CAP: usize = 1000;
 
-/// frecency 分数的半衰期，以秒为单位。经过这段时间后，分数衰减到其峰值的 ½。
-/// 7 天是 OPENCODE 的默认值——足够长以使常用编辑的文件在整个工作周保持热度，
-/// 但又足够短以使昨天的深度探索不会永远困扰你。
+/// Half-life of a frecency score, in seconds. After this many seconds the
+/// score has decayed to ½ of its peak. 7 days is OPENCODE's default — long
+/// enough that a commonly-edited file stays sticky across a workweek but
+/// short enough that yesterday's deep-dive doesn't haunt you forever.
 const HALF_LIFE_SECS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FrecencyRecord {
-    /// 工作区相对路径字符串。
+    /// Workspace-relative path string.
     path: String,
-    /// 条目生命周期内的总提及次数。
+    /// Total mentions over the lifetime of the entry.
     count: u32,
-    /// 最后一次提及的 Unix 时间戳（秒）。
+    /// Unix timestamp (seconds) of the last mention.
     last_used: u64,
 }
 
@@ -61,9 +65,10 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 记录的时间衰减 frecency 分数，以任意单位计。提及次数线性计数；
-/// 总和乘以基于自 `last_used` 以来时间的指数衰减因子。
-/// 早于约 5 个半衰期的记录得分基本为零。
+/// Time-decayed frecency score for a record, in arbitrary units. Mentions
+/// count linearly; the whole sum is multiplied by an exponential decay
+/// factor based on time since `last_used`. Records older than ~5 half-lives
+/// score effectively zero.
 fn decayed_score(record: &FrecencyRecord, now: u64) -> f64 {
     let age_secs = now.saturating_sub(record.last_used) as f64;
     let lambda = std::f64::consts::LN_2 / HALF_LIFE_SECS;
@@ -120,10 +125,11 @@ fn append_record_line(path: &PathBuf, record: &FrecencyRecord) -> std::io::Resul
     Ok(())
 }
 
-/// 记录一次对 `path`（工作区相对路径字符串）的提及。更新内存存储，
-/// 持久化一条 JSONL 行，如果刚超出上限则驱逐最低得分条目。
-/// 尽力而为：I/O 失败会被记录并忽略——丢失一个 frecency 数据点
-/// 永远不值得让用户的 `@` 自动补全失败。
+/// Record one mention of `path` (a workspace-relative path string). Updates
+/// the in-memory store, persists a single JSONL line, and evicts the lowest-
+/// scored entry if we just exceeded the cap. Best-effort: I/O failures are
+/// logged and swallowed — losing a frecency datapoint is never worth
+/// failing the user's `@` autocomplete.
 pub fn record_mention(path: &str) {
     if path.is_empty() {
         return;
@@ -153,10 +159,11 @@ pub fn record_mention(path: &str) {
     evict_to_cap(&mut store, now);
 }
 
-/// 按 frecency 分数重新排序候选列表（高分优先），
-/// 平局时保留原始顺序，以便底层排序器的选择不会被颠覆。
-/// 存储中从未见过的候选者得分为零——它们会排在末尾，
-/// 这意味着一次性提及在首次使用后将开始浮到顶部。
+/// Re-sort a candidate list by frecency score (highest first), preserving
+/// the original order for ties so the underlying ranker's choices aren't
+/// upended. Candidates the store has never seen score zero — they end up
+/// at the bottom of the sort, which means a one-time mention will start
+/// floating to the top after first use.
 #[must_use]
 pub fn rerank_by_frecency(candidates: Vec<String>) -> Vec<String> {
     if candidates.len() <= 1 {
@@ -180,7 +187,8 @@ pub fn rerank_by_frecency(candidates: Vec<String>) -> Vec<String> {
             (idx, path, score)
         })
         .collect();
-    // 按（-分数，原始索引）稳定排序：平局时保持底层排序器的顺序。
+    // Stable sort on (-score, original-index): ties keep the underlying
+    // ranker's order.
     scored.sort_by(|a, b| {
         b.2.partial_cmp(&a.2)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -193,10 +201,11 @@ pub fn rerank_by_frecency(candidates: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// 最近提及的路径优于从未提及的路径；从未提及的路径保持其原始排序器顺序。
+    /// Recently mentioned paths win against never-mentioned ones; never-mentioned
+    /// preserve their original ranker order.
     #[test]
     fn rerank_floats_recent_paths_to_the_top() {
-        // 使用全局存储；重置其状态以避免跨测试泄漏。
+        // Use the global store; reset its state so we don't leak across tests.
         let store = super::store();
         let mut s = store.lock().unwrap();
         s.by_path.clear();
@@ -219,16 +228,16 @@ mod tests {
             "Cargo.toml".to_string(),
         ]);
         assert_eq!(order[0], "src/popular.rs");
-        // README.md 原始顺序第一，Cargo.toml 第二。两者得分均为 0，
-        // 因此原始相对顺序得以保留。
+        // README.md was first in original order; Cargo.toml second. Both score 0
+        // so the original relative order survives.
         assert_eq!(order[1], "README.md");
         assert_eq!(order[2], "Cargo.toml");
     }
 
-    /// 经过足够的半衰期后，衰减分数降至低于新使用条目的分数，
-    /// 仅凭计数无法让较旧的条目保持领先。以 7 天半衰期计算，
-    /// 8 周即 8 个半衰期 → 约 256 倍衰减；今天被提及 2 次的条目
-    /// 轻松超过两个月前被提及 50 次的条目。
+    /// Decayed score drops below a freshly-used entry after enough half-lives
+    /// that count alone can't carry the older one. With a 7-day half-life,
+    /// 8 weeks gives 8 half-lives → ~256× decay; an entry mentioned twice
+    /// today comfortably beats one mentioned 50× two months ago.
     #[test]
     fn old_entries_decay_below_recent_ones() {
         let now: u64 = 7 * 24 * 60 * 60 * 8; // 8 weeks (8 half-lives)

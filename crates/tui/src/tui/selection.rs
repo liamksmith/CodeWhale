@@ -1,17 +1,17 @@
-//! 记录视图的文本选择状态。
+//! Text selection state for the transcript view.
 
 use std::time::Instant;
 
-// === 类型 ===
+// === Types ===
 
-/// 记录中的选择端点（行/列）。
+/// A selection endpoint in the transcript (line/column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptSelectionPoint {
     pub line_index: usize,
     pub column: usize,
 }
 
-/// 记录视图中的当前选择状态。
+/// Current selection state in the transcript view.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TranscriptSelection {
     pub anchor: Option<TranscriptSelectionPoint>,
@@ -19,34 +19,35 @@ pub struct TranscriptSelection {
     pub dragging: bool,
 }
 
-/// 拖拽超出边缘的自动滚动状态。当用户按住左键且光标位于记录矩形上方或下方时，
-/// 主循环推进 `pending_scroll_delta` 并以固定节奏扩展选择头部，
-/// 从而在一次拖拽中选择长段落（#1163）。
+/// Drag-past-edge auto-scroll state. While the user holds the left button
+/// and the cursor is above or below the transcript rect, the main loop
+/// advances `pending_scroll_delta` and extends the selection head on a
+/// fixed cadence so a long passage can be selected in one drag (#1163).
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionAutoscroll {
-    /// `-1` 向上滚动，`+1` 向下滚动。不会为 `0`。
+    /// `-1` scrolls up, `+1` scrolls down. Never `0`.
     pub direction: i32,
-    /// 上次在边界内的鼠标列，以绝对终端坐标表示。
+    /// Last in-bounds mouse column, in absolute terminal coordinates.
     pub column: u16,
-    /// 允许下一次 tick 触发的时间。
+    /// When the next tick is allowed to fire.
     pub next_tick: Instant,
 }
 
 impl TranscriptSelection {
-    /// 清除任何活动的选择。
+    /// Clear any active selection.
     pub fn clear(&mut self) {
         self.anchor = None;
         self.head = None;
         self.dragging = false;
     }
 
-    /// 完整选择是否处于活动状态。
+    /// Whether a full selection is active.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.anchor.is_some() && self.head.is_some()
     }
 
-    /// 返回从起点到终点排序的选择端点。
+    /// Return selection endpoints ordered from start to end.
     #[must_use]
     pub fn ordered_endpoints(
         &self,

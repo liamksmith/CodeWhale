@@ -1,9 +1,9 @@
-//! 阿里云 OpenSandbox 后端适配器。
+//! Alibaba OpenSandbox backend adapter.
 //!
-//! 将 shell 命令发送到兼容 OpenSandbox 的 HTTP API 以进行远程执行。
-//! API 端点为 `POST {base_url}/v1/sandbox/run`，
-//! JSON 请求体为 `{"cmd": "...", "env": {...}}`，
-//! 期望的 JSON 响应为 `{"stdout": "...", "stderr": "...", "exit_code": 0}`。
+//! Sends shell commands to an OpenSandbox-compatible HTTP API for remote
+//! execution.  The API endpoint is `POST {base_url}/v1/sandbox/run` with
+//! JSON body `{"cmd": "...", "env": {...}}` and expects a JSON response
+//! `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -15,30 +15,30 @@ use serde::Serialize;
 
 use super::backend::{SandboxBackend, SandboxOutput};
 
-/// 发送到 OpenSandbox `/v1/sandbox/run` 端点的请求体。
+/// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Serialize)]
 struct SandboxRunRequest {
-    /// 要执行的完整 shell 命令。
+    /// Full shell command to execute.
     cmd: String,
-    /// 在沙箱中设置的环境变量。
+    /// Environment variables to set in the sandbox.
     env: HashMap<String, String>,
 }
 
-/// 来自 OpenSandbox `/v1/sandbox/run` 端点的响应体。
+/// Response body from the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Deserialize)]
 struct SandboxRunResponse {
-    /// 命令的标准输出。
+    /// Standard output from the command.
     stdout: String,
-    /// 命令的标准错误。
+    /// Standard error from the command.
     stderr: String,
-    /// 退出码（0 表示成功）。
+    /// Exit code (0 for success).
     exit_code: i32,
 }
 
-/// 兼容 OpenSandbox 的远程执行后端。
+/// An OpenSandbox-compatible remote execution backend.
 ///
-/// 使用基础 URL（例如 `"http://localhost:8080"`）、可选的 API 密钥（作为 `Bearer` 令牌发送）
-/// 和超时秒数构造。
+/// Constructed with a base URL (e.g. `"http://localhost:8080"`), an optional
+/// API key sent as a `Bearer` token, and a timeout in seconds.
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,
@@ -47,11 +47,12 @@ pub struct OpenSandboxBackend {
 }
 
 impl OpenSandboxBackend {
-    /// 创建一个新的 OpenSandbox 后端。
+    /// Create a new OpenSandbox backend.
     ///
-    /// `base_url` 应为 OpenSandbox API 的根路径
-    ///（例如 `"http://localhost:8080"`）。`api_key` 是可选的，设置后会作为
-    /// `Authorization: Bearer <key>` 发送。`timeout_secs` 控制 HTTP 请求超时。
+    /// `base_url` should be the root of the OpenSandbox API (e.g.
+    /// `"http://localhost:8080"`). `api_key` is optional and sent as
+    /// `Authorization: Bearer <key>` when set. `timeout_secs` controls the
+    /// HTTP request timeout.
     pub fn new(base_url: String, api_key: Option<String>, timeout_secs: u64) -> Result<Self> {
         let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(timeout_secs))
@@ -66,7 +67,7 @@ impl OpenSandboxBackend {
         })
     }
 
-    /// 构建沙箱运行端点的完整 URL。
+    /// Build the full URL for the sandbox run endpoint.
     fn run_url(&self) -> String {
         format!("{}/v1/sandbox/run", self.base_url.trim_end_matches('/'))
     }

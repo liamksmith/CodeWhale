@@ -1,4 +1,4 @@
-//! `/subagents` 兼容命令。
+//! `/subagents` compatibility command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -21,7 +21,8 @@ impl RegisterCommand for SubagentsCmd {
     }
 
     fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
-        // 兼容快捷方式：Fleet 是产品界面；子代理是同一工作状态投射的角色/运行时术语。
+        // Compatibility shortcut: Fleet is the product surface; sub-agent is
+        // role/runtime vocabulary for the same worker status projection.
         super::core::subagents(app)
     }
 }

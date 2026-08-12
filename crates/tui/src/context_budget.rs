@@ -1,40 +1,52 @@
-//! TUI 的统一上下文预算计算。
+//! Unified context-budget math for the TUI.
 //!
-//! 给定模型的上下文窗口、当前输入令牌估计和配置的输出上限，
-//! [`ContextBudget`] 推导出应用的其他部分需要推理关于一个回合的四个数字：
+//! Given a model's context window, the current input token estimate, and a
+//! configured output cap, [`ContextBudget`] derives the four numbers the rest
+//! of the app needs to reason about a turn:
 //!
-//!   * **可用输入预算**——在为模型输出预留空间后，还可以花费多少输入令牌；
-//!   * **输出令牌上限**——实际用于计算该预算的输出预留（被限制，永不使窗口挨饿）；
-//!   * **压缩触发阈值**——应建议压缩的输入令牌级别（默认：窗口的约 75%）；
-//!   * **[`PressureLevel`]**——UI 可以渲染而无需重新推导阈值的粗略 Low/Medium/High/Critical 信号。
+//!   * **available input budget** — how many input tokens may still be spent
+//!     after reserving room for the model's output;
+//!   * **output token cap** — the output reservation actually used to compute
+//!     that budget (clamped so it never starves the window);
+//!   * **compaction trigger** — the input-token level at which compaction
+//!     should be suggested (default: ~75% of the window);
+//!   * **[`PressureLevel`]** — a coarse Low/Medium/High/Critical signal the UI
+//!     can render without re-deriving thresholds.
 //!
-//! 此模块是预算计算*基础*。它故意是纯的（无 I/O、无时钟、无引擎/配置类型），
-//! 以便可以独立进行单元测试，并稍后被引擎容量检查点和 TUI 压力指示器消费。
-//! 那些消费者在单独的传递中接入；这里没有任何东西调用它们。
+//! This module is the budget-math *foundation*. It is intentionally pure (no
+//! I/O, no clock, no engine/config types) so it can be unit-tested in isolation
+//! and later consumed by the engine capacity checkpoints and the TUI pressure
+//! indicator. Those consumers are wired in a separate pass; nothing here calls
+//! into them.
 //!
-//! ### 为什么输出预留取决于窗口
+//! ### Why the output reservation is window-dependent
 //!
-//! 引擎现有的输入预算辅助函数
-//!（`core::engine::context::context_input_budget_for_window`）计算
-//! `window - reserved_output - headroom`，并以艰难的方式学到了：
-//! 在*小*的自托管窗口（例如 256K vLLM 部署）上预留大量固定输出
-//!（V4 类交织思考的 262K）会下溢到负预算，并静默禁用每个预检/恢复路径。
-//! 我们在这里用饱和算术镜像了这一教训，并始终将输出上限限制为
-//! 至少保留 [`MIN_INPUT_BUDGET_TOKENS`] 的输入空间，
-//! 以便预算在合法大小的窗口上永远不会崩溃为零。
+//! The engine's existing input-budget helper
+//! (`core::engine::context::context_input_budget_for_window`) computes
+//! `window - reserved_output - headroom` and learned the hard way that
+//! reserving a large fixed output (262K for V4-class interleaved thinking) on a
+//! *small* self-hosted window (e.g. a 256K vLLM deployment) underflows to a
+//! negative budget and silently disables every preflight/recovery path. We
+//! mirror that lesson here with saturating arithmetic and an output cap that is
+//! always clamped to leave at least [`MIN_INPUT_BUDGET_TOKENS`] of input room,
+//! so the budget can never collapse to zero on a legitimately sized window.
 
-// 基础模块：公共表面由单元测试执行，但尚未被引擎容量检查点或 TUI 压力指示器
-// 引用（这些消费者在后续传递中接入）。允许 dead_code，以便基础代码可以在
-// 其调用者之前以警告干净的姿态落地，匹配此 crate 中其他尚未接入的原语的门控方式。
+// Foundation module: the public surface is exercised by unit tests but is not
+// yet referenced by the engine capacity checkpoints or the TUI pressure
+// indicator (those consumers are wired in a later pass). Allow dead_code so the
+// substrate can land warning-clean ahead of its callers, matching how other
+// not-yet-wired primitives in this crate are gated.
 //
-// 注意：上下文报告现在已经消费了 `PressureLevel::from_usage_percent` 和
-// `label`，但基础代码的其余部分（`ContextBudget` 及其方法、
-// `PressureLevel::suggests_compaction`）仍在等待其引擎/TUI 消费者，
-// 因此全局 allow 保留直到那些落地。
+// Note: the context report now consumes `PressureLevel::from_usage_percent` and
+// `label`, but the rest of the substrate (`ContextBudget` and its methods,
+// `PressureLevel::suggests_compaction`) is still pending its engine/TUI
+// consumers, so the blanket allow stays until those land.
 #![allow(dead_code)]
 
-/// 窗口的百分比值，达到或超过该值时建议压缩。镜像现有上下文报告
-/// 用于诊断标签的"高"压力边界，四舍五入到传统的四分之三触发点。
+/// Fraction of the window, expressed as a percentage, at or above which
+/// compaction should be suggested. Mirrors the "high" pressure boundary the
+/// existing context report uses for its diagnostic label, rounded up to the
+/// conventional three-quarters-full trigger.
 pub const DEFAULT_COMPACTION_TRIGGER_PERCENT: f64 = 75.0;
 
 /// Percentage of the window at or above which pressure is [`PressureLevel::Critical`].

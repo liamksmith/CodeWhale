@@ -1,8 +1,8 @@
-//! 流式响应状态和护栏。
+//! Streaming response state and guardrails.
 //!
-//! 此模块拥有解码一个模型流时使用的本地状态：
-//! 内容块类型跟踪、流式工具调用缓冲区、透明重试策略
-//! 以及对看起来像伪造的工具调用包装器的文本的清理器。
+//! This module owns the local state used while decoding one model stream:
+//! content block kind tracking, streamed tool-use buffers, transparent retry
+//! policy, and scrubbers for text that looks like a forged tool-call wrapper.
 
 use crate::models::ToolCaller;
 use std::time::Duration;
@@ -24,40 +24,42 @@ pub(super) struct ToolUseState {
     pub(super) input_parse_error: Option<String>,
 }
 
-/// 终止流之前文本/思考内容的最大总字节数。
+/// Maximum total bytes of text/thinking content before aborting the stream.
 pub(super) const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-/// 流总挂钟时间的合理性兜底。**不是**常规的终止开关——流块空闲超时
-/// 是主要的卡顿检测器。挂钟上限仅用于限制病态情况
-///（例如服务器持续发送心跳但没有任何进展）。
+/// Sanity backstop for total stream wall-clock duration. **Not** a routine
+/// kill switch — the stream chunk idle timeout is the primary stall
+/// detector. The wall-clock cap is here only to bound pathological cases
+/// (e.g. a server that keeps sending heartbeats forever without progress).
 ///
-/// 历史背景：这曾经是 300 秒（5 分钟），但过于激进了——V4
-/// 在硬提示词上的思考轮次完全可能超过 5 分钟挂钟时间，
-/// 同时整个过程都在发出 reasoning_content 块。在 v0.6.6 中，
-/// 长推理轮次撞到旧上限后调整为 30 分钟。Codex 默认使用
-/// 每块 300 秒的空闲超时且没有挂钟上限；我们保留两层但给
-/// 挂钟一个宽松的窗口，使其在实践中永远不会触发。
-pub(super) const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 分钟（之前是 300 秒；#103/#1）
-/// 在暴露轮次失败之前连续可恢复流错误的硬上限。
-/// 在 v0.6.7 中随 HTTP/2 保活默认值一起从 3 调整到 5
-///（#103）——保活应该使虚假的解码错误更罕见，因此我们可以在
-/// 放弃轮次之前容忍更长的连续错误。
+/// History: this used to be 300s (5 min) which was too aggressive — V4
+/// thinking turns on hard prompts legitimately exceed 5 minutes wall-clock
+/// while still emitting reasoning_content chunks the whole way. Bumped to
+/// 30 min in v0.6.6 after long-reasoning turns hit the old cap. Codex defaults to a
+/// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
+/// give the wall-clock a generous window so it never fires in practice.
+pub(super) const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
+/// Hard cap on consecutive recoverable stream errors before we surface a turn
+/// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
+/// (#103) — keepalive should make spurious decode errors rarer, so we can
+/// tolerate a longer streak before giving up on the turn.
 pub(super) const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;
-/// 透明流级别重试的上限——这些只在线路在流式传输任何内容之前
-/// 断开时发生，因此 DeepSeek 尚未向我们计费，用户也什么都没看到。
-/// 两次尝试足以应对不稳定的边缘节点，同时不会放大真实的故障（#103）。
+/// Cap on transparent stream-level retries — these only happen when the wire
+/// dies before any content was streamed, so DeepSeek hasn't billed us and
+/// the user hasn't seen anything. Two attempts is enough to ride out a
+/// flaky edge node without amplifying real outages (#103).
 pub(super) const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
 
-/// 判断流错误是否符合透明重试的条件。
+/// Decide whether a stream error is eligible for a transparent retry.
 ///
-/// 仅当所有三个条件都成立时返回 true：
-/// 1. 当前尝试中没有收到任何内容——否则 DeepSeek
-///    已经就输出 Token 向我们计费，且用户已经看到了部分
-///    增量；重新发送会导致重复计费和 UI 不同步。
-/// 2. 我们仍然有透明重试预算。
-/// 3. 轮次未被取消。
+/// True only when ALL three conditions hold:
+/// 1. No content has been received on the current attempt — otherwise DeepSeek
+///    has already billed us for output tokens and the user has seen partial
+///    deltas; resending would double-bill and desync the UI.
+/// 2. We still have transparent-retry budget remaining.
+/// 3. The turn has not been cancelled.
 ///
-/// 提取为纯函数，以便四个 #103 重试情况可以在单元测试中测试，
-/// 而无需启动完整的引擎状态机。
+/// Extracted as a pure function so the four #103 retry cases can be exercised
+/// in unit tests without booting the full engine state machine.
 pub(super) fn should_transparently_retry_stream(
     any_content_received: bool,
     transparent_attempts: u32,
@@ -66,31 +68,34 @@ pub(super) fn should_transparently_retry_stream(
     !any_content_received && transparent_attempts < MAX_TRANSPARENT_STREAM_RETRIES && !cancelled
 }
 
-/// 在流断开后重新发出整个请求的预算。由空流外部重试（#103 阶段 3）
-/// 和睡眠恢复重试（#2990）共享。
+/// Budget for re-issuing the whole request after a dead stream. Shared by the
+/// nothing-streamed outer retry (#103 Phase 3) and the sleep-resume retry
+/// (#2990).
 pub(super) const MAX_STREAM_RETRIES: u32 = 3;
 
-/// 挂钟与单调时间之间的偏差阈值，超过此阈值可判断宿主在流中间睡眠（#2990）。
-/// `Instant` 在系统睡眠期间暂停（macOS 上的 CLOCK_UPTIME_RAW，
-/// Linux 上的 CLOCK_MONOTONIC），而 `SystemTime` 继续推进，因此
-/// 大的正偏差只能来自挂起/恢复周期——普通的网络波动永远不会产生此偏差。
-/// Windows 的 `Instant` 可能在睡眠期间继续计时，在这种情况下它永远不会触发
-///（行为无变化）。
+/// Wall-clock vs monotonic divergence above which we conclude the host slept
+/// mid-stream (#2990). `Instant` pauses during system sleep (CLOCK_UPTIME_RAW
+/// on macOS, CLOCK_MONOTONIC on Linux) while `SystemTime` keeps advancing, so
+/// a large positive gap can only come from a suspend/resume cycle — ordinary
+/// network flakes never produce one. Windows `Instant` may keep ticking
+/// through sleep, in which case this simply never fires (no behavior change).
 pub(super) const SLEEP_GAP_THRESHOLD: Duration = Duration::from_secs(10);
 
-/// 如果自上次流进度以来的挂钟时间和单调时间之间的偏差
-/// 表明宿主被挂起，则返回 true。
+/// True when the gap between wall-clock and monotonic elapsed time since the
+/// last stream progress says the host was suspended.
 pub(super) fn sleep_gap_detected(monotonic_elapsed: Duration, wallclock_elapsed: Duration) -> bool {
     wallclock_elapsed.saturating_sub(monotonic_elapsed) > SLEEP_GAP_THRESHOLD
 }
 
-/// 判断是否应在宿主在轮次中间睡眠后静默地重新发出失败的流（#2990）。
+/// Decide whether a failed stream should be silently re-issued because the
+/// host slept mid-turn (#2990).
 ///
-/// 与透明重试（#103）不同，即使内容已经流式传输后也会触发：
-/// 部分输出在睡眠之前产生，用户没有看到，重新运行相同的请求
-/// 是正确的用户可见行为。阻止普通内容后重试的重复计费担忧
-/// 在此处被接受，因为否则轮次将死亡，用户无论如何都必须重新提示
-///（并再次付费）。
+/// Unlike the transparent retry (#103), this fires even after content has
+/// streamed: the partial output predates the sleep, the user was not
+/// watching, and re-running the identical request is the correct
+/// user-visible behavior. The double-billing concern that blocks ordinary
+/// post-content retries is accepted here because the alternative is a dead
+/// turn the user must re-prompt (and pay for) anyway.
 pub(super) fn should_resume_after_sleep(
     sleep_detected: bool,
     retry_attempts: u32,
@@ -99,10 +104,10 @@ pub(super) fn should_resume_after_sleep(
     sleep_detected && retry_attempts < MAX_STREAM_RETRIES && !cancelled
 }
 
-/// 将底层 reqwest/hyper 流读取错误转换为面向操作员的消息。
-/// 原始提供商错误仍然附加，但首句解释了为什么 CodeWhale
-/// 可能在任何输出之前重试，以及为什么一旦部分输出已经流式传输
-/// 就必须展示警告。
+/// Convert low-level reqwest/hyper stream read errors into an operator-facing
+/// message. The raw provider error remains attached, but the lead sentence
+/// explains why CodeWhale may retry before any output and why it must surface
+/// the warning once partial output has already streamed.
 pub(super) fn stream_read_error_user_message(message: &str, any_content_received: bool) -> String {
     let lower = message.to_ascii_lowercase();
     let is_stream_read = lower.contains("stream read error")
@@ -175,14 +180,15 @@ pub(crate) struct ToolCallDeltaFilterState {
     active_end_marker: Option<&'static str>,
 }
 
-/// 当模型尝试在纯文本中伪造工具调用包装器而不是使用 API 工具通道时，
-/// 发出的一次性紧凑通知。可见内容仍然被清理；此通知的存在让用户
-/// 可以看到为什么他们的文本变短了。
+/// Compact one-shot notice emitted when a model attempts to forge a tool-call
+/// wrapper in plain text instead of using the API tool channel. The visible
+/// content is still scrubbed; this exists so the user can see why their text
+/// shrank.
 pub(crate) const FAKE_WRAPPER_NOTICE: &str =
     "Stripped non-API tool-call wrapper from model output (use the API tool channel)";
 
-/// 如果 `text` 包含任何已知的伪造包装器起始标记，则返回 true。由
-/// 流式循环用于决定是否发出 `FAKE_WRAPPER_NOTICE`。
+/// True if `text` contains any of the known fake-wrapper start markers. Used by
+/// the streaming loop to decide whether to emit `FAKE_WRAPPER_NOTICE`.
 pub(crate) fn contains_fake_tool_wrapper(text: &str) -> bool {
     TOOL_CALL_START_MARKERS.iter().any(|m| text.contains(m))
 }

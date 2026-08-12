@@ -1,8 +1,9 @@
-//! 子代理运行时协调的邮箱抽象。
+//! Mailbox abstraction for sub-agent runtime coordination.
 //!
-//! 单调递增的序列号为每个消费者提供一致的顺序，即使多个订阅者
-//!（例如 UI 卡片 + 父代理）独立排空；"关闭即取消"让单个信号
-//! 既可以停止新邮件，又可以在嵌套子级中传播取消。
+//! Monotonic sequence numbers give every consumer a consistent ordering even
+//! when multiple subscribers (e.g. UI card + parent agent) drain
+//! independently; close-as-cancel lets a single signal both stop new mail and
+//! propagate cancellation through nested children.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -18,11 +19,11 @@ use crate::models::Usage;
 
 use super::SubAgentType;
 
-/// 在子代理表面共享的稳定、结构化的进度信封。
+/// Stable, structured progress envelope shared across the sub-agent surface.
 ///
-/// 端到端跟踪单个代理（由 `agent_id` 标识）的生命周期：
-/// 生成、每步进度、工具执行、完成/失败/取消以及父→子拓扑，
-/// 以便消费者可以渲染树状结构。
+/// Tracks the lifecycle of a single agent (identified by `agent_id`) end to
+/// end: spawn, per-step progress, tool execution, completion / failure /
+/// cancellation, and parent → child topology so consumers can render trees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MailboxMessage {

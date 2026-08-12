@@ -1,94 +1,101 @@
-//! 活跃的进行中工具/执行单元格——单个可变组，缓冲当前回合的并行工具工作。
+//! Active in-flight tool/exec cell — single mutable group that buffers parallel
+//! tool work for the current turn.
 //!
-//! ## 原因
+//! ## Why
 //!
-//! 当模型在单个助手回合中发出并行工具调用时（例如
-//! 两个 `read_file` 和一个 `grep_files` 并发运行），
-//! 简单地将每个工具开始追加为自己的历史单元格会使记录
-//! 在完成结果乱序到达时"跳动"。Codex 的模式是将所有
-//! 进行中的工具工作保持在一个可变的活动单元格中；一旦回合
-//! 解析完成，活动单元格就定稿到记录中。
+//! When the model issues parallel tool calls in a single assistant turn (e.g.
+//! two `read_file` and one `grep_files` running concurrently), naively
+//! appending each tool start as its own history cell makes the transcript
+//! "bounce" as completions arrive out of order. Codex's pattern is to keep all
+//! in-flight tool work in ONE active cell that mutates in place; once the turn
+//! resolves the active cell finalizes into the transcript.
 //!
-//! ## 契约
+//! ## Contract
 //!
-//! - 每回合最多一个 [`ActiveCell`]。它持有零个或多个
-//!   仍在变异的 [`HistoryCell`]（状态 `Running`、输出待定等）。
-//! - 持有者 [`crate::tui::app::App`] 在 `App.history` 之后渲染活动单元格的内容，
-//!   因此它们出现在实时尾部。
-//! - 像 `tool_cells` / `tool_details_by_cell` 等辅助函数使用的单元格索引
-//!   指向虚拟序列 `App.history ++ active_cell.entries`。每个
-//!   条目的索引是 `App.history.len() + entry_offset`。
-//! - 当工具完成但其 `tool_id` 不匹配任何活动条目时（孤儿），
-//!   调用方将已完成的独立单元格推送到 `App.history`，
-//!   而不是修改活动组。这使 `active_cell` 保持对实际启动内容的稳定反映，
-//!   并避免合并不相关的工具工作。
-//! - 在 `TurnComplete`（或取消）时，活动单元格被"刷新"：
-//!   进行中的条目被标记为提供的终端状态，然后
-//!   每个条目都被追加到 `App.history`。伴随映射
-//!   （`tool_cells`、`tool_details_by_cell`）被重写以指向新的
-//!   `App.history` 索引。
+//! - At most one [`ActiveCell`] per turn. It holds zero or more
+//!   [`HistoryCell`]s that are still being mutated (status `Running`, output
+//!   pending, etc.).
+//! - The owning [`crate::tui::app::App`] renders the active cell's contents
+//!   AFTER `App.history` so they appear at the live tail.
+//! - Cell indices used by helpers like `tool_cells` / `tool_details_by_cell`
+//!   address the virtual sequence `App.history ++ active_cell.entries`. Each
+//!   entry's index is `App.history.len() + entry_offset`.
+//! - When a tool completes whose `tool_id` does not match any active entry
+//!   (orphan), the caller pushes a finalized standalone cell into `App.history`
+//!   instead of mutating the active group. This keeps `active_cell` a stable
+//!   reflection of what was actually started, and avoids merging unrelated
+//!   tool work.
+//! - On `TurnComplete` (or cancellation) the active cell is "flushed":
+//!   in-progress entries are marked with the supplied terminal status, then
+//!   every entry is appended to `App.history`. Companion maps
+//!   (`tool_cells`, `tool_details_by_cell`) are rewritten to point at the new
+//!   `App.history` indices.
 //!
-//! ## 修订计数器
+//! ## Revision counter
 //!
-//! 活动组内的单元格在变异时不会更改指针标识，
-//! 因此记录缓存不能依赖枚举相等性进行失效检测。我们
-//! 公开 `revision()` 和 `bump_revision()`；渲染器在计算
-//! 每个单元格的缓存修订时将这与 `App.history_version` 结合。
+//! Cells inside the active group mutate without changing pointer identity, so
+//! the transcript cache cannot rely on enum-equality for invalidation. We
+//! expose `revision()` and `bump_revision()`; the renderer combines this with
+//! `App.history_version` when computing per-cell revisions for the cache.
 
 use crate::tui::history::{ExploringCell, ExploringEntry, HistoryCell, ToolCell, ToolStatus};
 
-/// 进行中的活动单元格：一组可变的 [`HistoryCell`] 条目序列。
+/// In-flight active cell: a sequence of mutable [`HistoryCell`] entries.
 ///
-/// 概念上是一个 Codex 意义上的单个"实时尾部"单元格：它作为
-/// 记录末尾的一个逻辑块出现，但内部由一个或多个条目组成
-///（每个条目渲染为其自己的 [`HistoryCell`]）。
-/// 我们保持它们为单独条目的原因——而不是融合为单个概念块——
-/// 是它们可能具有不同的形状（`ExecCell`、`ExploringCell` 聚合、
-/// MCP 工具结果等），且现有的渲染器已经知道如何正确绘制每种形状。
-/// 合并为单个渲染路径会重复我们已经拥有的逻辑。
+/// Conceptually a single "live tail" cell in the Codex sense: it appears as
+/// one logical block at the end of the transcript, but internally it is
+/// composed of one or more entries (each rendered as its own
+/// [`HistoryCell`]). The reason we keep them as separate entries — rather
+/// than fusing into a single conceptual block — is that they may have
+/// different shapes (an `ExecCell`, an `ExploringCell` aggregate, an MCP
+/// tool result, …) and the existing renderers already know how to draw each
+/// shape correctly. Coalescing into a single render path would duplicate
+/// logic we already have.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCell {
     entries: Vec<HistoryCell>,
-    /// 当前与此活动单元格关联的工具 ID。映射值是指向
-    /// [`Self::entries`] 的索引。多个工具 ID 可以映射到同一个
-    /// 条目（现有的 `ExploringCell` 将多个读取聚合到单个条目中）。
+    /// Tool ids currently associated with this active cell. The map values are
+    /// indices into [`Self::entries`]. Multiple tool ids can map to the same
+    /// entry (the existing `ExploringCell` aggregates several reads into a
+    /// single entry).
     tool_to_entry: std::collections::HashMap<String, usize>,
-    /// 当前 `ExploringCell` 条目的索引（如果存在），以便额外的
-    /// 探索工具启动追加到它而不是创建新单元格。
+    /// Index of the current `ExploringCell` entry (when present), so additional
+    /// exploring tool starts append to it instead of creating new cells.
     exploring_entry: Option<usize>,
-    /// 每次变异时递增。用于告诉记录缓存活动单元格需要重新渲染，
-    /// 即使它在虚拟单元格列表中的位置没有变化。
+    /// Bumped on every mutation. Used by the transcript cache to know that
+    /// the active cell needs re-rendering even though its position in the
+    /// virtual cell list is unchanged.
     revision: u64,
 }
 
 impl ActiveCell {
-    /// 创建一个空的活动单元格。
+    /// Create an empty active cell.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 条目数量（每个条目渲染为其自己的 [`HistoryCell`]）。
+    /// Number of entries (each rendered as its own [`HistoryCell`]).
     #[must_use]
     #[allow(dead_code)] // Public surface used by tests and future renderers.
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
-    /// 活动单元格是否包含任何条目。
+    /// Whether the active cell has any entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// 对底层条目的只读访问（用于渲染）。
+    /// Read-only access to the underlying entries (for rendering).
     #[must_use]
     pub fn entries(&self) -> &[HistoryCell] {
         &self.entries
     }
 
-    /// 对特定条目的可变访问。递增修订计数器，以便
-    /// 渲染器知道缓存的行已过时。
+    /// Mutable access to a specific entry. Bumps the revision counter so the
+    /// renderer knows the cached lines are stale.
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut HistoryCell> {
         if index < self.entries.len() {
             self.bump_revision();
@@ -98,38 +105,40 @@ impl ActiveCell {
         }
     }
 
-    /// 当前修订计数器。溢出时回绕，这对缓存失效没问题；
-    /// 在单个会话中回绕碰撞的概率是天文学级别的，
-    /// 任何误判只导致一次额外的重新渲染。
+    /// Current revision counter. Wraps on overflow which is fine for cache
+    /// invalidation; the chance of a wrap-around collision is astronomical
+    /// over a single session and any miss only causes one extra re-render.
     #[must_use]
     #[allow(dead_code)] // Used by App::bump_active_cell_revision and future cache wiring.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// 递增修订计数器。在条目发生变异时调用。
+    /// Increment the revision counter. Call any time an entry is mutated.
     pub fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// 向活动单元格添加工具条目。
+    /// Add a tool entry to the active cell.
     ///
-    /// 返回条目索引（调用方可记录在 `tool_cells_in_active` 中）。
-    /// 如果单元格是探索工具启动且活动组中已存在探索条目，
-    /// 则该条目被追加到该聚合中，而不是创建新条目。
+    /// Returns the entry index (which the caller can record in
+    /// `tool_cells_in_active`). If the cell is an exploring tool start and
+    /// there is already an exploring entry in the active group, the entry is
+    /// appended to that aggregate instead of creating a new entry.
     ///
-    /// 为新的（或更新的）条目注册 `tool_id`，以便将来的完成查找可以找到它。
+    /// `tool_id` is registered for the new (or updated) entry so future
+    /// completion lookups can find it.
     pub fn push_tool(&mut self, tool_id: impl Into<String>, cell: HistoryCell) -> usize {
         let tool_id = tool_id.into();
-        // 如果这是探索启动且我们已有探索条目，
-        // 则追加到该条目而不是创建新单元格。
+        // If this is an exploring start and we already have an exploring
+        // entry, append to that entry rather than creating a new cell.
         if let HistoryCell::Tool(ToolCell::Exploring(new_cell)) = &cell
             && let Some(entry_idx) = self.exploring_entry
             && let Some(HistoryCell::Tool(ToolCell::Exploring(existing))) =
                 self.entries.get_mut(entry_idx)
         {
-            // 调用方给我们一个全新的 ExploringCell，其中有一个条目。
-            // 将该条目移动到现有的聚合中。
+            // The caller hands us a brand-new ExploringCell with one entry.
+            // Move that entry into the existing aggregate.
             for explore_entry in &new_cell.entries {
                 let _ = existing.insert_entry(explore_entry.clone());
             }
@@ -138,7 +147,7 @@ impl ActiveCell {
             return entry_idx;
         }
 
-        // 否则，推送一个新条目。
+        // Otherwise, push a new entry.
         let entry_idx = self.entries.len();
         if matches!(cell, HistoryCell::Tool(ToolCell::Exploring(_))) {
             self.exploring_entry = Some(entry_idx);
@@ -149,9 +158,9 @@ impl ActiveCell {
         entry_idx
     }
 
-    /// 推送没有工具 ID 绑定的条目（如果需要，用于非工具分组）。
-    /// 当前未使用；为与 Codex 对称而保留，Codex 允许
-    /// 例如会话头部单元格存在于 `active_cell` 中。
+    /// Push an entry with no tool id binding (used for non-tool grouping if
+    /// ever needed). Currently unused; kept for symmetry with Codex which
+    /// allows e.g. session-header cells to live in `active_cell`.
     #[allow(dead_code)]
     pub fn push_untracked(&mut self, cell: HistoryCell) -> usize {
         let entry_idx = self.entries.len();
@@ -160,14 +169,14 @@ impl ActiveCell {
         entry_idx
     }
 
-    /// 推送一个思考条目作为新的活动单元格条目。类似于
-    /// [`Self::push_tool`] 但针对 `HistoryCell::Thinking` 内容。
-    /// 返回条目索引。思考条目不参与 `tool_to_entry` 或
-    /// 探索聚合——每个思考块独立存在。
+    /// Push a thinking entry as a new active-cell entry. Sibling to
+    /// [`Self::push_tool`] but for `HistoryCell::Thinking` content. Returns the
+    /// entry index. Thinking entries do not participate in `tool_to_entry` or
+    /// the exploring aggregation — each thinking block stands on its own.
     ///
-    /// P2.3：思考存在于活动单元格中，因此 `Thinking → Tool → Tool`
-    /// 序列渲染为一个逻辑"Working…"块，直到下一个
-    /// 助手散文块将组刷新到历史中。
+    /// P2.3: thinking lives in the active cell so a `Thinking → Tool → Tool`
+    /// sequence renders as one logical "Working…" block until the next
+    /// assistant prose chunk flushes the group into history.
     pub fn push_thinking(&mut self, cell: HistoryCell) -> usize {
         debug_assert!(
             matches!(cell, HistoryCell::Thinking { .. }),
@@ -179,19 +188,20 @@ impl ActiveCell {
         entry_idx
     }
 
-    /// 查找持有给定工具 ID 的条目索引。
+    /// Look up the entry index that holds the given tool id.
     #[must_use]
     #[allow(dead_code)] // Reserved for the Codex-style "exec end target" lookup.
     pub fn entry_index_for_tool(&self, tool_id: &str) -> Option<usize> {
         self.tool_to_entry.get(tool_id).copied()
     }
 
-    /// 将 [`ExploringEntry`] 追加到现有的探索聚合中（如果有），
-    /// 将提供的工具 ID 绑定到它。成功时返回
-    /// `(entry_index, entry_within_exploring)`。
+    /// Append an [`ExploringEntry`] to the existing exploring aggregate (if
+    /// any), binding the supplied tool id to it. Returns
+    /// `(entry_index, entry_within_exploring)` on success.
     ///
-    /// 当第二个探索工具在同一活动组中启动时使用：
-    /// 我们扩展已存在的条目，而不是在活动组中分配另一个 ExploringCell 条目。
+    /// Used when a second exploring tool starts during the same active group:
+    /// rather than allocating another ExploringCell entry in the active group
+    /// we extend the one that's already there.
     pub fn append_to_exploring(
         &mut self,
         tool_id: impl Into<String>,
@@ -207,7 +217,8 @@ impl ActiveCell {
         Some((entry_idx, inner_idx))
     }
 
-    /// 确保活动组中存在 [`ExploringCell`]；如果不存在则创建它。返回其条目索引。
+    /// Ensure an [`ExploringCell`] exists in the active group; create it if
+    /// not. Returns its entry index.
     pub fn ensure_exploring(&mut self) -> usize {
         if let Some(idx) = self.exploring_entry {
             return idx;
@@ -222,17 +233,19 @@ impl ActiveCell {
         idx
     }
 
-    /// 移除条目的工具 ID 绑定而不移除条目本身
-    ///（条目保留在活动组中，可能其状态已更新）。
+    /// Remove the tool-id binding for an entry without removing the entry
+    /// itself (the entry remains in the active group, presumably with its
+    /// status updated).
     #[allow(dead_code)] // Reserved for cancellation paths that prune ids without flushing.
     pub fn forget_tool(&mut self, tool_id: &str) -> Option<usize> {
         self.tool_to_entry.remove(tool_id)
     }
 
-    /// 排空每个条目，按插入顺序返回。重置内部
-    /// 状态（通过 `bump_revision` 递增修订）。
+    /// Drain every entry, returning them in insertion order. Resets internal
+    /// state (revision is bumped via `bump_revision`).
     ///
-    /// 调用方在 `TurnComplete`（或取消）时使用此方法将活动组刷新到 `App.history`。
+    /// Callers use this on `TurnComplete` (or cancellation) to flush the
+    /// active group into `App.history`.
     pub fn drain(&mut self) -> Vec<HistoryCell> {
         let entries = std::mem::take(&mut self.entries);
         self.tool_to_entry.clear();
@@ -241,11 +254,12 @@ impl ActiveCell {
         entries
     }
 
-    /// 将每个仍在运行的条目标记为 `Failed`（在回合中途取消时使用）。
-    /// 已经完成的条目保持不变。
+    /// Mark every still-running tool entry as `Failed` (used when the turn is
+    /// cancelled mid-flight). Entries that already completed are left alone.
     ///
-    /// `Failed` 是最接近"已中断"的现有变体；单元格的
-    /// 周围上下文（回合状态横幅）告诉用户这是取消而非工具错误。
+    /// `Failed` is the closest existing variant for "interrupted"; the cell's
+    /// surrounding context (turn-status banner) tells the user it was a
+    /// cancellation rather than a tool error.
     pub fn mark_in_progress_as_interrupted(&mut self) {
         for cell in &mut self.entries {
             mark_running_as_interrupted(cell);
@@ -261,9 +275,9 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
         ..
     } = cell
     {
-        // 卡在流中间的思考单元格应在回合取消时停止旋转。
-        // 如果 `duration_secs` 已填充则保持不变；
-        // 否则渲染器简单地省略时长徽章。
+        // A thinking cell stuck mid-stream should stop spinning when the turn
+        // is cancelled. Leave `duration_secs` as-is if it's already populated;
+        // otherwise the renderer simply omits the duration badge.
         *streaming = false;
         let _ = duration_secs;
         return;
@@ -420,8 +434,8 @@ mod tests {
 
     #[test]
     fn thinking_then_tools_group_in_one_active_cell() {
-        // P2.3：发出 Thinking → Tool → Tool 的回合将所有内容保留在
-        // 一个活动单元格中，直到下一个散文块刷新组。
+        // P2.3: a turn that emits Thinking → Tool → Tool keeps everything in
+        // one active cell until the next prose chunk flushes the group.
         let mut cell = ActiveCell::new();
         cell.push_thinking(thinking_cell("plan…", true));
         cell.push_tool("t-1", exec_cell("ls"));

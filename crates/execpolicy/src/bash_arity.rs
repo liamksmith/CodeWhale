@@ -1,28 +1,29 @@
-//! 用于命令前缀允许规则匹配的 Bash 元数词典。
+//! Bash arity dictionary for command-prefix allow rule matching.
 //!
-//! [`BashArityDict`] 将命令前缀（空格分隔，小写）映射到
-//! 形成规范前缀的位置参数（非标志）词数，*包括基础命令词*。
+//! [`BashArityDict`] maps a command prefix (space-separated, lowercase) to the
+//! number of positional (non-flag) words, *including the base command word*,
+//! that form the canonical prefix.
 //!
-//! ## 不变式
+//! ## Invariant
 //!
-//! 标志（以 `-` 开头的令牌）**从不**计入元数。
-//! `auto_allow = ["git status"]` 必须匹配 `git status -s` 和
-//! `git status --porcelain`，但**不**匹配 `git push`。
+//! Flags (tokens starting with `-`) are **never** counted toward arity.
+//! `auto_allow = ["git status"]` must match `git status -s` and
+//! `git status --porcelain`, but **not** `git push`.
 //!
-//! ## 覆盖率
+//! ## Coverage
 //!
-//! 涵盖 30+ 个常用工具：git、npm、yarn、pnpm、cargo、docker、
-//! kubectl、go、python/pip、gh、rustup、deno、bun、aws、terraform、
-//! make 等。
+//! 30+ common tools are covered across: git, npm, yarn, pnpm, cargo, docker,
+//! kubectl, go, python/pip, gh, rustup, deno, bun, aws, terraform, make,
+//! and more.
 
-/// 静态元数表：`(prefix, arity)`。
+/// Static arity table: `(prefix, arity)`.
 ///
-/// 元数是形成规范前缀的*位置*令牌总数（包括基础命令）。
-/// 例如：
+/// Arity is the total number of *positional* tokens (including the base
+/// command) that form the canonical prefix.  For example:
 ///
-/// * `("git status", 2)` — 2 个位置令牌：`git` + `status`。
-/// * `("npm run", 3)` — 3 个位置令牌：`npm` + `run` + `<script>`。
-/// * `("make", 1)` — 只有基础命令，没有子命令。
+/// * `("git status", 2)` — 2 positional tokens: `git` + `status`.
+/// * `("npm run", 3)` — 3 positional tokens: `npm` + `run` + `<script>`.
+/// * `("make", 1)` — only the base command, no sub-command.
 pub static BASH_ARITY_TABLE: &[(&str, u8)] = &[
     // ── git ──────────────────────────────────────────────────────────────────
     ("git add", 2),
@@ -257,13 +258,13 @@ pub static BASH_ARITY_TABLE: &[(&str, u8)] = &[
     ("helm template", 2),
 ];
 
-/// Bash 命令前缀允许规则的元数字典。
+/// Arity dictionary for bash command-prefix allow rules.
 ///
-/// 提供元数感知的前缀提取，因此 `auto_allow = ["git status"]`
-/// 正确匹配 `git status -s` 和 `git status --porcelain`，
-/// 而不会也匹配 `git push`。
+/// Provides arity-aware prefix extraction so that `auto_allow = ["git status"]`
+/// correctly matches `git status -s` and `git status --porcelain` without
+/// also matching `git push`.
 ///
-/// # 示例
+/// # Example
 ///
 /// ```rust
 /// use codewhale_execpolicy::bash_arity::BashArityDict;
@@ -276,35 +277,36 @@ pub static BASH_ARITY_TABLE: &[(&str, u8)] = &[
 /// ```
 #[derive(Debug, Clone)]
 pub struct BashArityDict {
-    /// 内部表，最长前缀优先排序，用于贪婪匹配。
+    /// Internal table sorted longest-prefix-first for greedy matching.
     entries: Vec<(&'static str, u8)>,
 }
 
 impl BashArityDict {
-    /// 构造一个预加载了 [`BASH_ARITY_TABLE`] 的新字典。
+    /// Construct a new dictionary pre-loaded with [`BASH_ARITY_TABLE`].
     #[must_use]
     pub fn new() -> Self {
         let mut entries: Vec<(&'static str, u8)> = BASH_ARITY_TABLE.to_vec();
-        // 最长前缀优先，以便贪婪匹配正确工作。
+        // Longest prefix first so greedy matching works correctly.
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         Self { entries }
     }
 
-    /// 返回命令令牌切片的标准命令前缀。
+    /// Return the canonical command prefix for a slice of command tokens.
     ///
-    /// # 算法
+    /// # Algorithm
     ///
-    /// 1. 去掉所有标志令牌（以 `-` 开头的令牌）。
-    /// 2. 从位置令牌构建深度 1..=3 的候选（最长优先）。
-    /// 3. 如果候选匹配字典条目，返回用空格连接的 `arity` 个位置令牌。
-    /// 4. 如果没有字典条目匹配，返回单个基础命令名称。
+    /// 1. Strip all flag tokens (tokens that start with `-`).
+    /// 2. Build candidates of depth 1..=3 from positional tokens (longest first).
+    /// 3. If a candidate matches a dictionary entry, return `arity` positional
+    ///    tokens joined with spaces.
+    /// 4. If no dictionary entry matches, return the single base command name.
     #[must_use]
     pub fn classify(&self, tokens: &[&str]) -> String {
         if tokens.is_empty() {
             return String::new();
         }
 
-        // 收集位置（非标志）令牌，转为小写。
+        // Collect positional (non-flag) tokens, lowercased.
         let positional: Vec<String> = tokens
             .iter()
             .filter(|t| !t.starts_with('-'))
@@ -315,7 +317,7 @@ impl BashArityDict {
             return String::new();
         }
 
-        // 从最长到最短尝试候选（最大深度 3）。
+        // Try candidates from longest to shortest (max depth 3).
         let max_depth = positional.len().min(3);
         for depth in (1..=max_depth).rev() {
             let candidate = positional[..depth].join(" ");
@@ -329,38 +331,39 @@ impl BashArityDict {
             }
         }
 
-        // 无匹配：仅返回基础命令名称。
+        // No match: return base command name only.
         positional[0].clone()
     }
 
-    /// 如果允许规则 `pattern`（命令前缀字符串，例如 `"git status"`）
-    /// 匹配具体命令 `command`，则返回 `true`。
+    /// Return `true` if the allow-rule `pattern` (a command prefix string such
+    /// as `"git status"`) matches the concrete command `command`.
     ///
-    /// 匹配是元数感知的：
-    /// - `"git status"` 匹配 `"git status -s"` 和 `"git status --porcelain"`。
-    /// - `"git status"` **不**匹配 `"git push origin main"`。
-    /// - 精确字符串模式（例如 `"ls"`）仍然像以前一样工作。
+    /// Matching is arity-aware:
+    /// - `"git status"` matches `"git status -s"` and `"git status --porcelain"`.
+    /// - `"git status"` does **not** match `"git push origin main"`.
+    /// - Exact string patterns (e.g. `"ls"`) still work as before.
     ///
-    /// 对于不在元数表中的模式，函数回退到规范化命令上的纯前缀测试，
-    /// 以便现有的精确匹配规则继续不变地工作。
+    /// For patterns that are not in the arity table, the function falls back to
+    /// a plain prefix test on the normalised command so that existing exact-match
+    /// rules continue to work unchanged.
     #[must_use]
     pub fn allow_rule_matches(&self, pattern: &str, command: &str) -> bool {
         let pattern_lower = pattern.trim().to_ascii_lowercase();
         let command_tokens: Vec<&str> = command.split_whitespace().collect();
 
-        // 通过元数字典分类具体命令。
+        // Classify the concrete command through the arity dictionary.
         let canonical = self.classify(&command_tokens);
 
-        // 主要检查：分类的前缀等于允许规则模式。
+        // Primary check: the classified prefix equals the allow-rule pattern.
         if canonical == pattern_lower {
             return true;
         }
 
-        // 回退：对不在元数表中的模式进行词边界前缀匹配。
-        // 匹配精确模式或模式后跟空格（即在词边界），
-        // 因此 "ls" 匹配 "ls" 和 "ls -la" 但**不**匹配 "lsof"。
+        // Fallback: word-boundary prefix match for patterns not in the arity table.
+        // Matches the exact pattern or the pattern followed by a space (i.e., at
+        // word boundary), so "ls" matches "ls" and "ls -la" but NOT "lsof".
         let command_lower = command.trim().to_ascii_lowercase();
-        // 比较前规范化两侧的空格。
+        // Normalise whitespace in both sides before comparing.
         let pattern_norm: String = pattern_lower
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -374,18 +377,18 @@ impl BashArityDict {
                 && command_norm.as_bytes().get(pattern_norm.len()) == Some(&b' '))
     }
 
-    /// 遍历字典中的所有条目。
+    /// Iterate over all entries in the dictionary.
     pub fn entries(&self) -> impl Iterator<Item = (&str, u8)> {
         self.entries.iter().map(|(k, v)| (*k, *v))
     }
 
-    /// 返回字典中的条目数。
+    /// Return the number of entries in the dictionary.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// 如果字典为空则返回 `true`。
+    /// Return `true` if the dictionary is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -545,7 +548,7 @@ mod tests {
 
     #[test]
     fn allow_rule_exact_match_still_works() {
-        // 一个不在元数表中的模式回退到精确/前缀匹配。
+        // A pattern not in the arity table falls back to exact/prefix match.
         assert!(dict().allow_rule_matches("ls", "ls -la"));
     }
 
@@ -558,18 +561,18 @@ mod tests {
     #[test]
     fn allow_rule_aws_s3_ls() {
         assert!(dict().allow_rule_matches("aws s3 ls", "aws s3 ls"));
-        // "aws s3 cp" 不应匹配 "aws s3 ls"
+        // "aws s3 cp" should not match "aws s3 ls"
         assert!(!dict().allow_rule_matches("aws s3 ls", "aws s3 cp src dst"));
     }
 
-    // ── 覆盖率计数 ────────────────────────────────────────────────────────
+    // ── coverage count ────────────────────────────────────────────────────────
 
     #[test]
     fn dict_covers_at_least_30_commands() {
-        // 问题要求涵盖 30+ 个常用命令。
+        // The issue requires 30+ common commands covered.
         assert!(
             BashArityDict::new().len() >= 30,
-            "预期至少 30 个条目，得到 {}",
+            "expected at least 30 entries, got {}",
             BashArityDict::new().len()
         );
     }

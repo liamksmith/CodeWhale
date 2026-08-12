@@ -1,6 +1,6 @@
-//! 递归语言模型（RLM）循环 — 论文规范算法 1。
+//! Recursive Language Model (RLM) loop — paper-spec Algorithm 1.
 //!
-//! 实现 Zhang, Kraska & Khattab（arXiv:2512.24601，§2 算法 1）：
+//! Implements Zhang, Kraska & Khattab (arXiv:2512.24601, §2 Algorithm 1):
 //!
 //! ```text
 //! state ← InitREPL(prompt=P)
@@ -14,10 +14,13 @@
 //!         return state[Final]
 //! ```
 //!
-//! 不变量：
-//! - `P` 仅作为 REPL 变量（`context` / `ctx`）持有；绝不会出现在根 LLM 的窗口中。
-//! - 根 LLM 接收小的元数据消息 — 长度、预览、辅助函数列表、上一轮摘要。
-//! - 代码轮次和子 LLM 调用通过单一的 stdin/stdout 管道传输到长期运行的 Python 子进程。无需 HTTP 边车。
+//! Invariants:
+//! - `P` is held only as a REPL variable (`context` / `ctx`); never
+//!   appears in the root LLM's window.
+//! - The root LLM receives small metadata messages — length, preview,
+//!   helper list, prior-round summary.
+//! - Code rounds and sub-LLM calls travel over a single stdin/stdout
+//!   pipe to a long-lived Python subprocess. No HTTP sidecar.
 
 use crate::models::Usage;
 

@@ -1,10 +1,12 @@
-//! 斜杠命令自动补全 + 弹出菜单辅助函数。
+//! Slash-command autocomplete + popup-menu helpers.
 //!
-//! 从 `tui/ui.rs` (P1.2) 中提取。屏幕上的弹出框本身由 composer 组件渲染；
-//! 这些辅助函数负责提供条目、应用选择，以及在弹出框未打开时处理 Tab 补全。
+//! Extracted from `tui/ui.rs` (P1.2). The on-screen popup itself is rendered
+//! by the composer widget; these helpers source the entries, apply a
+//! selection, and handle Tab-completion when the popup isn't open.
 //!
-//! 有意与 `tui::file_mention` 分开，尽管两者都展示类似的弹出框——
-//! 但触发字符、排序和选中后的行为差异足够大，需要保持分离。
+//! Intentionally separate from `tui::file_mention` even though both surface
+//! a similar popup — the trigger characters, ranking, and post-selection
+//! behaviour differ enough to keep them apart.
 
 use crate::commands;
 
@@ -13,8 +15,8 @@ use super::model_picker::provider_scoped_model_completion_ids;
 use super::widgets::SlashMenuEntry;
 use super::widgets::slash_completion_hints_with_model_candidates;
 
-/// 返回 composer 应显示的斜杠菜单条目，尊重
-/// `slash_menu_hidden`（当用户按 Esc 关闭弹出框时设置）。
+/// Return the slash-menu entries the composer should display, honouring
+/// `slash_menu_hidden` (set when the user dismisses the popup with Esc).
 pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry> {
     if app.slash_menu_hidden {
         return Vec::new();
@@ -36,9 +38,9 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
     )
 }
 
-/// 将当前选中的斜杠菜单条目应用到 composer 输入中。
-/// 当命令需要参数时，可选地追加一个尾随空格，
-/// 这样用户无需额外按键即可继续输入。
+/// Apply the currently-selected slash menu entry to the composer input.
+/// Optionally appends a trailing space when the command takes arguments
+/// so the user can type the rest without an extra keystroke.
 pub fn apply_slash_menu_selection(
     app: &mut App,
     entries: &[SlashMenuEntry],
@@ -82,9 +84,10 @@ pub fn apply_slash_menu_selection(
     true
 }
 
-/// 当在普通消息中用作内联提及（mention）时，返回光标下的 `/<skill>` 或 `$<skill>` 令牌。
-/// composer 开头的 `/` 或 `$`，即使前面有空白字符，仍保留给斜杠命令使用
-///（由 `slash_completion_hints` 处理）。
+/// Return the `/<skill>` or `$<skill>` token under the cursor when it is used as
+/// an inline mention inside a normal message. A `/` or `$` at the start of the
+/// composer, even after leading whitespace, remains reserved for slash commands
+/// (handled by `slash_completion_hints`).
 pub(crate) fn partial_inline_skill_mention_at_cursor(
     input: &str,
     cursor_chars: usize,
@@ -211,10 +214,10 @@ fn replace_inline_skill_mention(
     app.cursor_position = new_cursor_chars;
 }
 
-/// 对类似斜杠命令的输入进行 Tab 补全。将输入扩展到最长的无歧义前缀；
-/// 如果恰好有一个命令匹配，则完整补全它（带尾随空格）。
-/// 如果存在歧义，则发布一条状态提示，列出最多五个候选项。
-/// 同时将技能名称作为补全候选项。
+/// Tab-completion for a slash-command-like input. Extends the input to the
+/// longest unambiguous prefix; if exactly one command matches, completes it
+/// fully (with trailing space). On ambiguity, posts a status hint listing
+/// up to five candidates. Also considers skill names as completion candidates.
 pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
     if !looks_like_slash_command_input(&app.input) {
         return false;

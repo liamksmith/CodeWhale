@@ -1,6 +1,8 @@
-//! 从 PTY 输出流构建的终端帧快照。
+//! Terminal frame snapshot built from the PTY output stream.
 //!
-//! 包装 `vt100::Parser`，以便测试可以增量地提供字节并查询当前屏幕内容（可见文本、单独的行、是否包含指定内容）。
+//! Wraps `vt100::Parser` so tests can feed bytes incrementally and ask
+//! questions about the current screen contents (visible text, individual rows,
+//! does-it-contain-this).
 
 use std::time::Instant;
 
@@ -33,13 +35,15 @@ impl Frame {
         self.parser.screen().size().1
     }
 
-    /// 完整的可见屏幕，作为单个字符串，行之间以 `\n` 分隔。
-    /// 每行尾部空白被保留，以便列位置断言保持有意义。
+    /// Full visible screen as a single string with a `\n` between rows.
+    /// Trailing whitespace on each row is preserved so column-position
+    /// assertions stay meaningful.
     pub fn text(&self) -> String {
         self.parser.screen().contents()
     }
 
-    /// 屏幕的单行，从顶部开始 0 索引，在右侧边缘修整。对越界行返回空字符串。
+    /// Single row of the screen, 0-indexed from the top, trimmed at the
+    /// right edge. Returns the empty string for out-of-range rows.
     pub fn row(&self, y: u16) -> String {
         if y >= self.rows() {
             return String::new();
@@ -58,17 +62,20 @@ impl Frame {
         self.text().contains(needle)
     }
 
-    /// 屏幕是否有任何行包含非空白内容。用于检测完全分离/空白的视口。
+    /// Whether any row of the screen has non-blank content. Used to detect a
+    /// fully detached / blank viewport.
     pub fn any_visible_text(&self) -> bool {
         self.text().chars().any(|c| !c.is_whitespace())
     }
 
-    /// 光标位置为 (row, col)。用于断言编辑器拥有光标（#1073）或光标不在第 0 行的中间帧。
+    /// Cursor position as (row, col). Useful for asserting the composer
+    /// owns the cursor (#1073) or that it is not at row 0 mid-frame.
     pub fn cursor(&self) -> (u16, u16) {
         self.parser.screen().cursor_position()
     }
 
-    /// 将屏幕渲染为字符串，用于断言失败时的诊断转储。
+    /// Render the screen to a string for diagnostic dumps when an
+    /// assertion fails.
     pub fn debug_dump(&self) -> String {
         let (rows, cols) = (self.rows(), self.cols());
         let mut out = String::new();

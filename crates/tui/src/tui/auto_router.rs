@@ -1,12 +1,12 @@
-//! 自动路由辅助函数：决定何时咨询自动路由闪念模型，
-//! 以及构建它看到的小上下文窗口。
+//! Auto-routing helpers: deciding when to consult the auto-route flash
+//! model, and building the small context window it sees.
 //!
-//! 当 `app.auto_model` 设置时，TUI 在每个用户轮次调用一次
-//! `resolve_auto_model_selection`。这个异步函数从 `api_messages`
-//! 构建一个近期上下文摘要（最多六行，每行最多 900 字符），
-//! 通过 `model_routing::resolve_auto_route_with_inventory` 传递它，
-//! 并返回选择结果（模型 + 推理力度）。其余辅助函数是用于构建
-//! 该摘要的纯转换函数。
+//! The TUI calls `resolve_auto_model_selection` once per user turn when
+//! `app.auto_model` is set. The async function builds a recent-context
+//! summary from `api_messages` (capped to six rows of up to 900 chars
+//! each), passes it through `model_routing::resolve_auto_route_with_inventory`,
+//! and returns the selection (model + reasoning effort). The remaining
+//! helpers are pure transforms used to build that summary.
 
 use anyhow::Result;
 
@@ -15,13 +15,13 @@ use crate::model_routing;
 use crate::models::{ContentBlock, Message};
 use crate::tui::app::{App, QueuedMessage, ReasoningEffort};
 
-/// 下一个轮次是否应咨询自动路由闪念模型。
+/// Whether the next turn should consult the auto-route flash model.
 pub(super) fn should_resolve_auto_model_selection(app: &App) -> bool {
     app.auto_model
 }
 
-/// 使用用户的草稿 + 短近期上下文窗口调用自动路由闪念模型。
-/// 返回选中的模型和推理力度。
+/// Call the auto-route flash model with the user's draft + a short
+/// recent-context window. Returns the selected model and effort.
 pub(super) async fn resolve_auto_model_selection(
     app: &App,
     config: &Config,
@@ -45,18 +45,18 @@ pub(super) async fn resolve_auto_model_selection(
     .await
 }
 
-/// 将启发式推理力度归一化为规范的自动路由推理力度。
+/// Normalize the heuristic effort to the canonical auto-route effort.
 pub(super) fn normalize_auto_routed_effort(effort: ReasoningEffort) -> ReasoningEffort {
     model_routing::normalize_auto_route_effort(effort)
 }
 
-/// 为自动路由提示词构建紧凑的近期上下文摘要。
+/// Build a compact recent-context summary for the auto-route prompt.
 ///
-/// 从最近的一个轮次开始反向遍历 `api_messages`，跳过
-/// 最终的草稿（它是路由器被要求分类的对象），
-/// 收集最多六行非空行，然后反转使提示词按从旧到新
-/// 的顺序阅读。每行的格式为 `<role>: <截断的内容>`，
-/// 上限为 900 字符。
+/// Walks `api_messages` from the most recent turn back, skipping the
+/// final draft (which is what the router is being asked to classify),
+/// collects up to six non-empty rows, and reverses them so the prompt
+/// reads oldest-first. Each row is `<role>: <truncated content>` and
+/// is capped at 900 characters.
 pub(super) fn recent_auto_router_context(messages: &[Message]) -> String {
     let mut rows = Vec::new();
     for message in messages.iter().rev().skip(1) {
@@ -76,7 +76,7 @@ pub(super) fn recent_auto_router_context(messages: &[Message]) -> String {
     }
     rows.reverse();
     if rows.is_empty() {
-        "无先前上下文。".to_string()
+        "No prior context.".to_string()
     } else {
         rows.join("\n")
     }
@@ -91,10 +91,10 @@ fn content_blocks_text(blocks: &[ContentBlock]) -> String {
             }
             ContentBlock::Thinking { .. } => {}
             ContentBlock::ToolUse { name, .. } => {
-                append_router_text(&mut out, &format!("[工具调用：{name}]"));
+                append_router_text(&mut out, &format!("[tool call: {name}]"));
             }
             ContentBlock::ToolResult { content, .. } => {
-                append_router_text(&mut out, &format!("[工具结果] {content}"));
+                append_router_text(&mut out, &format!("[tool result] {content}"));
             }
             _ => {}
         }
@@ -144,8 +144,8 @@ mod tests {
 
     #[test]
     fn recent_auto_router_context_skips_final_message_and_caps_rows() {
-        // 八条消息；最后一条（正在路由的草稿）被跳过，
-        // 因此我们期望最多从剩余的七条中获取六条。
+        // Eight messages; final one (the draft being routed) is skipped,
+        // so we expect at most six of the remaining seven.
         let msgs: Vec<Message> = (0..8)
             .map(|i| {
                 make_msg(
@@ -155,17 +155,17 @@ mod tests {
             })
             .collect();
         let context = recent_auto_router_context(&msgs);
-        assert!(!context.contains("turn 7"), "最终草稿必须被跳过");
+        assert!(!context.contains("turn 7"), "final draft must be skipped");
         let row_count = context.lines().count();
         assert_eq!(row_count, 6);
-        // 输出按从旧到新的顺序。
+        // Output is oldest-first.
         let first = context.lines().next().unwrap();
-        assert!(first.contains("turn 1"), "实际：{context}");
+        assert!(first.contains("turn 1"), "got: {context}");
     }
 
     #[test]
     fn recent_auto_router_context_handles_empty_history() {
-        assert_eq!(recent_auto_router_context(&[]), "无先前上下文。");
+        assert_eq!(recent_auto_router_context(&[]), "No prior context.");
     }
 
     #[test]
@@ -176,21 +176,21 @@ mod tests {
                 content: vec![
                     ContentBlock::Thinking {
                         signature: None,
-                        thinking: "用户似乎在让我对自己进行分类。".to_string(),
+                        thinking: "The user seems to be asking me to classify myself.".to_string(),
                     },
                     ContentBlock::Text {
-                        text: "可见的助手回答。".to_string(),
+                        text: "Visible assistant answer.".to_string(),
                         cache_control: None,
                     },
                 ],
             },
-            make_msg("user", "最新草稿"),
+            make_msg("user", "latest draft"),
         ];
 
         let context = recent_auto_router_context(&msgs);
 
-        assert!(context.contains("可见的助手回答。"));
-        assert!(!context.contains("用户似乎在"));
-        assert!(!context.contains("最新草稿"));
+        assert!(context.contains("Visible assistant answer."));
+        assert!(!context.contains("The user seems"));
+        assert!(!context.contains("latest draft"));
     }
 }

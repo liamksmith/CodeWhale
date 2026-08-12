@@ -1,4 +1,4 @@
-//! 保留的工具输出渲染和行选择。
+//! Preserved tool-output rendering and line selection.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -37,11 +37,12 @@ pub struct OutputRow {
     pub intact: bool,
 }
 
-/// 启发式判断：输出是否看起来像统一 diff？当输出包含至少一个代码块头部
-///（`@@`）或 `diff --git` 行时返回 true，这些是统一 diff 内容的可靠标记（#380）。
+/// Heuristic: does the output look like a unified diff? Returns true when
+/// the output contains at least one hunk header (`@@`) or a `diff --git`
+/// line, which are reliable markers of unified diff content (#380).
 pub(crate) fn output_looks_like_diff(output: &str) -> bool {
     let mut lines = output.lines();
-    // 检查前 5 行是否有 diff 标记
+    // Check first 5 lines for diff markers
     for _ in 0..5 {
         let Some(line) = lines.next() else { break };
         let trimmed = line.trim();
@@ -247,14 +248,14 @@ pub fn summarize_tool_output(output: &str) -> String {
     truncate_text(output, TOOL_TEXT_LIMIT)
 }
 
-/// 从 MCP 工具输出载荷中提取的摘要信息。
+/// Summary information extracted from an MCP tool output payload.
 pub struct McpOutputSummary {
     pub content: Option<String>,
     pub is_image: bool,
     pub is_error: Option<bool>,
 }
 
-/// 将原始 MCP 输出摘要为对 UI 友好的内容。
+/// Summarize raw MCP output into UI-friendly content.
 #[must_use]
 pub fn summarize_mcp_output(output: &str) -> McpOutputSummary {
     if let Ok(json) = serde_json::from_str::<Value>(output) {
@@ -344,9 +345,9 @@ fn render_preserved_output_mode(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if output.trim().is_empty() {
-        // #3031：在紧凑/活跃模式下，抑制"(no output)"——工具
-        // 头部已经携带了成功/失败状态。抄本
-        // 模式仍然为导出/剪贴板/分页器记录它。
+        // #3031: In compact/Live mode, suppress "(no output)" — the tool
+        // header already carries the success/failure status. Transcript
+        // mode still records it for exports/clipboard/pager.
         if mode == RenderMode::Transcript {
             lines.push(Line::from(Span::styled(
                 "  (no output)",
@@ -356,7 +357,7 @@ fn render_preserved_output_mode(
         return lines;
     }
 
-    // 哈希一次；在下面的行缓存和索引缓存中复用。
+    // Hash once; reuse for both the rows cache and the indices cache below.
     let content_hash = crate::tui::output_rows_cache::hash_str(output);
     let all_lines =
         crate::tui::output_rows_cache::get_or_compute_rows_with_hash(content_hash, width, || {
@@ -364,8 +365,8 @@ fn render_preserved_output_mode(
         });
 
     if matches!(mode, RenderMode::Transcript) {
-        // 完整内容路径：输出每个换行行，不进行头部/尾部拆分，
-        // 没有 "+N more" 提示。
+        // Full-content path: emit every wrapped line with no head/tail split,
+        // no "+N more" affordance.
         for (idx, row) in all_lines.iter().enumerate() {
             render_output_row(
                 &mut lines,
@@ -520,10 +521,11 @@ fn is_path_or_url_like(line: &str) -> bool {
     has_separator && has_extension
 }
 
-/// 检测一行文本是否包含 `path:line` 模式，可以通过
-/// `try_open_file_at_line` 打开。当模式匹配时返回一个独特的样式
-///（下划线 + 蓝色），否则返回 `None`。
-/// 该样式应用于现有的值样式之上，使行保持可读。
+/// Detect whether a line contains a `path:line` pattern that could be
+/// opened by `try_open_file_at_line`. Returns a distinctive style
+/// (underline + blue) when the pattern matches, or `None` otherwise.
+/// The style is applied over the existing value style so the line
+/// remains readable.
 fn file_line_style(text: &str) -> Option<Style> {
     let trimmed = text.trim();
     if let Some((before, after)) = trimmed.rsplit_once(':')
@@ -541,13 +543,13 @@ fn file_line_style(text: &str) -> Option<Style> {
     }
 }
 
-/// 对单行文本应用内联 diff 高亮。
+/// Apply inline diff highlighting to a single text line.
 ///
-/// 根据行的前缀返回适当的样式：
-/// - 以 `+` 开头的行（trim 后）=> `palette::DIFF_ADDED`（绿色）
-/// - 以 `-` 开头的行（trim 后）=> `palette::STATUS_ERROR`（红色）
-/// - 以 `@@` 开头的行 => `palette::WHALE_INFO`（青色/蓝色）
-/// - 所有其他行 => None（使用默认样式）
+/// Returns the appropriate style for the line based on its prefix:
+/// - Lines starting with `+` (after trimming) => `palette::DIFF_ADDED` (green)
+/// - Lines starting with `-` (after trimming) => `palette::STATUS_ERROR` (red)
+/// - Lines starting with `@@` => `palette::WHALE_INFO` (cyan/blue)
+/// - All other lines => None (use default style)
 fn diff_line_style(text: &str) -> Option<Style> {
     let trimmed = text.trim_start();
     if trimmed.starts_with("@@") {
@@ -567,9 +569,10 @@ fn render_output_row(
     row: &OutputRow,
     width: u16,
 ) {
-    // #374：当行文本包含 `path:line` 模式时应用文件:行高亮。
-    // diff 样式优先（有颜色的前缀行应保持颜色），但如果
-    // 没有匹配的 diff 样式，则检查文件:行模式并独特色高亮它。
+    // #374: apply file:line highlighting when the row text contains
+    // a `path:line` pattern. Diff style takes precedence (colored
+    // prefix lines should stay colored), but if no diff style matched,
+    // check for a file:line pattern and highlight it distinctively.
     let diff_style = diff_line_style(&row.text);
     let file_style = file_line_style(&row.text);
     let value_style = diff_style.or(file_style).unwrap_or_else(tool_value_style);

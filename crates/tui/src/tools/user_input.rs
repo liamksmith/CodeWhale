@@ -1,4 +1,4 @@
-//! 通过 TUI 请求用户输入的工具和类型。
+//! Tool and types for requesting user input via the TUI.
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -19,11 +19,12 @@ pub struct UserInputQuestion {
     pub id: String,
     pub question: String,
     pub options: Vec<UserInputOption>,
-    /// 当为 `true` 时，模态框除了固定选项外还提供一个自由文本的"其他"响应。
-    /// 默认为 `false` 以向后兼容（省略此字段的旧负载获得之前的行为）。
+    /// When `true`, the modal offers a free-text "Other" response in addition
+    /// to the fixed options. Defaults to `false` for backwards compatibility
+    /// (older payloads omitting the field get the previous behavior).
     #[serde(default)]
     pub allow_free_text: bool,
-    /// 当为 `true` 时，用户可以在确认前选择多个选项。
+    /// When `true`, the user may select more than one option before confirming.
     #[serde(default)]
     pub multi_select: bool,
 }
@@ -210,8 +211,9 @@ mod tests {
 
     #[test]
     fn from_value_accepts_four_options_and_flags() {
-        // 与 tools/subagent/tests.rs 中使用的 json! 字面量风格一致，
-        // 并测试来自 issue #3102 的模式放宽：4 个选项（之前上限为 3）加上新的 allow_free_text / multi_select 标志。
+        // Mirrors the json!-literal style used in tools/subagent/tests.rs and
+        // exercises the schema-loosening from issue #3102: 4 options (was capped
+        // at 3) plus the new allow_free_text / multi_select flags.
         let input = json!({
             "questions": [{
                 "header": "Scope",
@@ -236,7 +238,8 @@ mod tests {
 
     #[test]
     fn from_value_defaults_flags_when_omitted() {
-        // 向后兼容：省略了新布尔字段的旧负载仍必须能解析，两者默认为 false。
+        // Backwards compatibility: a legacy payload omitting the new boolean
+        // fields must still parse, defaulting both to false.
         let input = json!({
             "questions": [{
                 "header": "Pick",

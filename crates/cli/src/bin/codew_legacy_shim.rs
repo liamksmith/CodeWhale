@@ -1,7 +1,7 @@
-//! 便捷的 `codew` 别名。
-//! 
-//! 这个文件是 codew 这个快捷命令的入口点。它只是一个转发器（shim），把命令行参数原封不动地传给真正的 codewhale 程序。
-//! 因为 codew 比 codewhale 少打6 个字母，是永久性的短别名。
+//! Convenience `codew` alias.
+//!
+//! Forwards argv to the `codewhale` dispatcher silently. This is a
+//! permanent short-form alias — six fewer keystrokes, same binary.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,8 @@ fn main() {
 }
 
 fn spawn_codewhale(args: &[String]) -> std::io::Result<std::process::ExitStatus> {
-    // 优先使用安装在此 shim 旁边的调度器。先回退到 PATH 可能会在全新安装后静默运行旧版本的全局 `codewhale`。
+    // Prefer the dispatcher installed next to this shim. Falling back to PATH
+    // first can silently run an older global `codewhale` after a fresh install.
     if let Ok(exe_path) = env::current_exe()
         && let Some(sibling) = sibling_codewhale_path(&exe_path)
         && sibling.is_file()
@@ -35,7 +36,7 @@ fn spawn_codewhale(args: &[String]) -> std::io::Result<std::process::ExitStatus>
         return Command::new(sibling).args(args).status();
     }
 
-    // 对于仅提供 shim 的非常规安装，回退到 PATH。
+    // Fall back to PATH for unusual installs that ship only the shim.
     match Command::new("codewhale").args(args).status() {
         Ok(s) => return Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

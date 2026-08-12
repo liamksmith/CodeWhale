@@ -1,4 +1,4 @@
-//! 通过 stdio 暴露 DeepSeek 工具的 MCP 服务器实现。
+//! MCP server implementation for exposing DeepSeek tools over stdio.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
@@ -81,10 +81,10 @@ struct McpServer {
     registry: crate::tools::ToolRegistry,
     exposed_tools: Vec<ExposedTool>,
     require_approval: bool,
-    /// 基于线程的对话状态，用于 deepseek/deepseek-reply 工具。
-    /// 将 thread_id 映射到对话中按顺序排列的消息列表。
+    /// Thread-based conversation state for deepseek/deepseek-reply tools.
+    /// Maps thread_id -> ordered list of messages in the conversation.
     threads: Arc<Mutex<HashMap<String, Vec<Message>>>>,
-    /// 单调递增的请求计数器，用于通知关联。
+    /// Monotonic request counter for notification correlation.
     next_notification_id: u64,
 }
 
@@ -301,7 +301,7 @@ impl McpServer {
                 message: format!("Tool not exposed: {name}"),
             })?;
 
-        // 原生处理 deepseek 和 deepseek-reply
+        // Handle deepseek and deepseek-reply natively
         if internal == "deepseek" || internal == "deepseek-reply" {
             let arguments = params
                 .get("arguments")
@@ -318,12 +318,12 @@ impl McpServer {
         Ok(tool_result_to_mcp(result))
     }
 
-    /// 处理 `deepseek` 或 `deepseek-reply` 工具调用。
+    /// Handle a `deepseek` or `deepseek-reply` tool call.
     ///
-    /// 直接使用 `DeepSeekClient`（而不是完整引擎）发送提示词
-    /// 并返回响应。对于 `deepseek`，会创建新的线程；对于
-    /// `deepseek-reply`，调用方提供 `thread_id` 来继续
-    /// 现有对话。
+    /// Uses `DeepSeekClient` directly (not the full engine) to send a prompt
+    /// and return the response. For `deepseek` a new thread is created; for
+    /// `deepseek-reply` the caller supplies a `thread_id` to continue an
+    /// existing conversation.
     fn handle_deepseek_call(
         &mut self,
         runtime: &Runtime,
@@ -344,9 +344,9 @@ impl McpServer {
             .and_then(Value::as_str)
             .unwrap_or("deepseek-v4-pro");
 
-        // 解析 thread_id
+        // Resolve thread_id
         let thread_id = if internal_name == "deepseek" {
-            // 新线程
+            // New thread
             Uuid::new_v4().to_string()
         } else {
             arguments
@@ -359,7 +359,7 @@ impl McpServer {
                 .to_string()
         };
 
-        // 加载配置并创建客户端
+        // Load config and create client
         let config = Config::load(None, None).map_err(|e| RpcError {
             code: -32000,
             message: format!("Failed to load config: {e}"),
@@ -369,7 +369,7 @@ impl McpServer {
             message: format!("Failed to create DeepSeek client: {e}"),
         })?;
 
-        // 构建消息列表
+        // Build message list
         let user_message = Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -390,7 +390,7 @@ impl McpServer {
             existing
         };
 
-        // 发送 API 请求（基础版本为非流式）
+        // Send the API request (non-streaming for the basic version)
         let request = MessageRequest {
             model: model.to_string(),
             messages: messages.clone(),
@@ -413,7 +413,7 @@ impl McpServer {
                 message: format!("DeepSeek API call failed: {e}"),
             })?;
 
-        // 从内容块中提取响应文本
+        // Extract response text from content blocks
         let response_text = response
             .content
             .iter()
@@ -429,13 +429,13 @@ impl McpServer {
 
         let usage = &response.usage;
 
-        // 在线程中存储助手响应
+        // Store the assistant response in the thread
         {
             let mut thread = self.threads.lock().unwrap_or_else(|e| e.into_inner());
             let convo = thread.entry(thread_id.clone()).or_default();
-            // 如果是 deepseek，现在只有用户消息；如果是 deepseek-reply，
-            // 用户消息已经追加到上方克隆的 messages 中，但我们还需要
-            // 将其追加到存储线程中，然后再追加助手响应。
+            // If deepseek, we already have just the user message; if deepseek-reply,
+            // the user message was appended to the cloned messages above but we need
+            // to also append it to the stored thread and then the assistant response.
             if internal_name == "deepseek" {
                 convo.push(Message {
                     role: "user".to_string(),
@@ -454,14 +454,14 @@ impl McpServer {
             });
         }
 
-        // 发出通知/消息，以便客户端可以关联响应
+        // Emit a notification/message so the client can correlate the response
         let notification_id = {
             let nid = self.next_notification_id;
             self.next_notification_id += 1;
             nid
         };
 
-        // 将通知写入标准输出
+        // Write notification to stdout
         let notification = json!({
             "jsonrpc": "2.0",
             "method": "notifications/message",
@@ -528,7 +528,7 @@ fn build_exposed_tools(names: &[String]) -> Vec<ExposedTool> {
             "shell" => "exec_shell",
             "search" => "grep_files",
             "file_search" => "file_search",
-            // deepseek 和 deepseek-reply 在 call_tool 中原生处理
+            // deepseek and deepseek-reply are handled natively in call_tool
             "deepseek" | "deepseek-reply" => trimmed,
             other => other,
         }

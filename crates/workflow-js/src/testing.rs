@@ -1,10 +1,10 @@
-//! 测试支持：可脚本化的内存中 [`WorkflowDriver`]。
+//! Test support: a scriptable in-memory [`WorkflowDriver`].
 //!
-//! [`FakeDriver`] 记录它收到的每个 [`TaskRequest`] 和 [`ProgressEvent`]，
-//! 根据子串匹配的回复规则（带有可选的延迟用于排序测试）回答 spawn 请求，
-//! 并统计 `cancel_all` 调用次数。它的存在使得此 crate ——
-//! 以及实现真实驱动的 tui 连接代码 —— 可以在不产生任何真实子代理的情况下
-//! 进行测试。
+//! [`FakeDriver`] records every [`TaskRequest`] and [`ProgressEvent`] it
+//! receives, answers spawns from substring-matched reply rules (with optional
+//! delays for ordering tests), and counts `cancel_all` calls. It exists so
+//! this crate — and the tui wiring that implements the real driver — can be
+//! exercised without spawning a single real subagent.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,21 +18,21 @@ use crate::driver::{
 };
 use crate::error::DriverError;
 
-/// 假驱动如何回答匹配的 spawn 请求。
+/// How the fake answers a matched spawn.
 #[derive(Debug, Clone)]
 pub enum FakeReply {
-    /// 使用此完整结果文本解析。
+    /// Resolve with this full result text.
     Complete(String),
-    /// 解析为失败的子代理。
+    /// Resolve as a failed subagent.
     Fail(String),
-    /// 解析为已取消。
+    /// Resolve as cancelled.
     Cancelled,
-    /// 解析为预算耗尽（中途）。
+    /// Resolve as budget-exhausted mid-flight.
     BudgetExhausted(String),
-    /// 拒绝准入：`spawn_task` 返回 [`DriverError::Rejected`]。
+    /// Refuse admission: `spawn_task` returns [`DriverError::Rejected`].
     Reject(String),
-    /// 接受任务但永不完成（用于取消测试）。
-    /// 持有完成发送者以使通道保持打开状态。
+    /// Admit the task but never complete it (for cancellation tests). The
+    /// completion sender is held so the channel stays open.
     Never,
 }
 
@@ -54,10 +54,10 @@ struct Inner {
     held: Vec<oneshot::Sender<TaskCompletion>>,
 }
 
-/// 具有脚本化回复的内存中 [`WorkflowDriver`]。
+/// In-memory [`WorkflowDriver`] with scripted replies.
 ///
-/// 未匹配的 spawn 会立即以 `done:<description>` 完成。
-/// 规则通过对请求描述的子串匹配来确定，首个匹配获胜。
+/// Unmatched spawns complete immediately with `done:<description>`. Rules are
+/// matched by substring against the request description, first match wins.
 #[derive(Debug, Default)]
 pub struct FakeDriver {
     inner: Mutex<Inner>,
@@ -65,19 +65,19 @@ pub struct FakeDriver {
 }
 
 impl FakeDriver {
-    /// 一个没有规则、没有预算上限且具有回显回复的假驱动。
+    /// A fake with no rules, no budget ceiling, and echo replies.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 添加一个回复规则：描述包含 `needle` 的请求会
-    /// 立即获得 `reply`。
+    /// Add a reply rule: requests whose description contains `needle` get
+    /// `reply` immediately.
     pub fn on(&self, needle: &str, reply: FakeReply) {
         self.on_with_delay_opt(needle, reply, None);
     }
 
-    /// 类似 [`FakeDriver::on`]，但在延迟 `delay` 后发送完成
-    ///（spawn 本身仍立即返回）。
+    /// Like [`FakeDriver::on`], but the completion is delivered after `delay`
+    /// (the spawn itself still returns immediately).
     pub fn on_with_delay(&self, needle: &str, reply: FakeReply, delay: Duration) {
         self.on_with_delay_opt(needle, reply, Some(delay));
     }
@@ -90,20 +90,20 @@ impl FakeDriver {
         });
     }
 
-    /// 配置预算池：上限加上每次 spawn 时的固定消耗
-    ///（模拟驱动侧的设计 §5.3 预留）。
+    /// Configure the budget pool: ceiling plus a fixed spend debited at each
+    /// spawn (simulating the driver-side reservation of design §5.3).
     pub fn set_budget(&self, total: Option<u64>, spend_per_task: u64) {
         let mut inner = self.lock();
         inner.budget = BudgetSnapshot { total, spent: 0 };
         inner.spend_per_task = spend_per_task;
     }
 
-    /// 迄今为止收到的每个请求，按 spawn 顺序排列。
+    /// Every request received so far, in spawn order.
     pub fn requests(&self) -> Vec<TaskRequest> {
         self.lock().requests.clone()
     }
 
-    /// 每个请求的描述，按 spawn 顺序排列。
+    /// Descriptions of every request, in spawn order.
     pub fn request_descriptions(&self) -> Vec<String> {
         self.lock()
             .requests
@@ -112,23 +112,23 @@ impl FakeDriver {
             .collect()
     }
 
-    /// 已接受的 spawn 调用次数。
+    /// Number of admitted spawn calls.
     pub fn spawn_count(&self) -> usize {
         self.lock().requests.len()
     }
 
-    /// 迄今为止收到的每个进度事件，按触发顺序排列。
+    /// Every progress event received so far, in emit order.
     pub fn events(&self) -> Vec<ProgressEvent> {
         self.lock().events.clone()
     }
 
-    /// `cancel_all` 被调用的次数。
+    /// How many times `cancel_all` has been invoked.
     pub fn cancel_all_calls(&self) -> usize {
         self.cancel_calls.load(Ordering::SeqCst)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("FakeDriver 互斥锁被污染")
+        self.inner.lock().expect("FakeDriver mutex poisoned")
     }
 }
 
@@ -168,7 +168,7 @@ impl WorkflowDriver for FakeDriver {
                     FakeReply::BudgetExhausted(message) => {
                         TaskCompletion::BudgetExhausted { message }
                     }
-                    FakeReply::Reject(_) | FakeReply::Never => unreachable!("以上已处理"),
+                    FakeReply::Reject(_) | FakeReply::Never => unreachable!("handled above"),
                 };
                 match delay {
                     None => {

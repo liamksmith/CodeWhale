@@ -1,16 +1,16 @@
-//! 用于对话记录折叠的工具运行分组。
+//! Tool-run grouping for transcript collapse.
 
 use super::{HistoryCell, ToolCell};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRun {
-    /// `App::history` 中第一个工具单元格的原始索引。
+    /// Original index of the first tool cell in `App::history`.
     pub start: usize,
-    /// 运行中折叠的单元格数量。
+    /// Number of collapsed cells in the run.
     pub count: usize,
-    /// 主要的工具名称，去重并限制数量以用于摘要渲染。
+    /// Dominant tool names, deduplicated and capped for summary rendering.
     pub tool_families: Vec<String>,
-    /// 面向人类的活动桶，用于类似 Cursor 的元数据行。
+    /// Human-facing activity buckets for Cursor-style metadata rows.
     pub activity: ToolRunActivitySummary,
 }
 
@@ -50,20 +50,21 @@ impl ToolRunActivitySummary {
     }
 }
 
-/// 检测连续的成功、低风险工具单元格序列。
+/// Detect contiguous runs of successful, low-risk tool cells.
 ///
-/// 失败、运行中、补丁、审查、差异和计划更新的单元格会分割序列，
-/// 以便重要状态永远不会消失在摘要行中。成功的命令单元格可以加入密集序列；
-/// `v` / 展开使其原始详情保持可用，同时不会让常规验证器/shell 工作主导
-/// 默认的对话记录。
+/// Failed, running, patch, review, diff, and plan-update cells split runs so
+/// important state never disappears into a summary row. Successful command
+/// cells can join dense runs; `v` / expansion keeps their raw details
+/// available without making routine verifier/shell work dominate the default
+/// transcript.
 #[cfg(test)]
 pub fn detect_tool_runs(history: &[HistoryCell], min_size: usize) -> Vec<ToolRun> {
     detect_tool_runs_from_slices(history, &[], min_size)
 }
 
-/// 检测跨已提交历史和活跃的进行中尾部之间的连续序列。
-/// `ToolRun::start` 始终是虚拟对话记录索引：
-/// 对于活跃条目为 `history.len() + active_offset`。
+/// Detect contiguous runs across committed history plus the active in-flight
+/// tail. `ToolRun::start` is always the virtual transcript index:
+/// `history.len() + active_offset` for active entries.
 pub fn detect_tool_runs_from_slices(
     history: &[HistoryCell],
     active_entries: &[HistoryCell],

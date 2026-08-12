@@ -1,4 +1,4 @@
-//! `/compact` 命令。
+//! `/compact` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

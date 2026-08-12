@@ -1,7 +1,8 @@
-//! 插件命令区域：列出已安装的插件和（未来的）执行插件。
+//! Plugin command area: list installed plugins and (future) execute plugins.
 //!
-//! 插件是基于脚本的工具，在配置的插件目录中发现
-//!（默认：`~/.codewhale/tools`）。`/plugin` 命令列出它们并显示每个插件的元数据。
+//! Plugins are script-based tools discovered in a configured plugin directory
+//! (default: `~/.codewhale/tools`). The `/plugin` command lists them and
+//! shows per-plugin metadata.
 
 use std::path::PathBuf;
 
@@ -27,7 +28,7 @@ impl CommandGroup for PluginsCommands {
 }
 
 // ---------------------------------------------------------------------------
-// `/plugin` — 列出或显示详情
+// `/plugin` — list or show detail
 // ---------------------------------------------------------------------------
 
 pub(in crate::commands) const PLUGINS_INFO: CommandInfo = CommandInfo {
@@ -49,7 +50,7 @@ impl RegisterCommand for PluginsCmd {
     }
 }
 
-/// 列出已发现的插件，或显示指定插件的详情。
+/// List discovered plugins, or show details for a named plugin.
 fn plugins(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(plugin_dir) = plugin_dir_for(app) else {
         return CommandResult::error(
@@ -152,7 +153,7 @@ fn approval_label(approval: ApprovalRequirement) -> &'static str {
     }
 }
 
-/// 解析配置的插件目录，默认为 `~/.codewhale/tools`。
+/// Resolve the configured plugin directory, defaulting to `~/.codewhale/tools`.
 fn plugin_dir_for(app: &App) -> Option<PathBuf> {
     let config = match &app.config_path {
         Some(path) => {

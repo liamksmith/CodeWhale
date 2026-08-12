@@ -1,7 +1,8 @@
-//! 升级工作流计划评估，用于审批卡（#4126）。
+//! Elevated Workflow plan assessment for approval cards (#4126).
 //!
-//! 纯的、无 UI 的 [`WorkflowSpec`]（以及可选的规划器风险字符串）分析，
-//! 以便调用方可以决定是否需要操作员审批卡以及该卡片应显示哪些字段。
+//! Pure, UI-free analysis of a [`WorkflowSpec`] (and optional planner risk
+//! string) so callers can decide whether an operator approval card is required
+//! and what fields that card should show.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,20 +11,20 @@ use crate::{
     leaf_is_write_capable, leaf_wants_worktree,
 };
 
-/// 产品配置中的默认软 token 预算（`[workflow].default_token_budget`）。
-/// 请求超过此值的计划被视为高预算。
+/// Default soft token budget from product config (`[workflow].default_token_budget`).
+/// Plans requesting more than this are treated as high-budget.
 pub const DEFAULT_HIGH_BUDGET_THRESHOLD: u64 = 120_000;
 
-/// 在 IR 之外细化升级评估的选项。
+/// Options that refine elevation assessment beyond the IR itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElevationOptions {
-    /// 在工具调用上声明的 token 预算（可能超过 `spec.budget`）。
+    /// Token budget declared on the tool call (may outrank `spec.budget`).
     pub token_budget: Option<u64>,
-    /// token 预算被视为高的阈值。
+    /// Threshold above which a token budget is considered high.
     pub high_budget_threshold: u64,
-    /// 父会话当前是否允许写入。
+    /// Whether the parent session currently allows writes.
     pub parent_allows_write: bool,
-    /// 父会话当前是否允许网络。
+    /// Whether the parent session currently allows network.
     pub parent_allows_network: bool,
 }
 
@@ -32,14 +33,14 @@ impl Default for ElevationOptions {
         Self {
             token_budget: None,
             high_budget_threshold: DEFAULT_HIGH_BUDGET_THRESHOLD,
-            // 除非调用方缩小姿态，否则假设 Act/读写父级。
+            // Assume Act/read-write parent unless callers narrow posture.
             parent_allows_write: true,
             parent_allows_network: true,
         }
     }
 }
 
-/// 工作流计划为何需要（或不需要）升级审批的摘要。
+/// Summary of why a Workflow plan needs (or does not need) elevated approval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPlanElevation {
     pub elevated: bool,
@@ -53,14 +54,14 @@ pub struct WorkflowPlanElevation {
     pub worktree: bool,
     pub high_budget: bool,
     pub broader_authority: bool,
-    /// 审批卡的人类可读预算行。
+    /// Human-readable budget line for the approval card.
     pub budget_label: String,
-    /// 区别性的升级原因（用于审计/影响行）。
+    /// Distinct elevation reasons (for audit / impact lines).
     pub reasons: Vec<String>,
 }
 
 impl WorkflowPlanElevation {
-    /// TUI 审批模态框使用的卡片字段标签/值（#4126）。
+    /// Card field labels/values used by the TUI approval modal (#4126).
     #[must_use]
     pub fn card_fields(&self) -> Vec<(&'static str, String)> {
         vec![
@@ -73,7 +74,7 @@ impl WorkflowPlanElevation {
         ]
     }
 
-    /// 计划是否完全在只读封装内。
+    /// True when the plan is fully inside the read-only envelope.
     #[must_use]
     pub fn is_read_only_envelope(&self) -> bool {
         !self.elevated
@@ -95,7 +96,7 @@ fn yes_no(flag: bool) -> String {
     }
 }
 
-/// 评估编译后的 [`WorkflowSpec`]。
+/// Assess elevation for a compiled [`WorkflowSpec`].
 #[must_use]
 pub fn assess_workflow_elevation(
     spec: &WorkflowSpec,
@@ -119,7 +120,7 @@ pub fn assess_workflow_elevation(
         &mut worktree,
     );
 
-    // spec 级权限也会提升级别。
+    // Spec-level permissions also elevate.
     merge_permissions(
         &spec.permissions,
         &mut writes,
@@ -128,8 +129,8 @@ pub fn assess_workflow_elevation(
         &mut secrets,
     );
 
-    // 规划器风险字符串在结构化计划降低器处理时存储在 `description` 上
-    //（当存在时：`risk: elevated|writes|shell|network|…`）。
+    // Planner risk string is stored on `description` by the structured-plan
+    // lowerer when present (`risk: elevated|writes|shell|network|…`).
     apply_plan_risk_hint(
         spec.description.as_deref(),
         &mut writes,
@@ -209,7 +210,7 @@ pub fn assess_workflow_elevation(
     }
 }
 
-/// 仅从规划器 `risk` 字符串进行的轻量级评估（在 IR 之前）。
+/// Lightweight assessment from a planner `risk` string alone (before IR lower).
 #[must_use]
 pub fn assess_plan_risk_string(risk: Option<&str>) -> PlanRiskHint {
     match risk.map(str::trim).filter(|s| !s.is_empty()) {
@@ -225,7 +226,7 @@ pub fn assess_plan_risk_string(risk: Option<&str>) -> PlanRiskHint {
     }
 }
 
-/// 从结构化计划 `risk` 字段得到的粗略风险分类。
+/// Coarse risk classification from the structured plan `risk` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanRiskHint {
     ReadOnly,
@@ -385,7 +386,7 @@ fn walk_nodes(
                 }
             }
             WorkflowNode::Reduce(_) | WorkflowNode::TeacherReview(_) => {
-                // 控制/归约节点本身不会产生支持写入的叶子。
+                // Control/reduce nodes do not spawn write-capable leaves themselves.
             }
         }
     }
@@ -410,8 +411,8 @@ fn inspect_leaf(
     if leaf_wants_worktree(leaf, parallel) || matches!(leaf.isolation, IsolationMode::Worktree) {
         *worktree = true;
     }
-    // 显式的 read_write 模式与 shell 工具已处理；没有工具拒绝列表的
-    // 实现者可以运行 shell。
+    // Explicit read_write mode with shell tools already handled; implementer
+    // without a tool denylist can run shell.
     if leaf.mode == TaskMode::ReadWrite
         && leaf.permissions.allowed_tools.is_empty()
         && matches!(
@@ -419,8 +420,8 @@ fn inspect_leaf(
             crate::AgentType::Implementer | crate::AgentType::General
         )
     {
-        // 支持写入的实现者/通用代理可能超越只读运行 shell——
-        // 在审批卡上将 shell 标记为升级项。
+        // Write-capable implementers/general agents may run shell beyond
+        // read-only — flag shell as elevated for the approval card.
         *shell = true;
     }
 }

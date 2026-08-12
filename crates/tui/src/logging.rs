@@ -1,4 +1,4 @@
-//! CLI 的轻量级详细日志辅助函数。
+//! Lightweight verbose logging helpers for the CLI.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -9,29 +9,31 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static VERBOSE_SNAPSHOT: AtomicBool = AtomicBool::new(false);
 
-/// 启用或禁用详细日志输出。
+/// Enable or disable verbose logging output.
 pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::SeqCst);
 }
 
-/// 捕获当前的详细状态，以便 TUI 在暂时抑制 Windows 备用屏幕输出后恢复它。
+/// Capture the current verbose state so the TUI can restore it after
+/// temporarily suppressing Windows alt-screen output.
 #[cfg(windows)]
 pub fn snapshot_verbose_state() {
     VERBOSE_SNAPSHOT.store(is_verbose(), Ordering::SeqCst);
 }
 
-/// 恢复最后捕获的详细状态。
+/// Restore the last captured verbose state.
 #[cfg(windows)]
 pub fn restore_verbose_state() {
     set_verbose(VERBOSE_SNAPSHOT.load(Ordering::SeqCst));
 }
 
-/// 当 `DEEPSEEK_LOG_LEVEL` 请求详细输出时返回 true。
+/// Return true when `DEEPSEEK_LOG_LEVEL` requests verbose output.
 ///
-/// 注意：此处有意不检查 `RUST_LOG`——它控制 `runtime_log.rs`（文件日志）中的
-/// `tracing` 订阅者过滤器，不应控制 CLI 详细输出。
-/// 在 Windows 上，stderr 不会被重定向到日志文件，将两者耦合会导致
-/// 追踪日志消息泄漏到 TUI 备用屏幕中。
+/// Note: `RUST_LOG` is intentionally NOT checked here — it controls the
+/// `tracing` subscriber filter in `runtime_log.rs` (file logging) and
+/// should not gate CLI verbose output. On Windows, where stderr is not
+/// redirected to the log file, coupling the two causes tracing log
+/// messages to leak into the TUI alt-screen.
 #[must_use]
 pub fn env_requests_verbose_logging() -> bool {
     std::env::var("DEEPSEEK_LOG_LEVEL")
@@ -51,13 +53,13 @@ fn log_value_enables_verbose(value: &str) -> bool {
     })
 }
 
-/// 检查详细日志是否已启用。
+/// Check whether verbose logging is enabled.
 #[must_use]
 pub fn is_verbose() -> bool {
     VERBOSE.load(Ordering::SeqCst)
 }
 
-/// 发出详细信息消息（当详细输出禁用时无操作）。
+/// Emit a verbose info message (no-op when verbosity is disabled).
 pub fn info(message: impl AsRef<str>) {
     if is_verbose() {
         let (r, g, b) = palette::WHALE_INFO_RGB;
@@ -65,7 +67,7 @@ pub fn info(message: impl AsRef<str>) {
     }
 }
 
-/// 发出详细警告消息（当详细输出禁用时无操作）。
+/// Emit a verbose warning message (no-op when verbosity is disabled).
 pub fn warn(message: impl AsRef<str>) {
     if is_verbose() {
         let (r, g, b) = palette::WHALE_INFO_RGB;
@@ -118,8 +120,9 @@ mod tests {
         set_verbose(true);
         snapshot_verbose_state();
 
-        // 模拟 Windows 备用屏幕抑制路径。恢复必须
-        // 在不依赖环境的情况下带回抑制前的 CLI 状态。
+        // Simulate the Windows alt-screen suppression path. The restore must
+        // bring back the pre-suppression CLI state without depending on the
+        // environment.
         set_verbose(false);
         restore_verbose_state();
 

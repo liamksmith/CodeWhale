@@ -1,13 +1,16 @@
-//! 语言检测 + 将语言映射到处理它的 LSP 服务器二进制文件的固定字典。
+//! Language detection + the fixed dictionary mapping a language to the LSP
+//! server binary that handles it.
 //!
-//! 内置字典覆盖常见语言。用户可以通过配置文件中的 `[lsp.servers]` 覆盖默认设置，
-//! 并通过 `[lsp.custom]` 为额外的文件扩展名注册自定义语言服务器
-//! （由 [`super::LspConfig`] 处理，非本文件处理）。
+//! Built-in dictionary covers common languages. Users can override defaults
+//! via `[lsp.servers]` and register custom language servers for additional
+//! file extensions via `[lsp.custom]` in their config (handled by
+//! [`super::LspConfig`], not this file).
 
 use std::path::Path;
 
-/// 我们知道如何向 LSP 服务器查询的语言。通过 [`detect_language`] 从文件扩展名检测。
-/// `Other` 是在我们没有该文件的 LSP 时使用的哨兵值——LSP 管理器将其视为"跳过"。
+/// A language we know how to ask an LSP server about. Detected from the file
+/// extension by [`detect_language`]. `Other` is a sentinel used when we do
+/// not have an LSP for the file — the LSP manager treats it as "skip".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
@@ -24,7 +27,8 @@ pub enum Language {
 }
 
 impl Language {
-    /// 用作 `[lsp.servers]` 覆盖和日志行中键的稳定小写字符串。
+    /// Stable lowercase string used as the key in `[lsp.servers]` overrides
+    /// and in log lines.
     #[must_use]
     pub fn as_key(self) -> &'static str {
         match self {
@@ -42,9 +46,9 @@ impl Language {
         }
     }
 
-    /// 在 `textDocument/didOpen` 中使用的 LSP `languageId` 值。我们遵循
-    /// LSP 规范值：`rust`、`go`、`python`、`typescript`、`javascript`、
-    /// `java`、`vue`、`c`、`cpp`。
+    /// LSP `languageId` value used in `textDocument/didOpen`. We follow the
+    /// LSP-spec values: `rust`, `go`, `python`, `typescript`, `javascript`,
+    /// `java`, `vue`, `c`, `cpp`.
     #[must_use]
     pub fn language_id(self) -> &'static str {
         match self {
@@ -63,8 +67,9 @@ impl Language {
     }
 }
 
-/// 通过扩展名检测 `path` 的语言。当扩展名未知（或文件无扩展名）时
-/// 回退到 `Language::Other`，向管理器发出"跳过"信号。
+/// Detect the language of `path` from its extension. Falls back to
+/// `Language::Other` when the extension is unknown (or the file has none),
+/// which signals "skip" to the manager.
 #[must_use]
 pub fn detect_language(path: &Path) -> Language {
     let ext = match path.extension().and_then(|e| e.to_str()) {
@@ -86,8 +91,9 @@ pub fn detect_language(path: &Path) -> Language {
     }
 }
 
-/// "为 `lang` 运行什么可执行文件 + 参数"的固定默认值。
-/// 当该语言没有连接 LSP 服务器时返回 `None`。TUI 配置层可以在运行时覆盖此字典。
+/// Fixed default for "what executable + args do we run for `lang`?".
+/// Returns `None` when no LSP server is wired for that language. The TUI
+/// config layer can override this dictionary at runtime.
 #[must_use]
 pub fn server_for(lang: Language) -> Option<(&'static str, &'static [&'static str])> {
     match lang {

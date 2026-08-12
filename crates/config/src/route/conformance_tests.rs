@@ -1,10 +1,10 @@
-//! 供应商描述符合规性测试 (#3084)。
+//! Provider descriptor conformance (#3084).
 //!
-//! 这些测试断言 *每个* 已发布的 `ProviderKind` 都具有格式良好的
-//! 面向路由的描述符，并且能够解析出默认路由——这样添加供应商时
-//! 如果未正确连接其描述符/解析器行为，将在 CI 中失败，而不是在运行时。
-//! 它们有意采用数据驱动方式，基于 [`ProviderKind::all`] 并且不依赖网络；
-//! 供应商执行/适配器行为在其他地方测试。
+//! These tests assert that *every* shipped `ProviderKind` has a well-formed
+//! route-facing descriptor and resolves a default route — so adding a provider
+//! without wiring its descriptor/resolver behavior fails CI here rather than at
+//! runtime. They are intentionally data-driven over [`ProviderKind::all`] and
+//! network-free; provider execution/adapter behavior is exercised elsewhere.
 
 use super::bundled_offerings;
 use super::descriptor::ProviderDescriptor;
@@ -26,8 +26,8 @@ fn every_provider_kind_has_a_wellformed_descriptor() {
     for &kind in ProviderKind::all() {
         let descriptor = ProviderDescriptor::for_kind(kind);
 
-        // 描述符 id 非空且与规范映射一致；
-        // 不匹配意味着供应商被添加到了一张表但未添加到另一张表。
+        // The descriptor id is non-empty and agrees with the canonical mapping;
+        // a mismatch means a provider was added to one table but not the other.
         assert!(
             !descriptor.id().as_str().trim().is_empty(),
             "{kind:?}: empty provider id"
@@ -38,7 +38,7 @@ fn every_provider_kind_has_a_wellformed_descriptor() {
             "{kind:?}: descriptor id disagrees with ProviderId::from_kind"
         );
 
-        // 路由解析所依赖的传输事实必须存在。
+        // Transport facts route resolution depends on must be present.
         assert!(
             !descriptor.default_wire_model().as_str().trim().is_empty(),
             "{kind:?}: empty default wire model"
@@ -48,7 +48,7 @@ fn every_provider_kind_has_a_wellformed_descriptor() {
             "{kind:?}: empty default base URL"
         );
 
-        // 任何声明的认证环境变量名称必须是真实、非空的键。
+        // Any declared auth env var name must be a real, non-empty key.
         for env_var in descriptor.env_vars() {
             assert!(
                 !env_var.trim().is_empty(),
@@ -56,7 +56,7 @@ fn every_provider_kind_has_a_wellformed_descriptor() {
             );
         }
 
-        // 任何 kind 的线缆协议访问器都不应 panic。
+        // The wire protocol accessor must not panic for any kind.
         let _ = descriptor.protocol();
     }
 }
@@ -81,10 +81,11 @@ fn every_provider_kind_resolves_its_default_route() {
             "{kind:?}: resolved provider id mismatch"
         );
 
-        // 解析器会优先选择该供应商的捆绑 *默认产品* 线缆 id
-        //（如果存在），否则回退到描述符默认线缆模型。
-        // 断言这一确切契约，以便将来基于目录的默认值与 `Provider::default_model()`
-        // 之间发生偏离时，能给出诚实的消息而不是巧合地通过。
+        // The resolver prefers this provider's bundled *default offering* wire id
+        // when one exists, and otherwise falls back to the descriptor default
+        // wire model. Assert that exact contract so a future drift between the
+        // catalog-backed default and `Provider::default_model()` fails with an
+        // honest message instead of coincidentally passing.
         let expected_wire = bundled
             .iter()
             .find(|offering| {
@@ -124,8 +125,8 @@ fn every_provider_kind_resolves_the_auto_selector() {
             candidate.logical_model.is_auto(),
             "{kind:?}: `auto` must stay the auto sentinel, never a literal model"
         );
-        // `auto` 在没有目录默认值时回退到描述符默认值，
-        // 合规性测试 #2 已验证这一点；这里我们只断言它能解析。
+        // `auto` with no catalog default falls back to the descriptor default,
+        // which conformance #2 already pins; here we only assert it resolves.
         assert!(
             !candidate.wire_model_id.as_str().trim().is_empty(),
             "{kind:?}: auto resolved to an empty wire model"

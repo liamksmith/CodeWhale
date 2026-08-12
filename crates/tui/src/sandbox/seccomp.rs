@@ -1,57 +1,59 @@
-//! Linux seccomp（安全计算）过滤器层（#2182）。
+//! Linux seccomp (Secure Computing) filter layer (#2182).
 //!
-//! Seccomp BPF（伯克利包过滤器）是一种内核设施，允许
-//! 进程限制其（及其后代）可以进行的系统调用。
-//! 此模块在 Landlock 之上应用 seccomp 过滤器，以提供
-//! 第二层防御——即使 Landlock 行为异常或配置过于宽松，
-//! seccomp 过滤器也会阻止整个 *类别* 的危险系统调用，
-//! 如 `ptrace`、`mount`、`kexec_load` 等。
+//! Seccomp BPF (Berkeley Packet Filter) is a kernel facility that allows a
+//! process to restrict the system calls it (and its descendants) can make.
+//! This module applies a seccomp filter on top of Landlock to provide a
+//! second layer of defense — even if Landlock misbehaves or is configured
+//! too permissively, the seccomp filter blocks entire *classes* of dangerous
+//! syscalls like `ptrace`, `mount`, `kexec_load`, etc.
 //!
-//! # 架构
+//! # Architecture
 //!
-//! 过滤器编写为原始 BPF 程序（`sock_filter` 指令数组）
-//! 并通过 `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER)` 加载。
-//! 这避免了对 `libseccomp-sys` 或 `seccompiler` 等外部 crate 的任何依赖
-//!——我们只使用依赖树中已有的 `libc` crate。
+//! The filter is written as a raw BPF program (array of `sock_filter`
+//! instructions) and loaded via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER)`.
+//! This avoids any dependency on external crates like `libseccomp-sys` or
+//! `seccompiler` — we use only the `libc` crate already in the dependency
+//! tree.
 //!
-//! # 白名单系统调用
+//! # Whitelisted syscalls
 //!
-//! 过滤器使用白名单方法：只允许已知对开发/Shell 工作负载安全的系统调用。
-//! 其他所有调用都会以 `SECCOMP_RET_KILL_PROCESS` 被杀死。白名单包括：
+//! The filter uses a whitelist approach: only syscalls that are known to be
+//! safe for a development/shell workload are allowed. Everything else is
+//! killed with `SECCOMP_RET_KILL_PROCESS`. The whitelist includes:
 //!
-//! - 文件 I/O：read, write, open, openat, close, stat, fstat, lstat, newfstatat
-//! - 目录：getdents, getdents64, getcwd, chdir
-//! - 内存：mmap, mprotect, munmap, brk, mremap, madvise
-//! - 进程：clone, clone3, fork, vfork, execve, execveat, exit, exit_group
-//! - IPC：pipe, pipe2, socket, socketpair, connect, bind, listen, accept, accept4
-//! - 同步：futex, nanosleep, clock_nanosleep
-//! - 信号：rt_sigaction, rt_sigprocmask, rt_sigreturn, kill, tkill, tgkill
-//! - 资源：getrlimit, setrlimit, prlimit64, getrusage
-//! - 时间：clock_gettime, gettimeofday, time
-//! - 杂项：getpid, gettid, getuid, geteuid, getgid, getegid, uname, arch_prctl
+//! - File I/O: read, write, open, openat, close, stat, fstat, lstat, newfstatat
+//! - Directory: getdents, getdents64, getcwd, chdir
+//! - Memory: mmap, mprotect, munmap, brk, mremap, madvise
+//! - Process: clone, clone3, fork, vfork, execve, execveat, exit, exit_group
+//! - IPC: pipe, pipe2, socket, socketpair, connect, bind, listen, accept, accept4
+//! - Synchronization: futex, nanosleep, clock_nanosleep
+//! - Signals: rt_sigaction, rt_sigprocmask, rt_sigreturn, kill, tkill, tgkill
+//! - Resource: getrlimit, setrlimit, prlimit64, getrusage
+//! - Time: clock_gettime, gettimeofday, time
+//! - Misc: getpid, gettid, getuid, geteuid, getgid, getegid, uname, arch_prctl
 //!
-//! # 明确拒绝
+//! # Explicitly denied
 //!
-//! - ptrace（进程劫持）
-//! - mount, umount2（文件系统操作）
-//! - kexec_load, kexec_file_load（内核执行）
-//! - init_module, finit_module, delete_module（内核模块加载）
-//! - bpf（加载 BPF 程序——会绕过 seccomp！）
+//! - ptrace (process hijacking)
+//! - mount, umount2 (filesystem manipulation)
+//! - kexec_load, kexec_file_load (kernel execution)
+//! - init_module, finit_module, delete_module (kernel module loading)
+//! - bpf (loading BPF programs — would bypass seccomp!)
 //! - reboot
 //! - swapon, swapoff
 //! - pivot_root
 //! - setuid, setgid, setreuid, setregid, setresuid, setresgid
 //! - personality
 //!
-//! # 安全性
+//! # Safety
 //!
-//! 一旦安装 seccomp 过滤器，它就是 **不可逆的** —— 即使是
-//! `prctl(PR_SET_SECCOMP, ...)` 也被拒绝。这是设计使然。
+//! Once the seccomp filter is installed, it is **irreversible** — even
+//! `prctl(PR_SET_SECCOMP, ...)` is denied. This is by design.
 
-/// 检查系统上 seccomp 是否可用。
+/// Check if seccomp is available on this system.
 ///
-/// 如果 `/proc/sys/kernel/seccomp/actions_avail` 存在且包含 "kill_process"，
-/// 则返回 true，表示内核支持 seccomp BPF。
+/// Returns true if `/proc/sys/kernel/seccomp/actions_avail` exists and
+/// contains "kill_process", indicating the kernel supports seccomp BPF.
 #[cfg(target_os = "linux")]
 pub fn is_available() -> bool {
     std::path::Path::new("/proc/sys/kernel/seccomp/actions_avail").exists()
@@ -62,26 +64,27 @@ pub fn is_available() -> bool {
     false
 }
 
-/// 检测失败是否由 seccomp 拒绝引起。
+/// Detect if a failure was caused by seccomp denial.
 ///
-/// Seccomp 使用 SIGSYS（或 SECCOMP_RET_KILL_THREAD）杀死进程，
-/// 退出码通常是 SIGSYS（31），或者进程可能在 stderr 上被
-/// "Bad system call" 杀死。
+/// Seccomp kills the process with SIGSYS (or the thread with SECCOMP_RET_KILL_THREAD),
+/// and the exit code is typically SIGSYS (31) or the process may be killed with
+/// "Bad system call" on stderr.
 ///
-/// 此外，如果使用 SECCOMP_RET_ERRNO，seccomp 违规可能产生 EPERM。
+/// Additionally, seccomp violations may produce EPERM for filtered syscalls
+/// if using SECCOMP_RET_ERRNO.
 #[cfg(target_os = "linux")]
 pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     // SIGSYS = 31
     if exit_code == 31 {
         return true;
     }
-    // 检查 stderr 中的 seccomp 拒绝模式
+    // Check for seccomp denial patterns in stderr
     stderr.contains("Bad system call")
         || stderr.contains("bad system call")
         || stderr.contains("SIGSYS")
         || stderr.contains("seccomp")
         || stderr.contains("invalid argument") && exit_code == 159
-    // 159 = 128 + 31 （因 SIGSYS 死亡且核心转储禁用）
+    // 159 = 128 + 31 (died from SIGSYS with core dump disabled)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -89,28 +92,30 @@ pub fn detect_denial(_exit_code: i32, _stderr: &str) -> bool {
     false
 }
 
-/// 对调用线程应用 seccomp 过滤器。
+/// Apply the seccomp filter to the calling thread.
 ///
-/// 这会安装一个 BPF 程序，白名单安全的系统调用，并在任何不允许的系统调用上
-/// 杀死进程。
+/// This installs a BPF program that whitelists safe syscalls and kills the
+/// process on any disallowed syscall.
 ///
-/// # 错误
+/// # Errors
 ///
-/// 如果 prctl 调用失败（例如 seccomp 已启用或内核太旧），返回错误。
+/// Returns an error if the prctl call fails (e.g., seccomp already enabled
+/// or kernel too old).
 #[cfg(target_os = "linux")]
 pub fn apply_seccomp_filter() -> std::io::Result<()> {
-    // ── 构建 BPF 过滤器程序 ─────────────────────────────────────
+    // ── Build the BPF filter program ─────────────────────────────────────
     //
-    // seccomp 的 BPF 工作原理如下：
-    // 1. 加载架构（seccomp_data 中偏移 4 处的 4 字节）
-    // 2. 验证架构匹配 AUDIT_ARCH_X86_64 (0xC000003E)
-    // 3. 加载系统调用号（偏移 0 处的 4 字节）
-    // 4. 与白名单比较，匹配时返回 ALLOW
-    // 5. 不匹配时返回 KILL
+    // BPF for seccomp works as follows:
+    // 1. Load the architecture (4 bytes at offset 4 in seccomp_data)
+    // 2. Validate architecture matches AUDIT_ARCH_X86_64 (0xC000003E)
+    // 3. Load the syscall number (4 bytes at offset 0)
+    // 4. Compare against whitelist, return ALLOW on match
+    // 5. Return KILL on no match
     //
-    // 过滤器对白名单使用线性搜索。虽然不是最优的，
-    // 但它简单、可审计，且没有外部依赖。BPF
-    // 程序最多几百条指令，远在内核 4096 条指令的限制内。
+    // The filter uses a linear search over the whitelist. While not optimal,
+    // it's simple, auditable, and has no external dependencies. The BPF
+    // program is at most a few hundred instructions, which is well within
+    // the kernel's 4096-instruction limit.
 
     #[repr(C)]
     struct sock_filter {
@@ -134,15 +139,15 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
     const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
     const SECCOMP_RET_ALLOW: u32 = 0x7FFF_0000;
 
-    // x86_64 的审计架构
+    // Audit arch for x86_64
     const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
 
-    // 紧凑构建 BPF 指令的辅助方法。
-    // 模式来自 openai/codex codex-rs/codex-sandbox/src/linux/seccomp.rs；已重新实现。
+    // Helper to build a BPF instruction compactly.
+    // Pattern from openai/codex codex-rs/codex-sandbox/src/linux/seccomp.rs; reimplemented.
 
-    // 安全系统调用号的白名单（x86_64）。
-    // 这些是 shell 命令、编译器和开发工具最常用的系统调用。
-    // 不在列表中的任何系统调用都会导致即时 SIGSYS。
+    // Whitelist of safe syscall numbers (x86_64).
+    // These are the syscalls most commonly used by shell commands, compilers,
+    // and developer tools. Any syscall NOT on this list causes immediate SIGSYS.
     let allowed_syscalls: &[u32] = &[
         0,   // read
         1,   // write
@@ -270,42 +275,42 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
         435, // clone3
     ];
 
-    // 构建 BPF 程序。
+    // Build the BPF program.
     let mut filter = vec![
-        // 指令 0：从 seccomp_data.arch 加载架构
+        // Instruction 0: load architecture from seccomp_data.arch
         sock_filter {
             code: BPF_LD | BPF_W | BPF_ABS,
             jt: 0,
             jf: 0,
-            k: 4, // seccomp_data 中 arch 的偏移量
+            k: 4, // offset of arch in seccomp_data
         },
-        // 指令 1：与 AUDIT_ARCH_X86_64 比较
-        // 如果匹配，跳转到下一条指令；如果不匹配，杀死进程
+        // Instruction 1: compare with AUDIT_ARCH_X86_64
+        // If match, jump to next instruction; if not, kill process
         sock_filter {
             code: BPF_JMP | BPF_JEQ,
             jt: 0,
-            jf: 1, // 如果架构不匹配，向前跳转 1 条（到 KILL）
+            jf: 1, // jump 1 forward (to KILL) if arch doesn't match
             k: AUDIT_ARCH_X86_64,
         },
-        // 指令 2：KILL（错误的架构）
+        // Instruction 2: KILL (wrong architecture)
         sock_filter {
             code: BPF_RET,
             jt: 0,
             jf: 0,
             k: SECCOMP_RET_KILL_PROCESS,
         },
-        // 指令 3：从 seccomp_data.nr 加载系统调用号
+        // Instruction 3: load syscall number from seccomp_data.nr
         sock_filter {
             code: BPF_LD | BPF_W | BPF_ABS,
             jt: 0,
             jf: 0,
-            k: 0, // seccomp_data 中 nr 的偏移量
+            k: 0, // offset of nr in seccomp_data
         },
     ];
 
-    // 对于每个允许的系统调用，添加比较+跳转到 ALLOW。
-    // 我们使用线性扫描以保持简单：每个 JEQ 指令
-    // 向前跳过剩余的检查 + KILL 以到达 ALLOW。
+    // For each allowed syscall, add a compare+jump to ALLOW.
+    // We use a linear scan for simplicity: each JEQ instruction jumps
+    // forward over the remaining checks + KILL to reach ALLOW.
     for &syscall in allowed_syscalls {
         let remaining = (allowed_syscalls.len() as u8).saturating_sub(
             allowed_syscalls
@@ -313,16 +318,16 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
                 .position(|&s| s == syscall)
                 .unwrap_or(0) as u8,
         );
-        // 如果系统调用 == 此值，跳转到 allow_target；否则继续
+        // If syscall == this one, jump to allow_target; otherwise fall through
         filter.push(sock_filter {
             code: BPF_JMP | BPF_JEQ,
-            jt: remaining, // 向前跳转到 ALLOW
-            jf: 0,         // 继续下一个检查
+            jt: remaining, // jump forward to ALLOW
+            jf: 0,         // fall through to next check
             k: syscall,
         });
     }
 
-    // 指令 N：对任何不匹配的系统调用杀死进程
+    // Instruction N: KILL PROCESS for any unmatched syscall
     filter.push(sock_filter {
         code: BPF_RET,
         jt: 0,
@@ -330,7 +335,7 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
         k: SECCOMP_RET_KILL_PROCESS,
     });
 
-    // 指令 N+1：ALLOW
+    // Instruction N+1: ALLOW
     filter.push(sock_filter {
         code: BPF_RET,
         jt: 0,
@@ -338,7 +343,7 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
         k: SECCOMP_RET_ALLOW,
     });
 
-    // ── 将过滤器加载到内核中 ───────────────────────────────────
+    // ── Load the filter into the kernel ───────────────────────────────────
 
     #[repr(C)]
     struct sock_fprog {
@@ -351,8 +356,9 @@ pub fn apply_seccomp_filter() -> std::io::Result<()> {
         filter: filter.as_ptr(),
     };
 
-    // 安全性：使用 PR_SET_SECCOMP 的 prctl 安装 seccomp BPF 过滤器。
-    // 过滤器是一个在 prctl 调用期间有效的有效 sock_filter 指令数组。
+    // Safety: prctl with PR_SET_SECCOMP installs a seccomp BPF filter.
+    // The filter is a valid array of sock_filter instructions that lives
+    // for the duration of the prctl call.
     let result = unsafe {
         libc::prctl(
             libc::PR_SET_SECCOMP,

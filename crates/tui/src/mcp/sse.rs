@@ -119,8 +119,8 @@ impl SseTransport {
 
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-        // 原始字节缓冲区，使跨多次读取分割的多字节 UTF-8 字符不会损坏，
-        // 且有界，防止无分隔符的服务器导致 OOM。
+        // Raw byte buffer so a multi-byte UTF-8 char split across reads is not
+        // corrupted, and bounded so a separator-less server cannot OOM us.
         let mut buffer: Vec<u8> = Vec::new();
 
         loop {
@@ -150,7 +150,7 @@ impl SseTransport {
             }
 
             while let Some((pos, separator_len)) = find_sse_event_separator_bytes(&buffer) {
-                // 完整块：解码不会分割多字节字符。
+                // Complete block: decoding cannot split a multi-byte char.
                 let event_block = String::from_utf8_lossy(&buffer[..pos]).into_owned();
                 buffer.drain(..pos + separator_len);
 
@@ -229,12 +229,13 @@ impl SseTransport {
             } else {
                 base.join(endpoint_url)?
             };
-        // 安全：服务器提供的 `endpoint` 事件必须与连接 URL 同源。
-        // 连接主机经过网络策略一次审核，但端点主机从不重新检查——
-        // 因此绝对的跨源端点将允许恶意 MCP 服务器将客户端的
-        // *已认证* POST（附带 Bearer/OAuth 头）重定向到内部主机
-        //（169.254.169.254、本地主机管理端口等）：构成 SSRF / 策略绕过。
-        // 相对端点通过构造保持同源。
+        // Security: the server-supplied `endpoint` event must stay same-origin
+        // as the connect URL. The connect host is vetted by network policy
+        // once, but the endpoint host is never re-checked — so an absolute
+        // cross-origin endpoint would let a malicious MCP server redirect the
+        // client's *authenticated* POSTs (Bearer/OAuth headers attached) to an
+        // internal host (169.254.169.254, localhost admin ports, …): an SSRF /
+        // policy bypass. Relative endpoints are same-origin by construction.
         if resolved.scheme() != base.scheme()
             || resolved.host_str() != base.host_str()
             || resolved.port_or_known_default() != base.port_or_known_default()
@@ -316,12 +317,12 @@ mod endpoint_tests {
     #[test]
     fn resolve_endpoint_accepts_relative_and_same_origin() {
         let base = "https://mcp.example.com/v1/sse";
-        // 相对路径 -> 同源。
+        // Relative path -> same origin.
         assert_eq!(
             SseTransport::resolve_endpoint_url(base, "/messages?sid=1").unwrap(),
             "https://mcp.example.com/messages?sid=1"
         );
-        // 绝对路径但同源 -> 允许。
+        // Absolute but same origin -> allowed.
         assert_eq!(
             SseTransport::resolve_endpoint_url(base, "https://mcp.example.com/messages").unwrap(),
             "https://mcp.example.com/messages"
@@ -331,13 +332,13 @@ mod endpoint_tests {
     #[test]
     fn resolve_endpoint_rejects_cross_origin_ssrf() {
         let base = "https://mcp.example.com/v1/sse";
-        // 不同主机（元数据端点）-> 拒绝。
+        // Different host (metadata endpoint) -> rejected.
         assert!(SseTransport::resolve_endpoint_url(base, "http://169.254.169.254/latest").is_err());
-        // 不同协议 -> 拒绝。
+        // Different scheme -> rejected.
         assert!(
             SseTransport::resolve_endpoint_url(base, "http://mcp.example.com/messages").is_err()
         );
-        // 不同端口 -> 拒绝。
+        // Different port -> rejected.
         assert!(
             SseTransport::resolve_endpoint_url(base, "https://mcp.example.com:8443/x").is_err()
         );

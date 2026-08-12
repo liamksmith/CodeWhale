@@ -1,11 +1,12 @@
-//! 结构化用户输入的选择卡组件。
+//! Decision-card widget for structured user input.
 //!
-//! 当 Brother Whale 需要输入时，它会展示一个选择卡：一个带标签的问题，
-//! 后跟编号的选项，默认选项高亮显示。用户使用 1-9 键（或 j/k / 上/下）
-//! 进行导航，按 Enter 确认。每个决策都会被记录，以便用户稍后检查选择。
+//! When Brother Whale needs input, it surfaces a decision card: a labelled
+//! question followed by numbered options, with the default option highlighted.
+//! The user navigates with 1-9 keys (or j/k / Up/Down) and confirms with
+//! Enter. Every decision is logged so the user can inspect the choice later.
 //!
-//! 这取代了模糊的"我该做什么？"提示，提供了一个结构化的选择界面——
-//! 来自 v0.8.43 truth-surface 跟踪器的验收标准。
+//! This replaces vague "what should I do?" prompts with a structured choice
+//! surface — acceptance criterion from the v0.8.43 truth-surface tracker.
 
 use ratatui::{
     buffer::Buffer,
@@ -16,29 +17,29 @@ use ratatui::{
 
 use super::renderable::Renderable;
 
-/// 选择卡中的单个选项。
+/// A single option in a decision card.
 #[derive(Debug, Clone)]
 pub struct DecisionOption {
-    /// 选项的简短标签（例如"应用补丁"）。
+    /// Short label for the option (e.g. "Apply the patch").
     pub label: String,
-    /// 标签下方显示的可选详细描述。
+    /// Optional longer description shown below the label.
     pub description: Option<String>,
 }
 
-/// 向用户展示结构化选择的选择卡。
+/// A decision card surfacing a structured choice to the user.
 #[derive(Debug, Clone)]
 pub struct DecisionCard {
-    /// 用户正在回答的问题或提示。
+    /// The question or prompt the user is answering.
     pub question: String,
-    /// 可用选项列表。每个选项编号为 1..N。
+    /// The available options. Each is numbered 1..N.
     pub options: Vec<DecisionOption>,
-    /// `options` 中默认（高亮）选项的索引。
+    /// Index into `options` of the default (highlighted) choice.
     pub default_index: usize,
-    /// 当前选中选项的索引。
+    /// Index of the currently selected option.
     pub selected_index: usize,
-    /// 选择卡是否已提交（按下了 Enter）。
+    /// Whether the card has been submitted (Enter pressed).
     pub confirmed: bool,
-    /// 已确认的选项索引（如果有）。
+    /// The index that was confirmed, if any.
     pub confirmed_index: Option<usize>,
 }
 
@@ -55,12 +56,12 @@ impl DecisionCard {
         }
     }
 
-    /// 选项数量。
+    /// Number of options.
     pub fn option_count(&self) -> usize {
         self.options.len()
     }
 
-    /// 向上移动选择（循环）。
+    /// Move selection up (wrap around).
     pub fn select_prev(&mut self) {
         if self.option_count() == 0 {
             return;
@@ -71,7 +72,7 @@ impl DecisionCard {
             .unwrap_or(self.option_count() - 1);
     }
 
-    /// 向下移动选择（循环）。
+    /// Move selection down (wrap around).
     pub fn select_next(&mut self) {
         if self.option_count() == 0 {
             return;
@@ -79,20 +80,20 @@ impl DecisionCard {
         self.selected_index = (self.selected_index + 1) % self.option_count();
     }
 
-    /// 通过数字键选择（从 1 开始）。
+    /// Select by number key (1-based).
     pub fn select_number(&mut self, n: usize) {
         if n > 0 && n <= self.option_count() {
             self.selected_index = n - 1;
         }
     }
 
-    /// 确认当前选择。
+    /// Confirm the current selection.
     pub fn confirm(&mut self) {
         self.confirmed = true;
         self.confirmed_index = Some(self.selected_index);
     }
 
-    /// 获取已确认选项的标签（如果有）。
+    /// Get the label of the confirmed option, if any.
     pub fn confirmed_label(&self) -> Option<&str> {
         self.confirmed_index
             .and_then(|i| self.options.get(i))
@@ -135,7 +136,7 @@ impl Renderable for DecisionCard {
 
         let mut y = inner.y;
 
-        // 问题行
+        // Question line
         let question = truncate_to_width(&self.question, inner.width as usize);
         buf.set_string(inner.x, y, &question, question_style);
         y += 1;
@@ -144,12 +145,12 @@ impl Renderable for DecisionCard {
             return;
         }
 
-        // 分隔线
+        // Separator
         let sep = "─".repeat(inner.width as usize);
         buf.set_string(inner.x, y, &sep, dim_style);
         y += 1;
 
-        // 选项
+        // Options
         let max_options = (inner.y + inner.height).saturating_sub(y) as usize;
         for (i, option) in self.options.iter().enumerate().take(max_options) {
             if y >= inner.y + inner.height {
@@ -164,7 +165,7 @@ impl Renderable for DecisionCard {
                 dim_style
             };
 
-            // "1. 标签 (默认)" 或 "1. 标签"
+            // "1. Label (default)" or "1. Label"
             let mut label = format!("{} {}", num, option.label);
             if i == self.default_index {
                 label.push_str(" (default)");
@@ -176,7 +177,7 @@ impl Renderable for DecisionCard {
             buf.set_string(inner.x, y, &full_label, style);
             y += 1;
 
-            // 描述行（如果有）
+            // Description line if present
             if let Some(ref desc) = option.description
                 && y < inner.y + inner.height
             {
@@ -189,7 +190,7 @@ impl Renderable for DecisionCard {
             }
         }
 
-        // 底部提示
+        // Footer hint
         if y < inner.y + inner.height {
             let hint = "1-9 select  ·  j/k navigate  ·  Enter confirm";
             let hint = truncate_to_width(hint, inner.width as usize);
@@ -198,13 +199,13 @@ impl Renderable for DecisionCard {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        // 问题 + 分隔线 + 选项 + 底部
+        // question + separator + options + footer
         let option_lines: u16 = self
             .options
             .iter()
             .map(|o| if o.description.is_some() { 2 } else { 1 })
             .sum();
-        // 2 行边框，1 行问题，1 行分隔线，选项，1 行底部
+        // 2 for borders, 1 question, 1 separator, options, 1 footer
         2 + 1 + 1 + option_lines + 1
     }
 }

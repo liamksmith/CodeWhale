@@ -1,20 +1,21 @@
-//! 针对格式错误的工具调用输入的确定性 JSON 参数修复。
+//! Deterministic JSON argument repair for malformed tool-call inputs.
 //!
-//! DeepSeek 将 `tool_calls.function.arguments` 以增量形式流式传输。常见的两种失败
-//! 形态：(a) SSE 块边界在 JSON 字符串中间切断，重组后留下尾部逗号或未闭合的括号；
-//! (b) 部分本地后端在 JSON 字符串值中发出字面控制字符。
+//! DeepSeek streams `tool_calls.function.arguments` as deltas. Two failure
+//! shapes are common: (a) SSE chunk boundary cuts inside a JSON string and
+//! reassembly leaves a trailing comma or unclosed brace; (b) some local
+//! backends emit literal control characters inside JSON string values.
 //!
-//! 修复阶梯在报告不可恢复的输入前依次运行五个阶段：
+//! The repair ladder runs five stages before reporting unrecoverable input:
 //!
-//!  1. 严格解析——如果能解析则完成。
-//!  2. 去除字符串值中的字面控制字符。
-//!  3. 去除 `}` 或 `]` 前的尾部逗号。
-//!  4. 平衡花括号/方括号（追加闭合符号）。
-//!  5. 如果增量为负，则去除多余的闭合符号。
+//!  1. Strict parse — done if it parses.
+//!  2. Strip literal control chars inside string values.
+//!  3. Strip trailing commas before `}` or `]`.
+//!  4. Balance braces/brackets (append closers).
+//!  5. Strip excess closers if delta is negative.
 
 use serde_json::Value;
 
-/// 我们会尝试修复的原始参数最大长度（1 MiB）。
+/// Maximum raw argument length we'll attempt to repair (1 MiB).
 const MAX_ARG_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -25,33 +26,33 @@ pub enum ArgRepairError {
     Unrepairable,
 }
 
-/// 将原始 JSON 参数字符串修复为有效的 `serde_json::Value`。
+/// Repair a raw JSON argument string into a valid `serde_json::Value`.
 ///
-/// 运行确定性阶梯；成功时返回解析后的值。
+/// Runs the deterministic ladder; on success returns the parsed value.
 pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     if raw.len() > MAX_ARG_LEN {
         return Err(ArgRepairError::TooLarge(raw.len()));
     }
-    // 阶段 1：严格解析
+    // Stage 1: strict parse
     if let Ok(v) = serde_json::from_str(raw) {
         return Ok(v);
     }
-    // 阶段 2：去除字符串中的控制字符
+    // Stage 2: strip control chars inside strings
     let mut s = strip_control_chars_in_strings(raw);
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
     }
-    // 阶段 3：去除尾部逗号
+    // Stage 3: strip trailing commas
     s = strip_trailing_commas(&s);
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
     }
-    // 阶段 4：平衡括号
+    // Stage 4: balance braces
     s = balance_braces(&s, 50);
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
     }
-    // 阶段 5：去除多余的闭合符号
+    // Stage 5: strip excess closers
     s = strip_excess_closers(&s);
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
@@ -59,8 +60,9 @@ pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     Err(ArgRepairError::Unrepairable)
 }
 
-/// 去除 JSON 字符串值中出现的 ASCII 控制字符（0x00–0x1F 除 \t、\n、\r 外）。
-/// 我们逐字符遍历，跟踪当前是否在字符串内（在两个未转义的双引号之间）。
+/// Strip ASCII control characters (0x00–0x1F except \t, \n, \r) that appear
+/// inside JSON string values. We walk character-by-character tracking whether
+/// we're inside a string (between unescaped double-quotes).
 fn strip_control_chars_in_strings(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_string = false;
@@ -82,7 +84,7 @@ fn strip_control_chars_in_strings(s: &str) -> String {
             continue;
         }
         if in_string && (ch as u32) < 0x20 && ch != '\t' && ch != '\n' && ch != '\r' {
-            // 丢弃字符串内的控制字符
+            // Drop control characters inside strings
             continue;
         }
         out.push(ch);
@@ -90,14 +92,14 @@ fn strip_control_chars_in_strings(s: &str) -> String {
     out
 }
 
-/// 去除 `}` 或 `]` 前的尾部逗号。
+/// Strip trailing commas before `}` or `]`.
 fn strip_trailing_commas(s: &str) -> String {
-    // 反复替换 ",}" 和 ",]" 直到稳定（处理嵌套情况）。
+    // Repeatedly replace ",}" and ",]" until stable (handles nested cases).
     let mut out = s.to_string();
     loop {
         let prev = out.clone();
         out = out.replace(",}", "}").replace(",]", "]");
-        // 处理字符串末尾的尾部逗号
+        // Handle trailing comma at end of string
         out = out.trim_end_matches(',').to_string();
         if out == prev {
             break;
@@ -106,8 +108,9 @@ fn strip_trailing_commas(s: &str) -> String {
     out
 }
 
-/// 平衡花括号和方括号：统计 `{`/`}` 和 `[`/`]` 的数量，如果增量
-/// 为正（开比闭多），则追加闭合符号。限制迭代次数，避免严重损坏的输入无限循环。
+/// Balance braces and brackets: count `{`/`}` and `[`/`]`, append closers if
+/// positive delta (more opens than closes). Caps iterations so a
+/// catastrophically broken input doesn't loop forever.
 fn balance_braces(s: &str, max_iter: usize) -> String {
     let mut out = s.to_string();
     for _ in 0..max_iter {
@@ -130,7 +133,8 @@ fn balance_braces(s: &str, max_iter: usize) -> String {
         if brace_delta <= 0 && bracket_delta <= 0 {
             break;
         }
-        // 以相反顺序追加需要的闭合符号（两者都不平衡时，方括号在花括号前以确保正确嵌套）。
+        // Append needed closers in reverse order (brackets before braces
+        // for correct nesting when both are unbalanced).
         for _ in 0..bracket_delta.max(0) {
             out.push(']');
         }
@@ -141,7 +145,7 @@ fn balance_braces(s: &str, max_iter: usize) -> String {
     out
 }
 
-/// 当增量为负（闭比开多）时去除多余的闭合符号。
+/// Strip excess closers when the delta is negative (more closes than opens).
 fn strip_excess_closers(s: &str) -> String {
     let mut brace_depth: i32 = 0;
     let mut bracket_depth: i32 = 0;
@@ -153,7 +157,7 @@ fn strip_excess_closers(s: &str) -> String {
                     brace_depth -= 1;
                     out.push(ch);
                 }
-                // 否则丢弃多余的闭合符号
+                // else drop excess closer
             }
             ']' => {
                 if bracket_depth > 0 {
@@ -212,7 +216,7 @@ mod tests {
 
     #[test]
     fn strips_embedded_control_chars() {
-        // 字符串值中的原始 \x0B（垂直制表符）
+        // Raw \x0B (vertical tab) inside a string value
         let raw = "{\"key\": \"val\x0Bue\"}";
         let v = repair(raw).unwrap();
         assert_eq!(v, json!({"key": "value"}));
@@ -245,9 +249,9 @@ mod tests {
 
     #[test]
     fn handles_double_encoded_json() {
-        // 这是一个包含 JSON 对象字面量的有效 JSON 字符串。
-        // repair 将其解析为字符串；引擎现有的回退机制
-        // （parse_tool_input）会解开字符串并重新解析。
+        // This is a valid JSON string containing a JSON object literal.
+        // repair parses it as a string; the engine's existing fallback
+        // (parse_tool_input) will unwrap the string and re-parse.
         let v = repair(r#""{\"path\": \"hello.txt\"}""#).unwrap();
         assert_eq!(v, Value::String(r#"{"path": "hello.txt"}"#.to_string()));
     }

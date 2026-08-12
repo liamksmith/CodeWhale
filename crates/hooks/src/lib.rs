@@ -9,109 +9,110 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-/// 可通过钩子系统发出的所有事件。
+/// All events that can be emitted through the hook system.
 ///
-/// 每个变体代表一个不同的生命周期或流式事件。该枚举使用
-/// `"type"` 鉴别器以 `snake_case` 命名约定进行序列化（例如
-/// `"response_start"`、`"tool_lifecycle"`），方便从
-/// 基于 JSON 的日志文件或 webhook 接收端消费。
-#[allow(clippy::large_enum_variant)]
+/// Each variant represents a distinct lifecycle or streaming event. The enum is
+/// serialised with a `"type"` discriminator using `snake_case` naming (e.g.
+/// `"response_start"`, `"tool_lifecycle"`), making it easy to consume from
+/// JSON-based log files or webhook receivers.
+#[allow(clippy::large_enum_variant)] // Keep the public HookEvent shape stable for 0.8.x.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookEvent {
-    /// 新的响应流已开始。
+    /// A new response stream has started.
     ResponseStart {
-        /// 正在流式传输的响应的唯一标识符。
+        /// Unique identifier for the response being streamed.
         response_id: String,
     },
-    /// 已接收到进行中响应的文本块。
+    /// A chunk of text has been received for an in-progress response.
     ResponseDelta {
-        /// 正在流式传输的响应的唯一标识符。
+        /// Unique identifier for the response being streamed.
         response_id: String,
-        /// 此块的增量文本内容。
+        /// The incremental text content of this chunk.
         delta: String,
     },
-    /// 响应流已完成。
+    /// A response stream has finished.
     ResponseEnd {
-        /// 已完成的响应的唯一标识符。
+        /// Unique identifier for the response that completed.
         response_id: String,
     },
-    /// 工具调用已转换到新阶段（例如开始、结束、错误）。
+    /// A tool invocation has transitioned to a new phase (e.g. start, end, error).
     ToolLifecycle {
-        /// 调用该工具所在响应的标识符。
+        /// Identifier of the response under which the tool was invoked.
         response_id: String,
-        /// 工具名称（例如 `"shell"`、`"read_file"`）。
+        /// Name of the tool (e.g. `"shell"`, `"read_file"`).
         tool_name: String,
-        /// 工具执行的当前阶段（例如 `"start"`、`"end"`）。
+        /// Current phase of the tool execution (e.g. `"start"`, `"end"`).
         phase: String,
-        /// 与此阶段关联的任意结构化负载。
+        /// Arbitrary structured payload associated with this phase.
         payload: Value,
     },
-    /// 后台作业已转换到新阶段。
+    /// A background job has transitioned to a new phase.
     JobLifecycle {
-        /// 作业的唯一标识符。
+        /// Unique identifier of the job.
         job_id: String,
-        /// 作业的当前阶段（例如 `"queued"`、`"running"`、`"done"`）。
+        /// Current phase of the job (e.g. `"queued"`, `"running"`, `"done"`).
         phase: String,
-        /// 可选的进度百分比（0-100）。
+        /// Optional progress percentage (0-100).
         progress: Option<u8>,
-        /// 关于当前阶段的可读详情。
+        /// Optional human-readable detail about the current phase.
         detail: Option<String>,
     },
-    /// 审批请求已转换到新阶段。
+    /// An approval request has transitioned to a new phase.
     ApprovalLifecycle {
-        /// 审批请求的唯一标识符。
+        /// Unique identifier of the approval request.
         approval_id: String,
-        /// 当前阶段（例如 `"requested"`、`"approved"`、`"denied"`）。
+        /// Current phase (e.g. `"requested"`, `"approved"`, `"denied"`).
         phase: String,
-        /// 解释当前阶段的可选原因。
+        /// Optional reason explaining the current phase.
         reason: Option<String>,
     },
-    /// 包装任意 [`EventFrame`] 的兜底变体。
+    /// A catch-all variant that wraps an arbitrary [`EventFrame`].
     ///
-    /// 当你需要转发协议级别的事件帧而无需
-    /// 将其映射到更具体的变体时使用。
+    /// Use this when you need to forward a protocol-level event frame without
+    /// mapping it to a more specific variant.
     GenericEventFrame {
-        /// 要转发的原始事件帧。
+        /// The raw event frame to forward.
         frame: Box<EventFrame>,
     },
 }
 
 impl HookEvent {
-    /// 将此事件序列化为 [`serde_json::Value`]。
+    /// Serialise this event into a [`serde_json::Value`].
     ///
-    /// 返回包含 `"type"` 鉴别器和所有变体字段的 JSON 对象。
-    /// 如果序列化失败（这应该极为罕见），则返回
-    /// 回退值 `{"type":"serialization_error"}` 而非 panic。
+    /// Returns a JSON object with the `"type"` discriminator and all variant
+    /// fields. If serialisation fails (which should be extremely rare), a
+    /// fallback `{"type":"serialization_error"}` value is returned instead of
+    /// panicking.
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({"type":"serialization_error"}))
     }
 }
 
-/// 可以接收 [`HookEvent`] 的目标。
+/// A destination that can receive [`HookEvent`]s.
 ///
-/// 实现者处理交付事件的传输特定细节
-///（写入 stdout、追加到文件、POST 到 webhook 等）。
-/// [`HookDispatcher`] 将每个事件分发到所有注册的接收端，因此
-/// 单个进程可以同时记录到多个目标。
+/// Implementors handle the transport-specific details of delivering events
+/// (writing to stdout, appending to a file, POSTing to a webhook, etc.).
+/// The [`HookDispatcher`] fans out every event to all registered sinks, so a
+/// single process can log to multiple destinations simultaneously.
 ///
-/// 接收端应是**尽力而为**的：实现应避免
-/// panic，并应仅在真正意外的失败时返回 [`anyhow::Error`]。
-/// [`HookDispatcher::emit`] 丢弃单个接收端的错误，因此钩子
-/// 交付失败不会中止应用程序。
+/// Sinks are expected to be **best-effort**: implementations should avoid
+/// panicking and should return an [`anyhow::Error`] only for truly unexpected
+/// failures. [`HookDispatcher::emit`] discards individual sink errors so hook
+/// delivery failures do not abort the application.
 #[async_trait]
 pub trait HookSink: Send + Sync {
-    /// 将单个事件投递到此接收端。
+    /// Deliver a single event to this sink.
     ///
-    /// 实现应对瞬时故障（例如缺少监听器）具有弹性，
-    /// 并且不应长时间阻塞调用者。
+    /// Implementations should be resilient to transient failures (e.g. a
+    /// missing listener) and should not block the caller for extended periods.
     async fn emit(&self, event: &HookEvent) -> Result<()>;
 }
 
-/// 一个将每个事件作为单行 JSON 打印到 stdout 的 [`HookSink`]。
+/// A [`HookSink`] that prints each event as a single JSON line to stdout.
 ///
-/// 适用于本地开发和调试。事件通过 [`println!`] 打印，
-/// 因此它们会与其他程序输出交错显示。
+/// Useful for local development and debugging. Events are printed via
+/// [`println!`] so they appear interleaved with other program output.
 #[derive(Default)]
 pub struct StdoutHookSink;
 
@@ -123,19 +124,20 @@ impl HookSink for StdoutHookSink {
     }
 }
 
-/// 一个将每个事件作为 JSON 行追加到文件的 [`HookSink`]。
+/// A [`HookSink`] that appends each event as a JSON line to a file.
 ///
-/// 文件（以及任何缺失的父目录）在首次发出事件时创建。
-/// 每行是一个 JSON 对象，格式为
-/// `{"at": "<ISO 8601 timestamp>", "event": {...}}`。
+/// The file is created (along with any missing parent directories) on the
+/// first emitted event. Each line is a JSON object of the form
+/// `{"at": "<ISO 8601 timestamp>", "event": {...}}`.
 pub struct JsonlHookSink {
     path: PathBuf,
 }
 
 impl JsonlHookSink {
-    /// 创建一个写入 `path` 文件的新接收端。
+    /// Create a new sink that writes to the file at `path`.
     ///
-    /// 父目录在首次 [`HookSink::emit`] 调用时延迟创建。
+    /// Parent directories are created lazily on the first [`HookSink::emit`]
+    /// call.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
@@ -166,25 +168,25 @@ impl HookSink for JsonlHookSink {
         file.write_all(b"\n")
             .await
             .context("failed to write hook event newline")?;
-        // 在 drop 之前刷新，以便顺序发出的事件（以及立即读取文件
-        // 的测试）能观察到每行完整写入。
+        // Flush before drop so sequential emits (and tests that read the
+        // file immediately after) observe every completed line.
         file.flush().await.context("failed to flush hook event")?;
         Ok(())
     }
 }
 
-/// 一个将每个事件以 JSON 格式 POST 到远程 HTTP 端点的 [`HookSink`]。
+/// A [`HookSink`] that POSTs each event as JSON to a remote HTTP endpoint.
 ///
-/// 请求体为 `{"at": "<ISO 8601 timestamp>", "event": {...}}`。
-/// 失败的请求最多重试 2 次，采用指数退避
-///（200 毫秒、400 毫秒）。耗尽重试次数后，传播错误。
+/// The request body is `{"at": "<ISO 8601 timestamp>", "event": {...}}`.
+/// Failed requests are retried up to 2 times with exponential back-off
+/// (200 ms, 400 ms). After exhausting retries the error is propagated.
 pub struct WebhookHookSink {
     url: String,
     client: reqwest::Client,
 }
 
 impl WebhookHookSink {
-    /// 创建一个将事件发送到给定 `url` 的新接收端。
+    /// Create a new sink that sends events to the given `url`.
     pub fn new(url: String) -> Self {
         Self {
             url,
@@ -233,14 +235,14 @@ impl HookSink for WebhookHookSink {
     }
 }
 
-/// 一个通过 Unix 域套接字发送事件的 [`HookSink`]。
+/// A [`HookSink`] that sends events over a Unix domain socket.
 ///
-/// 每个事件被序列化为单行 JSON（`{"at": "...", "event": {...}}\n`）
-/// 并写入套接字。如果套接字不可用（监听器未运行），
-/// 事件被静默丢弃——钩子接收端是尽力而为的可观测性，而非
-/// 控制流。
+/// Each event is serialized as a single JSON line (`{"at": "...", "event": {...}}\n`)
+/// and written to the socket. If the socket is not available (listener not running),
+/// the event is silently dropped - hook sinks are best-effort observability, not
+/// control flow.
 ///
-/// 在非 Unix 平台上，此结构体存在，但其 [`HookSink::emit`] 为空操作。
+/// On non-Unix platforms this struct exists but its [`HookSink::emit`] is a no-op.
 #[derive(Debug, Clone)]
 pub struct UnixSocketHookSink {
     #[cfg(unix)]
@@ -248,7 +250,7 @@ pub struct UnixSocketHookSink {
 }
 
 impl UnixSocketHookSink {
-    /// 创建一个连接到 `path` 处 Unix 域套接字的接收端。
+    /// Create a sink that connects to the Unix domain socket at `path`.
     pub fn new(path: PathBuf) -> Self {
         #[cfg(unix)]
         {
@@ -268,7 +270,7 @@ impl HookSink for UnixSocketHookSink {
     async fn emit(&self, event: &HookEvent) -> Result<()> {
         let mut stream = match tokio::net::UnixStream::connect(&self.path).await {
             Ok(s) => s,
-            Err(_) => return Ok(()), // 监听器未运行，静默跳过
+            Err(_) => return Ok(()), // listener not running, skip silently
         };
         let payload = json!({
             "at": Utc::now().to_rfc3339(),
@@ -285,32 +287,32 @@ impl HookSink for UnixSocketHookSink {
 
     #[cfg(not(unix))]
     async fn emit(&self, _event: &HookEvent) -> Result<()> {
-        // 此平台上不支持 Unix 套接字。
+        // Unix sockets are not available on this platform.
         Ok(())
     }
 }
 
-/// 将 [`HookEvent`] 分发到一组 [`HookSink`]。
+/// Fans out [`HookEvent`]s to a collection of [`HookSink`]s.
 ///
-/// 通过 [`add_sink`](HookDispatcher::add_sink) 注册一个或多个接收端，
-/// 然后调用 [`emit`](HookDispatcher::emit) 向所有接收端广播事件。
-/// 如果某个接收端返回错误，该错误会被静默忽略，这样
-/// 一个失败的接收端不会阻止其余接收端接收事件。
+/// Register one or more sinks via [`add_sink`](HookDispatcher::add_sink),
+/// then call [`emit`](HookDispatcher::emit) to broadcast an event to all of
+/// them. If a sink returns an error it is silently ignored so that a failing
+/// sink does not prevent remaining sinks from receiving the event.
 #[derive(Default, Clone)]
 pub struct HookDispatcher {
     sinks: Vec<Arc<dyn HookSink>>,
 }
 
 impl HookDispatcher {
-    /// 注册一个新的接收端，它将接收之后发出的所有事件。
+    /// Register a new sink that will receive all subsequently emitted events.
     pub fn add_sink(&mut self, sink: Arc<dyn HookSink>) {
         self.sinks.push(sink);
     }
 
-    /// 向每个注册的接收端广播事件。
+    /// Broadcast an event to every registered sink.
     ///
-    /// 来自单个接收端的错误会被静默丢弃，这样
-    /// 一个失败的接收端不会阻塞其他接收端。
+    /// Errors from individual sinks are silently discarded so that one failing
+    /// sink does not block the others.
     pub async fn emit(&self, event: HookEvent) {
         for sink in &self.sinks {
             let _ = sink.emit(&event).await;

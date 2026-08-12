@@ -1,17 +1,17 @@
-//! 类型化的模型和已解析路由能力描述符（#3365）。
+//! Typed model and resolved-route capability descriptors (#3365).
 //!
-//! 此模块桥接了附加的 [`crate::model_registry`] 事实和
-//! [`crate::config::provider_capability`] 中的提供商+模型能力矩阵。
-//! 它有意将内在模型事实与已解析路由事实分开，
-//! 以便未来的路由解析可以组合目录产品、用户
-//! 覆盖、实时提示和认证就绪状态，而无需在提示词、工具和 Fleet 代码中
-//! 散布提供商/模型字符串检查。
+//! This module bridges the additive [`crate::model_registry`] facts and the
+//! provider+model capability matrix in [`crate::config::provider_capability`].
+//! It intentionally keeps intrinsic model facts separate from resolved route
+//! facts so future route resolution can combine catalog offerings, user
+//! overrides, live hints, and auth readiness without scattering provider/model
+//! string checks through prompt, tool, and Fleet code.
 #![allow(dead_code)]
 
 use crate::config::{ApiProvider, RequestPayloadMode, provider_capability};
 use crate::model_registry::{self, ModelProvider};
 
-/// 三态支持事实。Unknown 与 Unsupported 不同。
+/// Three-state support facts. Unknown is distinct from unsupported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportState {
     Supported,
@@ -35,18 +35,18 @@ impl SupportState {
     }
 }
 
-/// 所选路线的粗略工具目录预算。
+/// Coarse tool-catalog budget for the selected route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSurfaceBudget {
-    /// 只保留最基本的首轮工具表面。
+    /// Keep only the most essential turn-one tool surface eager.
     Compact,
-    /// 当前默认表面：核心工具有效，长尾工具延迟加载。
+    /// Current default surface: core tools eager, long tail deferred.
     Standard,
-    /// 大窗口/全能力路线可以负担标准的完整头部。
+    /// Large-window/full-capability routes can afford the standard full head.
     Full,
 }
 
-/// 用于诊断和路线解释的事实来源。
+/// Fact provenance for diagnostics and route explanations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactProvenance {
     SeededModelRegistry,
@@ -56,7 +56,7 @@ pub enum FactProvenance {
     UserOverride,
 }
 
-/// 模型身份拥有的与提供商无关的事实。
+/// Provider-agnostic facts owned by the model identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntrinsicCapabilityProfile {
     pub context_window: Option<u32>,
@@ -70,7 +70,7 @@ pub struct IntrinsicCapabilityProfile {
     pub tool_surface_budget: ToolSurfaceBudget,
 }
 
-/// 模型拥有的配置文件。这不意味着提供商路由已就绪。
+/// A model-owned profile. This does not imply a provider route is ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelProfile {
     pub canonical_id: String,
@@ -81,7 +81,7 @@ pub struct ModelProfile {
     pub provenance: FactProvenance,
 }
 
-/// 在提供商能力事实之后层叠的可选能力覆盖。
+/// Optional capability overrides layered after provider capability facts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilityOverride {
     pub context_window: Option<u32>,
@@ -95,7 +95,7 @@ pub struct CapabilityOverride {
     pub tool_surface_budget: Option<ToolSurfaceBudget>,
 }
 
-/// 应用提供商路线事实和用户覆盖后的能力。
+/// Capabilities after provider route facts and user overrides are applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityProfile {
     pub provider: ApiProvider,
@@ -141,7 +141,7 @@ impl CapabilityProfile {
     }
 }
 
-/// 为任何模型字符串构建内在配置文件。
+/// Build an intrinsic profile for any model string.
 #[must_use]
 pub fn model_profile(model: &str) -> ModelProfile {
     let trimmed = model.trim();
@@ -198,7 +198,7 @@ pub fn model_profile(model: &str) -> ModelProfile {
     }
 }
 
-/// 从内在模型事实加上提供商事实解析路线能力。
+/// Resolve route capabilities from intrinsic model facts plus provider facts.
 #[must_use]
 pub fn resolved_capability_profile(
     provider: ApiProvider,
@@ -211,7 +211,7 @@ pub fn resolved_capability_profile(
     )
 }
 
-/// 解析路线能力并最后应用显式用户/配置覆盖。
+/// Resolve route capabilities and apply explicit user/config overrides last.
 #[must_use]
 pub fn resolved_capability_profile_with_overrides(
     provider: ApiProvider,

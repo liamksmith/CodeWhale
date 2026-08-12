@@ -1,17 +1,19 @@
-//! 会话记录渲染的滚动状态跟踪。
+//! Scroll state tracking for transcript rendering.
 //!
-//! 会话记录视图使用扁平的行索引滚动模型：一个指向渲染的行元数据缓冲区的
-//! 单个 `offset` 指向顶部可见行，保留 `usize::MAX` 作为表示"跟上实时尾部"的
-//! 哨兵值。
+//! The transcript view uses a flat line-index scroll model: a single `offset`
+//! into the rendered line-meta buffer points at the top visible line, with
+//! `usize::MAX` reserved as a sentinel meaning "stuck to the live tail."
 //!
-//! 为什么是扁平偏移而非单元格锚点？早期设计将视口锚定到 `(cell_index, line_in_cell)`
-//! 对，假设单元格列表是只追加的。但事实并非如此——内容重写（RLM `repl`
-//! 块扩展为 `Thinking + Text`、工具结果替换和压缩）可能会在用户下方
-//! 重新编号或移除单元格。当锚点单元格消失时，视口会跳到底部（问题 #56）
-//! 或"卡住"，因为下一个按键会从 `max_start` 解析。
+//! Why a flat offset, not cell anchors? An earlier design anchored the
+//! viewport to a `(cell_index, line_in_cell)` pair on the assumption that
+//! the cell list was append-only. It is not — content rewrites (RLM `repl`
+//! blocks expanding into `Thinking + Text`, tool result replacements, and
+//! compaction) can renumber or remove cells underneath the user. When the
+//! anchor cell vanished the viewport teleported to the bottom (issue #56)
+//! or "got stuck" because the next keypress would resolve from `max_start`.
 //!
-//! Codex 的分页器使用相同的行偏移形状；参见
-//! `codex-rs/tui/src/pager_overlay.rs::PagerView`。
+//! Codex's pager uses the same line-offset shape; see
+//! `codex-rs/tui/src/pager_overlay.rs::PagerView`.
 
 use std::time::{Duration, Instant};
 
@@ -23,13 +25,14 @@ const TRACKPAD_BASE_LINES_PER_TICK: i32 = 1;
 const TRACKPAD_MID_LINES_PER_TICK: i32 = 2;
 const TRACKPAD_MAX_LINES_PER_TICK: i32 = 3;
 
-// === 会话记录行元数据 ===
+// === Transcript Line Metadata ===
 
-/// 描述渲染的会话记录行如何映射到历史单元格的元数据。
+/// Metadata describing how rendered transcript lines map to history cells.
 ///
-/// 滚动状态本身不查询这个——它只存储一个扁平行偏移——
-/// 但其他渲染时辅助函数（选择绘制、发送闪烁、跳转到工具、
-/// 滚动条百分比）仍然需要缓存暴露的行→单元格映射。
+/// The scroll state itself does not consult this — it only stores a flat
+/// line offset — but other render-time helpers (selection painting,
+/// send-flash, jump-to-tool, scrollbar percent) still need the
+/// line→cell mapping the cache exposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptLineMeta {
     CellLine {
@@ -42,7 +45,7 @@ pub enum TranscriptLineMeta {
 }
 
 impl TranscriptLineMeta {
-    /// 如果此条目是单元格行，返回单元格/行索引。
+    /// Return cell/line indices if this entry is a cell line.
     #[must_use]
     pub fn cell_line(&self) -> Option<(usize, usize)> {
         match *self {
@@ -77,33 +80,35 @@ impl TranscriptLineMeta {
     }
 }
 
-// === 会话记录滚动状态 ===
+// === Transcript Scroll State ===
 
-/// 表示"跟上实时尾部"的哨兵偏移——渲染器在绘制时将其转换为 `max_start`，
-/// 因此新追加的行将视图下拉。
+/// Sentinel offset meaning "stuck to live tail" — the renderer translates
+/// this to `max_start` at draw time, so newly appended lines pull the view
+/// down with them.
 const TAIL_SENTINEL: usize = usize::MAX;
 
-/// 会话记录视图的扁平行偏移滚动状态。
+/// Flat line-offset scroll state for the transcript view.
 ///
-/// 存储顶部可见行在缓存 `line_meta` 缓冲区中的索引，
-/// 或 [`TAIL_SENTINEL`]（`usize::MAX`）表示"固定在底部"。
-/// 渲染器每帧将哨兵解析为当前行数和视口高度，
-/// 因此内容重写只是钳制用户的偏移，而不是触发锚点恢复启发式。
+/// Stores the index of the top visible line into the cache's `line_meta`
+/// buffer, or [`TAIL_SENTINEL`] (`usize::MAX`) to mean "stuck to bottom."
+/// The renderer resolves the sentinel against the current line count and
+/// viewport height every frame, so content rewrites simply clamp the
+/// user's offset rather than triggering anchor recovery heuristics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptScroll {
     offset: usize,
 }
 
 impl Default for TranscriptScroll {
-    /// 默认状态是"跟上实时尾部"——与调用者已经依赖的历史
-    /// `TranscriptScroll::ToBottom` 行为一致。
+    /// Default state is "stuck to live tail" — matches the historical
+    /// `TranscriptScroll::ToBottom` behaviour callers already depend on.
     fn default() -> Self {
         Self::to_bottom()
     }
 }
 
 impl TranscriptScroll {
-    /// 跟上实时尾部的状态（默认）。
+    /// State that follows the live tail (default).
     #[must_use]
     pub const fn to_bottom() -> Self {
         Self {
@@ -111,27 +116,29 @@ impl TranscriptScroll {
         }
     }
 
-    /// 固定到特定行索引的状态。
+    /// State pinned to a specific line index.
     #[must_use]
     pub const fn at_line(offset: usize) -> Self {
         Self { offset }
     }
 
-    /// 当视图正在跟上实时尾部时返回 true。
+    /// Returns true when the view is following the live tail.
     #[must_use]
     pub const fn is_at_tail(self) -> bool {
         self.offset == TAIL_SENTINEL
     }
 
-    /// 将滚动状态解析为具体的顶部行索引。
+    /// Resolve the scroll state to a concrete top line index.
     ///
-    /// `max_start` 是 `total_lines.saturating_sub(visible_lines)`。
-    /// 返回的 `Self` 是规范化后的状态——如果解析的顶部到达了尾部
-    ///（或者会话记录适合一个屏幕），我们折叠为 [`TranscriptScroll::to_bottom`]，
-    /// 以便调用者可以将返回的状态视为权威状态。
+    /// `max_start` is `total_lines.saturating_sub(visible_lines)`. The
+    /// returned `Self` is the canonicalized state — if the resolved top
+    /// reached the tail (or the transcript fits in one screen) we collapse
+    /// to [`TranscriptScroll::to_bottom`], so the caller can treat the
+    /// returned state as authoritative.
     ///
-    /// `line_meta` 为了与之前基于单元格锚点的实现的 API 兼容性而被接受。
-    /// 在此处未使用，因为扁平偏移模型不需要单元格索引查找；我们只需钳制。
+    /// `line_meta` is accepted for API compatibility with the previous
+    /// cell-anchored implementation. It is unused here because the flat
+    /// offset model needs no cell-index lookup; we just clamp.
     #[must_use]
     pub fn resolve_top(self, line_meta: &[TranscriptLineMeta], max_start: usize) -> (Self, usize) {
         let _ = line_meta;
@@ -146,15 +153,15 @@ impl TranscriptScroll {
         }
     }
 
-    /// 应用滚动增量并返回更新后的状态。
+    /// Apply a scroll delta and return the updated state.
     ///
-    /// `delta_lines` 是有符号的：负数向上滚动（向开头），
-    /// 正数向下滚动（向尾部）。当解析的偏移到达 `max_start` 时，
-    /// 我们快照到 [`TranscriptScroll::to_bottom`]，以便后续追加的内容
-    /// 将视图一起下拉。
+    /// `delta_lines` is signed: negative scrolls up (toward the start),
+    /// positive scrolls down (toward the tail). When the resolved offset
+    /// hits `max_start` we snap to [`TranscriptScroll::to_bottom`] so
+    /// subsequent appended content pulls the view along.
     ///
-    /// `line_meta` 为了 API 兼容性而被接受；只查询其长度。
-    /// `visible_lines` 控制用于钳制的页面大小。
+    /// `line_meta` is accepted for API compatibility; only its length is
+    /// consulted. `visible_lines` controls the page size for clamping.
     #[must_use]
     pub fn scrolled_by(
         self,
@@ -168,7 +175,7 @@ impl TranscriptScroll {
 
         let total_lines = line_meta.len();
         if total_lines <= visible_lines {
-            // 整个会话记录适合；只有"尾部"有意义。
+            // Whole transcript fits; only "tail" is meaningful.
             return Self::to_bottom();
         }
 
@@ -193,11 +200,11 @@ impl TranscriptScroll {
         }
     }
 
-    /// 将滚动状态固定到渲染会话记录中的特定行索引
-    ///（饱和到元数据缓冲区长度）。
+    /// Pin the scroll state to a specific line index in the rendered
+    /// transcript (saturating to the meta buffer length).
     ///
-    /// 如果 `line_meta` 为空则返回 `None`（在这种情况下调用者应默认为
-    /// [`TranscriptScroll::to_bottom`]）。
+    /// Returns `None` if `line_meta` is empty (caller should default to
+    /// [`TranscriptScroll::to_bottom`] in that case).
     #[must_use]
     pub fn anchor_for(line_meta: &[TranscriptLineMeta], start: usize) -> Option<Self> {
         if line_meta.is_empty() {
@@ -208,7 +215,7 @@ impl TranscriptScroll {
     }
 }
 
-/// 鼠标滚轮输入的方向。
+/// Direction for mouse scroll input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollDirection {
     Up,
@@ -224,7 +231,7 @@ impl ScrollDirection {
     }
 }
 
-/// 鼠标滚轮累积的有状态跟踪器。
+/// Stateful tracker for mouse scroll accumulation.
 #[derive(Debug, Default)]
 pub struct MouseScrollState {
     last_event_at: Option<Instant>,
@@ -232,20 +239,20 @@ pub struct MouseScrollState {
     rapid_same_direction_ticks: u8,
 }
 
-/// 来自用户输入的计算滚动增量。
+/// A computed scroll delta from user input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollUpdate {
     pub delta_lines: i32,
 }
 
 impl MouseScrollState {
-    /// 创建新的滚动状态跟踪器。
+    /// Create a new scroll state tracker.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 处理滚动事件并返回结果增量。
+    /// Process a scroll event and return the resulting delta.
     pub fn on_scroll(&mut self, direction: ScrollDirection) -> ScrollUpdate {
         let now = Instant::now();
         self.on_scroll_at(direction, now)
@@ -295,8 +302,8 @@ mod tests {
         }
     }
 
-    /// 为具有 `cell_count` 个单元格（每个 `lines_per_cell` 行高，由分隔符分隔）
-    /// 的会话记录构建合成行元数据数组。
+    /// Build a synthetic line-meta array for a transcript with `cell_count`
+    /// cells, each `lines_per_cell` lines tall, separated by spacers.
     fn synth_line_meta(cell_count: usize, lines_per_cell: usize) -> Vec<TranscriptLineMeta> {
         let mut meta = Vec::new();
         for cell in 0..cell_count {
@@ -310,8 +317,8 @@ mod tests {
         meta
     }
 
-    /// 默认状态跟上实时尾部。针对任何 `max_start` 解析都会
-    /// 返回 `max_start` 和规范尾部状态。
+    /// Default state follows the live tail. Resolving against any
+    /// `max_start` returns `max_start` and the canonical tail state.
     #[test]
     fn default_state_is_tail() {
         let state = TranscriptScroll::default();
@@ -323,11 +330,12 @@ mod tests {
         assert_eq!(top, max_start);
     }
 
-    /// `max_start` 以下的固定偏移解析为自身，不变。
-    ///（原先："锚点单元格仍然存在"——相同意图：滚动位置在仍然有效时保留。）
+    /// A pinned offset below `max_start` resolves to itself unchanged.
+    /// (Originally: "anchor cell still exists" — same intent: scroll
+    /// position is preserved when it is still valid.)
     #[test]
     fn resolve_top_keeps_position_when_offset_in_range() {
-        let meta = synth_line_meta(5, 3); // 19 个条目
+        let meta = synth_line_meta(5, 3); // 19 entries
         let max_start = meta.len().saturating_sub(8);
         let state = TranscriptScroll::at_line(9);
         let (resolved, top) = state.resolve_top(&meta, max_start);
@@ -335,79 +343,86 @@ mod tests {
         assert_eq!(top, 9);
     }
 
-    /// 问题 #56 的回归测试：当内容重写缩小会话记录时，用户的偏移
-    /// 超过了新的 `max_start`，我们钳制到新的最大值——我们绝不能跳转到顶部，
-    /// 也不能通过将用户发送到重写前内容的原始底部来静默丢失位置。
-    /// 捕捉到尾部是正确的行为，因为用户的预期位置下不再有任何内容。
+    /// Regression for issue #56: when a content rewrite shrinks the
+    /// transcript so the user's offset is past the new `max_start`, we
+    /// clamp to the new max — we must NOT teleport to the top, and we
+    /// must NOT silently lose the position by sending the user to the
+    /// raw bottom of pre-rewrite content. Snapping to the tail is the
+    /// correct behaviour because the user's intended position no longer
+    /// has any content under it.
     #[test]
     fn resolve_top_clamps_when_offset_past_max_start() {
-        let meta = synth_line_meta(3, 2); // 8 个条目（单元格 0..3，2 行 + 2 个分隔符）
+        let meta = synth_line_meta(3, 2); // 8 entries (cells 0..3, 2 lines + 2 spacers)
         let max_start = meta.len().saturating_sub(4);
-        // 用户曾经滚动到重写后不再存在的一行。
+        // User had scrolled to a line that no longer exists post-rewrite.
         let state = TranscriptScroll::at_line(15);
         let (resolved, top) = state.resolve_top(&meta, max_start);
-        // 超过 max_start 折叠为尾部（这是正确答案：
-        // max_start 之后没有内容可显示）。
+        // Past max_start collapses to tail (which is the right answer:
+        // there is no content beyond max_start to show).
         assert!(resolved.is_at_tail());
         assert_eq!(top, max_start);
     }
 
-    /// 我们在此重构中防范的新错误的回归测试：上滚到会话记录中间，
-    /// 内容在我们下方重写，然后再次绘制，当偏移仍在范围内时必须
-    /// 保留偏移（如果需要则钳制），而不得跳转到顶部或底部。
+    /// Regression for the new bug we are guarding against in this
+    /// refactor: scrolling up to mid-transcript, having the content
+    /// rewrite under us, and then drawing again must preserve the
+    /// offset (clamped if needed) and NOT teleport to top or to bottom
+    /// when the offset is still in-range.
     #[test]
     fn resolve_top_preserves_midway_offset_after_content_rewrite() {
-        // 重写前的会话记录：10 个单元格 × 3 行 + 9 个分隔符 = 39 行。
+        // Pre-rewrite transcript: 10 cells × 3 lines + 9 spacers = 39 lines.
         let pre = synth_line_meta(10, 3);
         let visible = 8;
         let pre_max_start = pre.len().saturating_sub(visible);
 
-        // 用户上滚到中间某行（第 12 行）。
+        // User scrolls up to a midway line (line 12).
         let state = TranscriptScroll::at_line(12);
         let (state, top_before) = state.resolve_top(&pre, pre_max_start);
         assert_eq!(top_before, 12);
         assert_eq!(state, TranscriptScroll::at_line(12));
 
-        // 内容重写：第 4 个单元格扩展了两行（例如内联
-        // RLM `repl` 块变成了 Thinking + Text）。总数增长。
+        // Content rewrite: cell 4 expanded by two lines (e.g. inline
+        // RLM `repl` block became Thinking + Text). Total grows.
         let mut post = pre.clone();
         post.insert(13, cell_line(4, 3));
         post.insert(14, cell_line(4, 4));
         let post_max_start = post.len().saturating_sub(visible);
         let (state2, top_after) = state.resolve_top(&post, post_max_start);
-        // 关键：仍在第 12 行，未拉到底部或顶部。
+        // Critical: still at line 12, not pulled to bottom or top.
         assert_eq!(state2, TranscriptScroll::at_line(12));
         assert_eq!(top_after, 12);
 
-        // 内容重写将会话记录缩小到偏移以下。
-        let post_shrunk = synth_line_meta(3, 3); // 总共 11 行
+        // Content rewrite shrunk transcript below the offset.
+        let post_shrunk = synth_line_meta(3, 3); // 11 lines total
         let shrunk_max_start = post_shrunk.len().saturating_sub(visible);
         let (state3, top_shrunk) = state.resolve_top(&post_shrunk, shrunk_max_start);
-        // 偏移 12 > 11；我们钳制到尾部（max_start 之后无内容）。
+        // Offset 12 > 11; we clamp to tail (no content beyond max_start).
         assert!(state3.is_at_tail());
         assert_eq!(top_shrunk, shrunk_max_start);
     }
 
-    /// 从过时偏移 `scrolled_by`：按下 Up 应仍将用户向上移动，
-    /// 而不是锁定在底部。扁平偏移模型使这变得简单——
-    /// 只需在应用增量前将偏移钳制到 `max_start`。
+    /// `scrolled_by` from a stale offset: pressing Up should still move
+    /// the user up, not lock them at the bottom. The flat-offset model
+    /// makes this trivial — the offset is simply clamped to `max_start`
+    /// before applying the delta.
     #[test]
     fn scrolled_by_does_not_teleport_on_stale_offset() {
-        let meta = synth_line_meta(3, 2); // 8 个条目
+        let meta = synth_line_meta(3, 2); // 8 entries
         let visible = 4;
         let max_start = meta.len().saturating_sub(visible);
-        // 用户之前滚动到了会话记录的新结尾之后。
+        // User had scrolled past the new end of transcript.
         let stale = TranscriptScroll::at_line(20);
         let new_state = stale.scrolled_by(-1, &meta, visible);
-        // 要么最终滚动到底部附近（max_start - 1），要么
-        // 如果 max_start 为 0，已经在尾部。
+        // Either ends up Scrolled near the bottom (max_start - 1) or
+        // already at tail if max_start was 0.
         if meta.len() > visible {
-            // 应该在 max_start - 1 = 3。
+            // Should be at max_start - 1 = 3.
             assert_eq!(new_state, TranscriptScroll::at_line(max_start - 1));
         }
     }
 
-    /// 当会话记录完全适合视口时，scrolled_by 总是折叠到尾部。
+    /// When the transcript fits entirely in the viewport, scrolled_by
+    /// always collapses to tail.
     #[test]
     fn scrolled_by_collapses_to_bottom_when_view_fits() {
         let meta = synth_line_meta(2, 2);
@@ -417,7 +432,8 @@ mod tests {
         assert!(new_state.is_at_tail());
     }
 
-    /// 从尾部向下滚动保持正数增量在尾部（我们不能滚动过底部）。
+    /// `scrolled_by` from tail with positive delta stays at tail (we
+    /// can't scroll past the bottom).
     #[test]
     fn scrolled_by_from_tail_down_stays_at_tail() {
         let meta = synth_line_meta(5, 3);
@@ -427,10 +443,11 @@ mod tests {
         assert!(new_state.is_at_tail());
     }
 
-    /// 从尾部向上滚动负数增量从 `max_start` 后退 |delta|。
+    /// `scrolled_by` from tail with negative delta moves up by |delta|
+    /// from `max_start`.
     #[test]
     fn scrolled_by_from_tail_up_walks_back_from_max_start() {
-        let meta = synth_line_meta(5, 3); // 19 个条目
+        let meta = synth_line_meta(5, 3); // 19 entries
         let visible = 6;
         let max_start = meta.len().saturating_sub(visible);
         let state = TranscriptScroll::to_bottom();
@@ -438,29 +455,31 @@ mod tests {
         assert_eq!(new_state, TranscriptScroll::at_line(max_start - 3));
     }
 
-    /// `anchor_for` 将请求的起始值钳制到元数据范围并产生固定状态。
+    /// `anchor_for` clamps the requested start into the meta range and
+    /// produces a pinned state.
     #[test]
     fn anchor_for_clamps_start_into_range() {
         let meta = synth_line_meta(4, 1);
-        let anchor = TranscriptScroll::anchor_for(&meta, 0).expect("非空");
+        let anchor = TranscriptScroll::anchor_for(&meta, 0).expect("non-empty");
         assert_eq!(anchor, TranscriptScroll::at_line(0));
 
-        let anchor = TranscriptScroll::anchor_for(&meta, 1_000_000).expect("非空");
+        let anchor = TranscriptScroll::anchor_for(&meta, 1_000_000).expect("non-empty");
         assert_eq!(
             anchor,
             TranscriptScroll::at_line(meta.len().saturating_sub(1))
         );
     }
 
-    /// 空的 `line_meta` 返回 `None`，以便调用者可以回退到
-    /// [`TranscriptScroll::to_bottom`]。
+    /// Empty `line_meta` returns `None` so callers can fall back to
+    /// [`TranscriptScroll::to_bottom`].
     #[test]
     fn anchor_for_empty_returns_none() {
         let meta: Vec<TranscriptLineMeta> = Vec::new();
         assert!(TranscriptScroll::anchor_for(&meta, 0).is_none());
     }
 
-    /// 尾部状态解析为 `max_start`，无论 `line_meta` 内容如何。
+    /// Tail state resolves to `max_start` regardless of the `line_meta`
+    /// contents.
     #[test]
     fn to_bottom_resolves_to_max_start() {
         let meta = synth_line_meta(5, 2);
@@ -482,7 +501,7 @@ mod tests {
         assert_eq!(
             state.on_scroll_at(ScrollDirection::Up, start).delta_lines,
             -1,
-            "相同时间戳被视为快速精确输入"
+            "same timestamp is treated as a rapid precise input"
         );
     }
 

@@ -1,7 +1,8 @@
-//! FIM（中间填充）编辑工具。
+//! FIM (Fill-in-the-Middle) edit tool.
 //!
-//! 读取文件，查找 `prefix_anchor` 和 `suffix_anchor`，
-//! 调用 DeepSeek `/beta/completions` FIM 端点，并将生成的中间内容写回文件。
+//! Reads a file, finds `prefix_anchor` and `suffix_anchor`, calls the
+//! DeepSeek `/beta/completions` FIM endpoint, and writes the generated
+//! middle content back into the file.
 
 use std::fs;
 
@@ -16,7 +17,7 @@ use super::spec::{
     optional_u64, required_str,
 };
 
-/// FIM 编辑操作的结果
+/// Result of a FIM edit operation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FimEditResult {
     pub success: bool,
@@ -27,7 +28,7 @@ pub struct FimEditResult {
     pub message: String,
 }
 
-/// 通过 DeepSeek FIM API 执行中间填充编辑的工具。
+/// Tool for performing Fill-in-the-Middle edits via the DeepSeek FIM API.
 pub struct FimEditTool {
     pub client: Option<DeepSeekClient>,
     pub model: String,
@@ -40,7 +41,7 @@ impl FimEditTool {
     }
 }
 
-// === 错误 ===
+// === Errors ===
 
 #[derive(Debug, Error)]
 enum FimError {
@@ -110,13 +111,13 @@ impl ToolSpec for FimEditTool {
         let suffix_anchor = required_str(&input, "suffix_anchor")?;
         let max_tokens = optional_u64(&input, "max_tokens", 1024);
 
-        // 1. 读取文件
+        // 1. Read the file
         let resolved = context.resolve_path(path)?;
         let content = fs::read_to_string(&resolved).map_err(|e| {
             ToolError::execution_failed(format!("Failed to read {}: {}", resolved.display(), e))
         })?;
 
-        // 2. 查找前缀锚点
+        // 2. Find prefix anchor
         let prefix_pos = content.find(prefix_anchor).ok_or_else(|| {
             ToolError::execution_failed(
                 FimError::PrefixNotFound(prefix_anchor.to_string()).to_string(),
@@ -124,7 +125,7 @@ impl ToolSpec for FimEditTool {
         })?;
         let prefix_end = prefix_pos + prefix_anchor.len();
 
-        // 3. 查找后缀锚点（在前缀锚点之后）
+        // 3. Find suffix anchor (after prefix anchor)
         let suffix_pos = content[prefix_end..].find(suffix_anchor).ok_or_else(|| {
             ToolError::execution_failed(
                 FimError::SuffixNotFound(suffix_anchor.to_string()).to_string(),
@@ -132,18 +133,18 @@ impl ToolSpec for FimEditTool {
         })?;
         let suffix_start = prefix_end + suffix_pos;
 
-        // 4. 验证锚点不重叠
+        // 4. Validate anchors don't overlap
         if suffix_start < prefix_end {
             return Err(ToolError::execution_failed(
                 FimError::AnchorsOverlap(suffix_start, prefix_end).to_string(),
             ));
         }
 
-        // 5. 为 FIM API 提取前缀和后缀
+        // 5. Extract prefix and suffix for the FIM API
         let fim_prompt = content[..prefix_end].to_string();
         let fim_suffix = content[suffix_start..].to_string();
 
-        // 6. 调用 FIM API
+        // 6. Call FIM API
         let generated_text = match self.client.as_ref() {
             Some(client) => client
                 .fim_completion(&self.model, &fim_prompt, &fim_suffix, max_tokens as u32)
@@ -158,7 +159,7 @@ impl ToolSpec for FimEditTool {
             }
         };
 
-        // 7. 构建新内容并写回文件
+        // 7. Build the new content and write it back
         let generated_len = generated_text.len();
         let new_content = format!("{fim_prompt}{generated_text}{fim_suffix}");
         crate::utils::write_atomic(&resolved, new_content.as_bytes()).map_err(|e| {

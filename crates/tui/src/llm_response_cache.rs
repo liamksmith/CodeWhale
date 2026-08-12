@@ -1,4 +1,4 @@
-//! 用于确定性非流式聊天响应的小型进程内缓存。
+//! Small in-process cache for deterministic non-streaming chat responses.
 
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, OnceLock};

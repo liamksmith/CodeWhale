@@ -11,18 +11,18 @@ use super::Policy;
 use super::PolicyParser;
 use super::RuleMatch;
 
-/// 用于对一个或多个执行策略文件评估命令的参数。
+/// Arguments for evaluating a command against one or more execpolicy files.
 #[derive(Debug, Parser, Clone)]
 pub struct ExecPolicyCheckCommand {
-    /// 要评估的执行策略规则文件路径（可重复）。
+    /// Paths to execpolicy rule files to evaluate (repeatable).
     #[arg(short = 'r', long = "rules", value_name = "PATH", required = true)]
     pub rules: Vec<PathBuf>,
 
-    /// 美化打印 JSON 输出。
+    /// Pretty-print the JSON output.
     #[arg(long)]
     pub pretty: bool,
 
-    /// 要对照策略检查的命令 token。
+    /// Command tokens to check against the policy.
     #[arg(
         value_name = "COMMAND",
         required = true,
@@ -33,7 +33,7 @@ pub struct ExecPolicyCheckCommand {
 }
 
 impl ExecPolicyCheckCommand {
-    /// 加载此命令的策略，评估命令，并渲染 JSON 输出。
+    /// Load the policies for this command, evaluate the command, and render JSON output.
     pub fn run(&self) -> Result<()> {
         let policy = load_policies(&self.rules)?;
         let matched_rules = policy.matches_for_command(&self.command, None);

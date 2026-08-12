@@ -1,4 +1,4 @@
-//! `/fleet` 命令。
+//! `/fleet` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

@@ -1,4 +1,4 @@
-//! 针对没有可靠括号粘贴模式的终端的粘贴爆发检测。
+//! Paste-burst detection for terminals without reliable bracketed paste.
 
 use std::time::{Duration, Instant};
 
@@ -131,9 +131,9 @@ impl PasteBurst {
         }
     }
 
-    /// 返回待处理字符/粘贴缓冲区必须刷新前的剩余延迟。
+    /// Return the remaining delay before a pending char/paste buffer must flush.
     ///
-    /// 这让 UI 事件循环避免在刷新截止时间之后休眠。
+    /// This lets the UI event loop avoid sleeping past the flush deadline.
     #[must_use]
     pub fn next_flush_delay(&self, now: Instant) -> Option<Duration> {
         let last = self.last_plain_char_time?;
@@ -195,10 +195,12 @@ impl PasteBurst {
     ) -> Option<RetroGrab> {
         let start_byte = retro_start_index(before, retro_chars);
         let grabbed = before[start_byte..].to_string();
-        // 短 CJK 首行粘贴（例如从网页聊天复制的"请联网搜索："）
-        // 曾经使启发式方法失败 —— 没有空白且低于 16 字符阈值意味着
-        // 尾随的粘贴换行符作为真正的 Enter 通过并单独提交了第一行。
-        // 将任何非 ASCII 运行视为类粘贴行为可在不误判 ASCII 打字的情况下修复此问题（#1302, PR #1342 来自 @reidliu41）。
+        // Short CJK first-line pastes (e.g. "请联网搜索：" copied from a web
+        // chat) used to fail the heuristic — no whitespace and under the
+        // 16-char threshold meant the trailing pasted newline fell through
+        // as a real Enter and submitted the first line on its own.
+        // Treating any non-ASCII run as paste-like fixes this without
+        // false-firing on ASCII typing (#1302, PR #1342 from @reidliu41).
         let looks_pastey = grabbed.chars().any(char::is_whitespace)
             || !grabbed.is_ascii()
             || grabbed.chars().count() >= 16;
@@ -225,16 +227,17 @@ impl PasteBurst {
         Some(out)
     }
 
-    /// 重置爆发累积状态而不清除抑制窗口。
+    /// Reset burst-accumulation state without clearing the suppression window.
     ///
-    /// 当活跃爆发期间到达非字符键（Tab 等）作为表格数据粘贴的一部分时使用。
-    /// 缓冲区已在上游刷新；仅重置活跃状态，以便 `burst_window_until` 保持存活，
-    /// 尾随的 Enter 仍然作为换行符被吸收（#2134）。
+    /// Used when a non-char key (Tab, etc.) arrives during an active burst as
+    /// part of table-data paste. The buffer was flushed upstream; only the
+    /// active state is reset so `burst_window_until` stays alive and a trailing
+    /// Enter is still absorbed as a newline (#2134).
     ///
     /// # Panics
     ///
-    /// 如果 `buffer` 非空，在调试构建中 panic —— 调用者必须首先通过
-    /// [`flush_before_modified_input`] 刷新。
+    /// Panics in debug builds if `buffer` is non-empty — the caller must flush
+    /// via [`flush_before_modified_input`] first.
     pub fn deactivate_keep_window(&mut self) {
         debug_assert!(
             self.buffer.is_empty(),
@@ -244,7 +247,7 @@ impl PasteBurst {
         self.last_plain_char_time = None;
         self.active = false;
         self.pending_first_char = None;
-        // burst_window_until 有意不清除
+        // burst_window_until intentionally NOT cleared
     }
 
     pub fn is_active(&self) -> bool {
@@ -347,9 +350,10 @@ mod tests {
         assert_eq!(burst.next_flush_delay(due), Some(Duration::ZERO));
     }
 
-    /// 模拟 #2134：当非字符键（Tab）在表格数据粘贴期间到达时，
-    /// `deactivate_keep_window` 重置累积状态但保留 Enter 抑制窗口，
-    /// 以便尾随换行符被吸收而不是提交部分输入。
+    /// Simulate #2134: when a non-char key (Tab) arrives during table-data
+    /// paste, `deactivate_keep_window` resets accumulation state but
+    /// preserves the Enter-suppression window so a trailing newline is still
+    /// absorbed instead of submitting the partial input.
     #[test]
     fn deactivate_keep_window_preserves_enter_suppression_window() {
         let mut burst = PasteBurst::default();

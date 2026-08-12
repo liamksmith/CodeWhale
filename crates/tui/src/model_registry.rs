@@ -1,32 +1,35 @@
-//! CodeWhale 模型事实的单一来源（#3071, #3073）。
+//! Single source of model facts for CodeWhale (#3071, #3073).
 //!
-//! 历史上，"这个模型的上下文窗口/最大输出是多少/它是否支持推理？"
-//! 由几个硬编码位置回答：
+//! Historically, "what is this model's context window / max output / does it
+//! reason?" was answered by several hard-coded sites:
 //!
 //! * [`crate::models::context_window_for_model`] /
-//!   [`crate::models::known_context_window_for_model`] 用于上下文窗口，
-//! * [`crate::models::max_output_tokens_for_model`] 用于输出限制，
-//! * [`crate::models::model_supports_reasoning`] 用于推理标志，
-//! * `crates/config/src/lib.rs` 中的 `DEFAULT_*` 模型 ID 常量用于每个提供商默认提供的标准模型。
+//!   [`crate::models::known_context_window_for_model`] for context windows,
+//! * [`crate::models::max_output_tokens_for_model`] for output caps,
+//! * [`crate::models::model_supports_reasoning`] for the reasoning flag,
+//! * the `DEFAULT_*` model-id constants in `crates/config/src/lib.rs` for the
+//!   canonical model each provider ships by default.
 //!
-//! 此模块是将它们整合到一个地方的 **基础**：一个以模型 ID 为键的 [`ModelMetadata`] 注册表，
-//! 加上一个统一的 [`lookup`] 入口点。它有意是 **附加性的** —— 现有的调用站点
-//! 在此次传递中保持不变，将在后续更改中迁移为使用注册表
-//!（因此今天行为不变）。
+//! This module is the **foundation** for collapsing those into one place: a
+//! [`ModelMetadata`] registry keyed by model id, plus a single [`lookup`]
+//! entry point. It is intentionally *additive* — the existing call sites are
+//! left untouched in this pass and will be migrated to consume the registry in
+//! a later change (so behaviour is unchanged today).
 //!
-//! ## 播种纪律（无漂移）
+//! ## Seeding discipline (no drift)
 //!
-//! 注册表不会重新声明上下文窗口/最大输出/推理
-//! 数字。相反，它通过调用现有的 `crate::models` 函数来 **播种** 每个条目，
-//! 因此注册表永远不会与 `models.rs` 悄然不一致。
-//! 标准模型 ID 来自配置 crate 提供的相同提供商默认值
-//!（参见 [`SEED_MODEL_IDS`]）。[`tests::registry_context_window_matches_models_rs`]
-//! 漂移保护随后重新断言示例的等价性，以便如果未来的更改
-//! 将播种替换为硬编码字面量，CI 会立即捕获漂移。
+//! The registry does not re-declare context-window / max-output / reasoning
+//! numbers. Instead it **seeds** each entry by calling the existing
+//! `crate::models` functions, so the registry can never silently disagree with
+//! `models.rs`. The canonical model ids come from the same provider defaults
+//! the config crate ships (see [`SEED_MODEL_IDS`]). The
+//! [`tests::registry_context_window_matches_models_rs`] drift guard then
+//! re-asserts the equivalence for a sample so that if a future change replaces
+//! a seed with a hard-coded literal, CI catches the drift immediately.
 //!
-//! 注意：这里的公开表面有意尚未被生产调用点使用
-//!（消费者在后续传递中接入），因此在此前模块级别允许
-//! `dead_code`。
+//! NOTE: the public surface here is intentionally not yet consumed by
+//! production call sites (consumers are wired in a later pass), so
+//! `dead_code` is allowed at the module level until then.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -36,64 +39,67 @@ use crate::models::{
     context_window_for_model, max_output_tokens_for_model, model_supports_reasoning,
 };
 
-/// 模型条目的粗略提供商分组。
+/// Coarse provider grouping for a model entry.
 ///
-/// 这有意是一个小而稳定的枚举，而不是 `config::ApiProvider` 的重新导出：
-/// 注册表的工作是回答"这是什么类型的模型"，
-/// 而许多模型（Kimi、GLM、Qwen……）可以通过
-/// 几个具体的提供商访问。路由决策仍然在
-/// `config::ApiProvider` / `model_routing` 中；这只是一个提示。
+/// This is deliberately a small, stable enum rather than a re-export of
+/// `config::ApiProvider`: the registry's job is to answer "what kind of model
+/// is this", and many models (Kimi, GLM, Qwen, …) are reachable through
+/// several concrete providers. Routing decisions still live in
+/// `config::ApiProvider` / `model_routing`; this is only a hint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelProvider {
-    /// DeepSeek 系列模型（一级公民；保留完整支持）。
+    /// DeepSeek-family models (first-class; preserve full support).
     DeepSeek,
-    /// Anthropic Claude 模型。
+    /// Anthropic Claude models.
     Anthropic,
-    /// OpenAI 公共 API 模型（GPT-5.5 / GPT-5.6 系列）。
+    /// OpenAI public API models (GPT-5.5 / GPT-5.6 families).
     OpenAi,
-    /// OpenAI Codex 路由模型（gpt-5*-codex）。
+    /// OpenAI Codex route models (gpt-5*-codex).
     OpenAiCodex,
-    /// Moonshot / Kimi 模型。
+    /// Moonshot / Kimi models.
     Moonshot,
-    /// Z.ai GLM 模型。
+    /// Z.ai GLM models.
     Zai,
-    /// MiniMax 模型。
+    /// MiniMax models.
     Minimax,
-    /// 阿里 Qwen 模型。
+    /// Alibaba Qwen models.
     Qwen,
-    /// Arcee Trinity 模型。
+    /// Arcee Trinity models.
     Arcee,
-    /// 小米 MiMo 模型。
+    /// Xiaomi MiMo models.
     XiaomiMimo,
-    /// Meta Muse 模型。
+    /// Meta Muse models.
     Meta,
-    /// xAI / Grok 模型。
+    /// xAI / Grok models.
     Xai,
-    /// 其他未分类的模型（仍通过 `models.rs` 启发式方法在可能时获得真实元数据）。
+    /// Anything not otherwise classified (still gets real metadata via the
+    /// `models.rs` heuristics where possible).
     Other,
 }
 
-/// 一行模型事实，在 [`lookup`] 中查找。
+/// One row of model facts, looked up in [`lookup`].
 ///
-/// 所有数字字段都从 `crate::models` 播种，因此它们与
-/// 旧版查找保持同步（参见模块文档）。
+/// All numeric fields are seeded from `crate::models` so they stay in lockstep
+/// with the legacy lookups (see module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelMetadata {
-    /// 发送给提供商的标准模型 ID（例如 `"deepseek-v4-pro"`）。
+    /// Canonical model id as sent to the provider (e.g. `"deepseek-v4-pro"`).
     pub id: &'static str,
-    /// 粗略的提供商分组。
+    /// Coarse provider grouping.
     pub provider: ModelProvider,
-    /// 如果已知，近似的上下文窗口（以 token 为单位）。
+    /// Approximate context window in tokens, if known.
     pub context_window: Option<u32>,
-    /// 如果已知，近似的最大输出 token 数。
+    /// Approximate maximum output tokens, if known.
     pub max_output: Option<u32>,
-    /// 模型是否发出必须在答案正文中保持分离的推理/思考内容。
+    /// Whether the model emits reasoning / thinking content that must be kept
+    /// out of answer prose.
     pub supports_reasoning: bool,
 }
 
 impl ModelMetadata {
-    /// 通过从现有的 `crate::models` 查找中播种每个事实来为 `id` 构建元数据行。
-    /// 这是唯一的构造函数，这使注册表不会偏离 `models.rs`。
+    /// Build a metadata row for `id` by seeding every fact from the existing
+    /// `crate::models` lookups. This is the only constructor, which is what
+    /// keeps the registry from drifting away from `models.rs`.
     fn seed(id: &'static str, provider: ModelProvider) -> Self {
         Self {
             id,
@@ -105,18 +111,18 @@ impl ModelMetadata {
     }
 }
 
-/// 注册表的标准 `(model id, provider)` 种子。
+/// Canonical `(model id, provider)` seeds for the registry.
 ///
-/// 这些镜像了 `crates/config/src/lib.rs` 提供的提供商默认值
-///（`DEFAULT_*_MODEL` 常量）加上 [`crate::models::known_context_window_for_model`] 中
-/// 显式枚举的模型。保持此列表精选：
-/// 这是我们做出头等承诺的模型集合。未知 ID 仍然通过
-/// [`lookup`] 经由 `models.rs` 启发式方法回答，它们只是
-/// 不在此处预播种。
+/// These mirror the provider defaults shipped by `crates/config/src/lib.rs`
+/// (the `DEFAULT_*_MODEL` constants) plus the explicitly-enumerated models in
+/// [`crate::models::known_context_window_for_model`]. Keep this list curated:
+/// it is the set of models we make first-class promises about. Unknown ids are
+/// still answered by [`lookup`] via the `models.rs` heuristics, they just are
+/// not pre-seeded here.
 const SEED_MODEL_IDS: &[(&str, ModelProvider)] = &[
-    // --- DeepSeek（一级公民；配置 DEFAULT_DEEPSEEK_MODEL / NIM / OpenAI
+    // --- DeepSeek (first-class; config DEFAULT_DEEPSEEK_MODEL / NIM / OpenAI
     // / Atlascloud / Novita / Fireworks / Siliconflow / SGLang / vLLM /
-    // Huggingface / Together / Volcengine / WanjieArk / Ollama 默认值） ---
+    // Huggingface / Together / Volcengine / WanjieArk / Ollama defaults) ---
     ("deepseek-v4-pro", ModelProvider::DeepSeek),
     ("deepseek-v4-flash", ModelProvider::DeepSeek),
     ("deepseek-ai/deepseek-v4-pro", ModelProvider::DeepSeek),
@@ -125,13 +131,13 @@ const SEED_MODEL_IDS: &[(&str, ModelProvider)] = &[
     ("deepseek/deepseek-v4-flash", ModelProvider::DeepSeek),
     ("deepseek-reasoner", ModelProvider::DeepSeek),
     ("deepseek-coder:1.3b", ModelProvider::DeepSeek),
-    // --- Anthropic（配置 DEFAULT_ANTHROPIC_MODEL + models.rs 行） ---
+    // --- Anthropic (config DEFAULT_ANTHROPIC_MODEL + models.rs rows) ---
     ("claude-opus-4-8", ModelProvider::Anthropic),
     ("claude-sonnet-4-6", ModelProvider::Anthropic),
     ("claude-sonnet-5", ModelProvider::Anthropic),
     ("claude-fable-5", ModelProvider::Anthropic),
     ("claude-haiku-4-5", ModelProvider::Anthropic),
-    // --- OpenAI 公共 API + Codex（配置 DEFAULT_OPENAI_CODEX_MODEL） ---
+    // --- OpenAI public API + Codex (config DEFAULT_OPENAI_CODEX_MODEL) ---
     ("gpt-5.5", ModelProvider::OpenAi),
     ("gpt-5.5-pro", ModelProvider::OpenAi),
     ("gpt-5.6", ModelProvider::OpenAi),
@@ -140,42 +146,42 @@ const SEED_MODEL_IDS: &[(&str, ModelProvider)] = &[
     ("gpt-5.6-luna", ModelProvider::OpenAi),
     ("gpt-5-codex", ModelProvider::OpenAiCodex),
     ("gpt-5.3-codex", ModelProvider::OpenAiCodex),
-    // --- Moonshot / Kimi（配置 DEFAULT_MOONSHOT_MODEL / KIMI_CODE） ---
+    // --- Moonshot / Kimi (config DEFAULT_MOONSHOT_MODEL / KIMI_CODE) ---
     ("kimi-k2.7-code", ModelProvider::Moonshot),
     ("kimi-k2.6", ModelProvider::Moonshot),
     ("kimi-for-coding", ModelProvider::Moonshot),
     ("moonshotai/kimi-k2.7-code", ModelProvider::Moonshot),
     ("moonshotai/kimi-k2.6", ModelProvider::Moonshot),
-    // --- Z.ai GLM（配置 DEFAULT_ZAI_MODEL） ---
+    // --- Z.ai GLM (config DEFAULT_ZAI_MODEL) ---
     ("z-ai/glm-5.1", ModelProvider::Zai),
     ("z-ai/glm-5.2", ModelProvider::Zai),
     ("glm-5.1", ModelProvider::Zai),
     ("glm-5.2", ModelProvider::Zai),
-    // --- MiniMax（配置 DEFAULT_MINIMAX_MODEL） ---
+    // --- MiniMax (config DEFAULT_MINIMAX_MODEL) ---
     ("minimax/minimax-m3", ModelProvider::Minimax),
     ("minimax-m3", ModelProvider::Minimax),
     ("minimax/minimax-m2.7", ModelProvider::Minimax),
     ("minimax-m2.7", ModelProvider::Minimax),
-    // --- Qwen（OpenRouter 路由默认值） ---
+    // --- Qwen (OpenRouter routing defaults) ---
     ("qwen/qwen3.6-flash", ModelProvider::Qwen),
     ("qwen/qwen3.6-plus", ModelProvider::Qwen),
     ("qwen/qwen3.6-35b-a3b", ModelProvider::Qwen),
-    // --- Arcee Trinity（配置 DEFAULT_ARCEE_MODEL） ---
+    // --- Arcee Trinity (config DEFAULT_ARCEE_MODEL) ---
     ("trinity-large-thinking", ModelProvider::Arcee),
     ("arcee-ai/trinity-large-thinking", ModelProvider::Arcee),
     ("trinity-mini", ModelProvider::Arcee),
-    // --- Sakana / Fugu（配置 DEFAULT_SAKANA_MODEL） ---
+    // --- Sakana / Fugu (config DEFAULT_SAKANA_MODEL) ---
     ("fugu-ultra-20260615", ModelProvider::Other),
     ("fugu-ultra", ModelProvider::Other),
-    // --- StepFun（配置 DEFAULT_STEPFUN_MODEL） ---
+    // --- StepFun (config DEFAULT_STEPFUN_MODEL) ---
     ("step-3.7-flash", ModelProvider::Other),
-    // --- 小米 MiMo（配置 DEFAULT_XIAOMI_MIMO_MODEL） ---
+    // --- Xiaomi MiMo (config DEFAULT_XIAOMI_MIMO_MODEL) ---
     ("mimo-v2.5-pro", ModelProvider::XiaomiMimo),
     ("mimo-v2.5-pro-ultraspeed", ModelProvider::XiaomiMimo),
     ("mimo-v2.5", ModelProvider::XiaomiMimo),
-    // --- Meta 模型 API（配置 DEFAULT_META_MODEL） ---
+    // --- Meta Model API (config DEFAULT_META_MODEL) ---
     ("muse-spark-1.1", ModelProvider::Meta),
-    // --- xAI / Grok（配置 DEFAULT_XAI_MODEL） ---
+    // --- xAI / Grok (config DEFAULT_XAI_MODEL) ---
     ("grok-4.5", ModelProvider::Xai),
     ("grok-4.3", ModelProvider::Xai),
     ("grok-build", ModelProvider::Xai),
@@ -194,23 +200,23 @@ fn registry() -> &'static BTreeMap<&'static str, ModelMetadata> {
     })
 }
 
-/// 按 ID 查找模型事实。
+/// Look up model facts by id.
 ///
-/// 当 `model` 是标准 [`SEED_MODEL_IDS`] 之一时返回预播种的 [`ModelMetadata`]
-///（不区分大小写）。对于任何其他 ID，此函数回退到
-/// 相同的 `crate::models` 启发式方法（显式 `_Nk` 后缀、DeepSeek/Claude
-/// 家族规则等），并将提供商报告为 [`ModelProvider::Other`]，因此
-/// 调用者总能获得可用的答案，而不是对于真实模型返回 `None`。
+/// Returns a pre-seeded [`ModelMetadata`] when `model` is one of the canonical
+/// [`SEED_MODEL_IDS`] (case-insensitive). For any other id, this falls back to
+/// the same `crate::models` heuristics (explicit `_Nk` suffix, DeepSeek/Claude
+/// family rules, etc.) and reports the provider as [`ModelProvider::Other`], so
+/// callers always get a usable answer rather than `None` for a real model.
 ///
-/// 仅当 ID 无法被任何现有来源识别时返回 `None`
-///（没有种子匹配且 `models.rs` 不产生上下文窗口）。
+/// Returns `None` only when the id is unrecognised by every existing source
+/// (no seed match and `models.rs` yields no context window).
 #[must_use]
 pub fn lookup(model: &str) -> Option<ModelMetadata> {
     if let Some(meta) = registry().get(model) {
         return Some(meta.clone());
     }
-    // 不区分大小写的种子匹配（模型 ID 由旧版 `models.rs` 辅助方法进行小写比较，
-    // 因此这里也遵循此规则）。
+    // Case-insensitive seed match (model ids are compared lowercased by the
+    // legacy `models.rs` helpers, so honour that here too).
     let lowered = model.to_lowercase();
     if lowered != model
         && let Some(meta) = registry().get(lowered.as_str())
@@ -218,8 +224,9 @@ pub fn lookup(model: &str) -> Option<ModelMetadata> {
         return Some(meta.clone());
     }
 
-    // 未预播种：委托给现有的启发式方法。如果它们至少认出模型（任何已知的上下文窗口），
-    // 则合成一行，以便单一查找入口点仍然适用于长尾 ID。
+    // Not pre-seeded: defer to the existing heuristics. If they recognise the
+    // model at all (any known context window), surface a synthetic row so the
+    // single lookup entry point still works for the long tail of ids.
     let context_window = context_window_for_model(model);
     let max_output = max_output_tokens_for_model(model);
     let supports_reasoning = model_supports_reasoning(model);
@@ -227,9 +234,9 @@ pub fn lookup(model: &str) -> Option<ModelMetadata> {
         return None;
     }
     Some(ModelMetadata {
-        // ID 在此非 `'static`；我们无法存储它，因此此合成行
-        // 报告空 ID。预播种的行（常见情况）携带真实 ID。
-        // 这使公开类型保持 `'static` 干净而不泄漏。
+        // The id is not 'static here; we cannot store it, so this synthetic row
+        // reports an empty id. Pre-seeded rows (the common case) carry the real
+        // id. This keeps the public type `'static`-clean without leaking.
         id: "",
         provider: ModelProvider::Other,
         context_window,
@@ -242,15 +249,17 @@ pub fn lookup(model: &str) -> Option<ModelMetadata> {
 mod tests {
     use super::*;
 
-    /// 漂移保护（#3071, #3073）。
+    /// DRIFT GUARD (#3071, #3073).
     ///
-    /// 注册表必须与 `crate::models` 就其声称知道的每个模型的上下文窗口一致。
-    /// 今天它们一致是因为注册表是从 `models.rs` *播种* 的；此测试存在
-    /// 以便如果未来的更改将播种替换为从 `models.rs` 漂移的硬编码字面量，
-    /// CI 在此失败，而不是交付两个不一致的事实来源。
+    /// The registry must agree with `crate::models` for the context window of
+    /// every model it claims to know. Today they agree because the registry is
+    /// *seeded* from `models.rs`; this test exists so that if a future change
+    /// replaces a seed with a hard-coded literal that drifts from `models.rs`,
+    /// CI fails here instead of shipping two disagreeing sources of truth.
     #[test]
     fn registry_context_window_matches_models_rs() {
-        // 跨越每个提供商分组和旧版表生成的每个不同窗口桶的代表性样本。
+        // A representative sample spanning every provider grouping and every
+        // distinct window bucket the legacy table produces.
         let sample = [
             ("deepseek-v4-pro", Some(1_000_000)),
             ("deepseek-v4-flash", Some(1_000_000)),
@@ -285,13 +294,13 @@ mod tests {
         for (model, expected) in sample {
             let meta = lookup(model)
                 .unwrap_or_else(|| panic!("seeded model {model} should be in the registry"));
-            // 1. 注册表值等于文档化的期望值。
+            // 1. Registry value equals the documented expectation.
             assert_eq!(
                 meta.context_window, expected,
                 "registry context window for {model} drifted from expected"
             );
-            // 2. 注册表值等于实时的 models.rs 值（真正的保护：
-            //    捕获任何将来漂移的硬编码字面量）。
+            // 2. Registry value equals the LIVE models.rs value (the real guard:
+            //    catches any future hard-coded literal that drifts).
             assert_eq!(
                 meta.context_window,
                 context_window_for_model(model),
@@ -319,8 +328,8 @@ mod tests {
 
     #[test]
     fn deepseek_models_are_classified_as_deepseek() {
-        // 品牌/头等 DeepSeek 支持保护：默认的 DeepSeek
-        // 模型必须存在并被归类为 DeepSeek。
+        // Branding / first-class DeepSeek support guard: the default DeepSeek
+        // models must be present and classified as DeepSeek.
         for id in [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
@@ -365,9 +374,9 @@ mod tests {
 
     #[test]
     fn lookup_falls_back_to_models_rs_for_unseeded_known_ids() {
-        // `deepseek-v3.2-256k-preview` 不在 SEED_MODEL_IDS 中，但 models.rs
-        // 通过显式的 `_Nk` 提示认出它。统一的查找入口点
-        // 必须仍然回答它，而不是返回 None。
+        // `deepseek-v3.2-256k-preview` is not in SEED_MODEL_IDS but models.rs
+        // recognises it via the explicit `_Nk` hint. The single lookup entry
+        // point must still answer it rather than returning None.
         let meta = lookup("deepseek-v3.2-256k-preview").expect("known via models.rs heuristics");
         assert_eq!(meta.context_window, Some(256_000));
         assert_eq!(

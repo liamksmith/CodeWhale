@@ -1,13 +1,14 @@
-//! Bubblewrap (bwrap) Linux 沙箱透传 (#2184)。
+//! Bubblewrap (bwrap) passthrough for Linux sandbox (#2184).
 //!
-//! Bubblewrap 是由 Flatpak 和其他项目使用的无需 setuid 的容器运行时。
-//! 它创建了一个具有可配置绑定挂载的新挂载命名空间，
-//! 提供文件系统隔离，无需 root 权限。
+//! Bubblewrap is a setuid-less container runtime used by Flatpak and other
+//! projects. It creates a new mount namespace with configurable bind mounts,
+//! providing filesystem isolation without requiring root privileges.
 //!
-//! # 工作原理
+//! # How it works
 //!
-//! 当 `/usr/bin/bwrap` 存在且配置键 `[sandbox] prefer_bwrap` 设置为 `true` 时，
-//! exec_shell 命令将通过 bwrap 而不是仅依赖 Landlock 来路由。bwrap 调用如下：
+//! When `/usr/bin/bwrap` is present AND the config key `[sandbox] prefer_bwrap`
+//! is set to `true`, exec_shell commands are routed through bwrap instead of
+//! relying solely on Landlock. The bwrap invocation looks like:
 //!
 //! ```text
 //! bwrap \
@@ -18,23 +19,24 @@
 //!   -- <program> <args>
 //! ```
 //!
-//! 这会创建整个文件系统的只读视图，仅将工作目录设为可写。
+//! This creates a read-only view of the entire filesystem with write access
+//! limited to the working directory.
 //!
-//! # 重要说明
+//! # Important
 //!
-//! 我们并不附带 bwrap。用户必须自行安装：
+//! We do NOT vendor bwrap. The user must install it themselves:
 //!
-//! - Ubuntu/Debian：`apt install bubblewrap`
-//! - Fedora：`dnf install bubblewrap`
-//! - Arch：`pacman -S bubblewrap`
+//! - Ubuntu/Debian: `apt install bubblewrap`
+//! - Fedora: `dnf install bubblewrap`
+//! - Arch: `pacman -S bubblewrap`
 //!
-//! 如果未安装 bwrap，我们将回退到 Landlock。
+//! If bwrap is not installed, we fall back to Landlock.
 
-/// bubblewrap 二进制文件的规范路径。
+/// Canonical path to the bubblewrap binary.
 #[cfg(target_os = "linux")]
 pub const BWRAP_PATH: &str = "/usr/bin/bwrap";
 
-/// 检查 bubblewrap 是否已安装且可执行。
+/// Check if bubblewrap is installed and executable.
 #[cfg(target_os = "linux")]
 pub fn is_available() -> bool {
     std::path::Path::new(BWRAP_PATH).exists()
@@ -45,49 +47,50 @@ pub fn is_available() -> bool {
     false
 }
 
-/// 构建一个包装给定程序和参数的 bwrap 命令。
+/// Build a bwrap command that wraps the given program and arguments.
 ///
-/// 返回的命令向量适合用作 `ExecEnv.command`——
-/// 它用 bwrap 调用替换正常的 program+args，
-/// 设置只读根文件系统，仅将指定的工作目录设为可写。
+/// The returned command vector is suitable for use as `ExecEnv.command` —
+/// it replaces the normal program+args with a bwrap invocation that sets
+/// up a read-only root filesystem with write access only to the specified
+/// working directory.
 ///
-/// # 参数
+/// # Arguments
 ///
-/// - `cwd` — 工作目录，将被设置为可写绑定挂载
-/// - `program` — 要在容器内运行的程序
-/// - `args` — 传递给程序的参数
+/// - `cwd` — working directory that gets writable bind-mount
+/// - `program` — the program to run inside the container
+/// - `args` — arguments to pass to the program
 ///
-/// # 返回值
+/// # Returns
 ///
-/// 表示完整 bwrap 调用的 `Vec<String>`。
+/// A `Vec<String>` representing the full bwrap invocation.
 #[cfg(target_os = "linux")]
 pub fn build_bwrap_command(cwd: &std::path::Path, program: &str, args: &[String]) -> Vec<String> {
     let mut cmd: Vec<String> = Vec::with_capacity(10 + args.len());
 
     cmd.push(BWRAP_PATH.to_string());
 
-    // 只读绑定挂载整个根文件系统。
+    // Read-only bind-mount the entire root filesystem.
     cmd.push("--ro-bind".to_string());
     cmd.push("/".to_string());
     cmd.push("/".to_string());
 
-    // 以读写方式绑定挂载工作目录。
+    // Bind-mount the working directory with read-write access.
     let cwd_str = cwd.to_string_lossy().to_string();
     cmd.push("--bind".to_string());
     cmd.push(cwd_str.clone());
     cmd.push(cwd_str.clone());
 
-    // 在容器内切换到工作目录。
+    // Change to the working directory inside the container.
     cmd.push("--chdir".to_string());
     cmd.push(cwd_str);
 
-    // 取消共享所有命名空间以实现最大隔离。
+    // Unshare all namespaces for maximum isolation.
     cmd.push("--unshare-all".to_string());
 
-    // bwrap 参数与要运行的命令之间的分隔符。
+    // Separator between bwrap args and the command to run.
     cmd.push("--".to_string());
 
-    // 实际的程序和参数。
+    // The actual program and its arguments.
     cmd.push(program.to_string());
     cmd.extend(args.iter().cloned());
 
@@ -109,16 +112,16 @@ mod tests {
         let cwd = std::path::Path::new("/home/user/project");
         let cmd = build_bwrap_command(cwd, "sh", &["-c".to_string(), "echo hi".to_string()]);
 
-        // 应以 bwrap 开头
+        // Should start with bwrap
         assert_eq!(cmd[0], "/usr/bin/bwrap");
 
-        // 应包含根目录的 ro-bind
+        // Should have ro-bind for root
         assert!(cmd.contains(&"--ro-bind".to_string()));
 
-        // 应包含 --chdir
+        // Should have --chdir
         assert!(cmd.contains(&"--chdir".to_string()));
 
-        // 应以命令结尾
+        // Should end with the command
         assert_eq!(cmd[cmd.len() - 1], "echo hi");
         assert_eq!(cmd[cmd.len() - 2], "-c");
         assert_eq!(cmd[cmd.len() - 3], "sh");

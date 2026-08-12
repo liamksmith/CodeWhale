@@ -1,27 +1,28 @@
-//! `codewhale-cli` 和 `codewhale-tui` 构建脚本的共享构建脚本辅助函数：
-//! 重新运行条件声明和嵌入的 `DEEPSEEK_BUILD_VERSION` 元数据。
-//! 仅在构建脚本中调用这些函数 — 它们会在 stdout 上发出 `cargo:` 指令。
+//! Shared build-script helpers for the `codewhale-cli` and `codewhale-tui`
+//! build scripts: rerun-condition declarations and the embedded
+//! `DEEPSEEK_BUILD_VERSION` metadata. Only call these functions from a build
+//! script — they emit `cargo:` directives on stdout.
 
 use std::{
     path::{Path, PathBuf},
     process::Command,
 };
 
-/// 声明构建元数据指令的重新运行条件：
-/// SHA 覆盖环境变量以及跟踪 `HEAD` 的 git 文件。
+/// Declare the rerun conditions for the build-metadata directives: the
+/// SHA-override environment variables plus the git files that track `HEAD`.
 ///
-/// `manifest_dir` 是调用方构建脚本的 `CARGO_MANIFEST_DIR`。
+/// `manifest_dir` is the calling build script's `CARGO_MANIFEST_DIR`.
 pub fn declare_rerun_conditions(manifest_dir: &Path) {
     println!("cargo:rerun-if-env-changed=DEEPSEEK_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     declare_git_head_rerun(manifest_dir);
 }
 
-/// 发出 `cargo:rustc-env=DEEPSEEK_BUILD_VERSION=...` — 包版本，
-/// 后附简短的构建 SHA（当可确定时）。
+/// Emit `cargo:rustc-env=DEEPSEEK_BUILD_VERSION=...` — the package version,
+/// suffixed with the short build SHA when one can be determined.
 ///
-/// `manifest_dir` 和 `package_version` 是调用方构建脚本的
-/// `CARGO_MANIFEST_DIR` 和 `CARGO_PKG_VERSION`。
+/// `manifest_dir` and `package_version` are the calling build script's
+/// `CARGO_MANIFEST_DIR` and `CARGO_PKG_VERSION`.
 pub fn emit_build_version(manifest_dir: &Path, package_version: &str) {
     let build_version = build_sha(manifest_dir)
         .map(|sha| format!("{package_version} ({sha})"))
@@ -30,15 +31,16 @@ pub fn emit_build_version(manifest_dir: &Path, package_version: &str) {
     println!("cargo:rustc-env=DEEPSEEK_BUILD_VERSION={build_version}");
 }
 
-/// 当 `HEAD` 移动时，告诉 Cargo 使缓存的构建脚本输出失效，
-/// 以便嵌入的短 SHA 与检出保持同步。
+/// Tell Cargo to invalidate the cached build script output when `HEAD`
+/// moves, so the embedded short-SHA stays in sync with the checkout.
 ///
-/// `.git/HEAD` 仅在分支切换和分离 HEAD 移动时改变 —
-/// 当前分支上的 `git commit` 更新底层引用文件
-/// （松散 `refs/heads/<name>`，或 `git pack-refs` 后的 `packed-refs`），
-/// 而不会触及 `HEAD` 本身。因此当 `HEAD` 是符号引用时，
-/// 我们也监视已解析的目标和 `packed-refs`。不存在的
-/// `rerun-if-changed` 路径被 Cargo 视为"始终已更改"，这覆盖了松散→打包的转换。
+/// `.git/HEAD` only changes on branch switches and detached-HEAD moves —
+/// `git commit` on the current branch updates the underlying ref file
+/// (loose `refs/heads/<name>`, or `packed-refs` after `git pack-refs`)
+/// without touching `HEAD` itself. So when `HEAD` is a symbolic ref we
+/// also watch the resolved target and `packed-refs`. A non-existent
+/// `rerun-if-changed` path is treated as "always changed" by Cargo, which
+/// covers the loose→packed transition.
 fn declare_git_head_rerun(manifest_dir: &Path) {
     let workspace_root = manifest_dir.join("..").join("..");
     let git_meta = workspace_root.join(".git");
@@ -46,7 +48,7 @@ fn declare_git_head_rerun(manifest_dir: &Path) {
     let gitdir = if git_meta.is_dir() {
         git_meta
     } else if git_meta.is_file() {
-        // 工作树指针文件：直接监视它，然后跟随 `gitdir:`。
+        // Worktree pointer file: watch it directly, then follow `gitdir:`.
         println!("cargo:rerun-if-changed={}", git_meta.display());
         let Ok(contents) = std::fs::read_to_string(&git_meta) else {
             return;
@@ -78,8 +80,8 @@ fn declare_git_head_rerun(manifest_dir: &Path) {
     }
 }
 
-/// 如果 `.git/HEAD` 是符号引用（`ref: refs/heads/...`），则返回目标引用路径。
-/// 对于分离 HEAD（原始 SHA）返回 `None`。
+/// If `.git/HEAD` is a symbolic ref (`ref: refs/heads/...`) return the
+/// target ref path. Returns `None` for a detached HEAD (raw SHA).
 fn parse_symbolic_ref(head_contents: &str) -> Option<&str> {
     head_contents
         .lines()

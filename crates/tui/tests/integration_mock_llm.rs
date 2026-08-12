@@ -1,43 +1,47 @@
-//! [`MockLlmClient`](mock::MockLlmClient) 的集成测试。
+//! Integration tests for the [`MockLlmClient`](mock::MockLlmClient).
 //!
-//! 这些测试直接测试 [`LlmClient`](llm_client::LlmClient) trait 表面。
-//! 它们验证模拟客户端本身在运行时依赖的模式下是否正确行为：
+//! These tests exercise the [`LlmClient`](llm_client::LlmClient) trait surface
+//! directly. They verify that the mock client itself behaves correctly under
+//! the patterns the runtime relies on:
 //!
-//! - **流式回合循环** — 事件按顺序到达，`MessageStop` 终止流。
-//! - **推理重放**（问题 #69 / V4 §5.1.1）— 当运行时在工具回合后发送第二轮时，
-//!   它必须重放之前的 `reasoning_content`。捕获了破坏 v0.4.9-v0.5.1 的 HTTP 400 路径。
-//! - **工具调用往返** — 助手发出 `tool_calls`，运行时执行，
-//!   工具结果被追加，下一轮流式传输文本。
-//! - **一轮中的多个工具调用** — 助手返回 N 个 tool_calls；
-//!   请求负载保持它们的顺序。
-//! - **压缩风格的非流式调用** — `create_message` 返回队列中的
-//!   `MessageResponse`，不经过流式路径。
-//! - **子代理风格回合** — 子邮箱接收父提示并回复；
-//!   trait 边界相同。
-//! - **容量门控观察** — 运行时可以探测估计的请求大小并选择不分发；
-//!   模拟在该表面暴露捕获侧钩子。
+//! - **Streaming turn loop** — events arrive in order, `MessageStop` terminates
+//!   the stream.
+//! - **Reasoning replay** (issue #69 / V4 §5.1.1) — when the runtime sends a
+//!   second turn after a tool round, it MUST replay prior `reasoning_content`.
+//!   Catches the HTTP 400 path that broke v0.4.9-v0.5.1.
+//! - **Tool-call round-trip** — assistant emits `tool_calls`, runtime executes,
+//!   tool result is appended, next turn streams text.
+//! - **Multiple tool calls in one round** — assistant returns N tool_calls;
+//!   the request payload preserves their ordering.
+//! - **Compaction-style non-streaming call** — `create_message` returns a
+//!   queued `MessageResponse` without going through the streaming path.
+//! - **Sub-agent style turn** — child mailbox receives a parent prompt and
+//!   replies; trait boundary is the same.
+//! - **Capacity-gate observation** — runtime can probe estimated request size
+//!   and decline to dispatch; the mock surfaces capture-side hooks for that.
 //!
-//! # 为什么是 trait 级别（而不是引擎级别）
+//! # Why trait-level (not engine-level)
 //!
-//! 截至 v0.6.7，引擎（`crates/tui/src/core/engine.rs`）持有具体的
-//! `Option<DeepSeekClient>`——[`LlmClient`] trait 已实现，但没有
-//! 消费者使用 `Arc<dyn LlmClient>` 或泛型 `<C: LlmClient>`。将模拟
-//! 接入完整的引擎回合循环因此需要一个单独的重构：
-//! 每个 `Option<DeepSeekClient>` 消费者（引擎、注册表、rlm、审查、
-//! cycle_manager、压缩、子代理）必须迁移到 `Arc<dyn LlmClient>`。
+//! As of v0.6.7 the engine (`crates/tui/src/core/engine.rs`) holds a concrete
+//! `Option<DeepSeekClient>` — the [`LlmClient`] trait is implemented but no
+//! consumer takes `Arc<dyn LlmClient>` or generic `<C: LlmClient>`. Wiring the
+//! mock into a full engine turn-loop therefore requires a separate refactor:
+//! every `Option<DeepSeekClient>` consumer (engine, registry, rlm, review,
+//! cycle_manager, compaction, subagent) must move to `Arc<dyn LlmClient>`.
 //!
-//! 根据 v0.7.0 模拟 LLM 问题（本文件的父级）："如果引擎的
-//! API 表面太混乱无法干净模拟……请将其记录为 BLOCKED，并说明
-//! 需要更改哪些接线。在这种情况下，仍然提交任何干净落地的部分工作。"
-//! 完整的引擎集成覆盖仍然被该接缝阻塞；本文件记录阻塞因素，
-//! 而不是携带被忽略的占位测试。
+//! Per the v0.7.0 mock-LLM issue (the parent of this file): "If the engine's
+//! API surfaces are too tangled to mock cleanly … document that as BLOCKED with
+//! what wiring needs to change. In that case still commit any partial work
+//! that lands cleanly." Full engine integration coverage remains blocked on
+//! that seam; this file keeps the blocker documented instead of carrying
+//! ignored placeholder tests.
 //!
-//! 一旦 `Arc<dyn LlmClient>` 落地，添加使用此模拟的引擎级别测试。
+//! Once `Arc<dyn LlmClient>` lands, add engine-level tests that reuse this mock.
 
 use futures_util::StreamExt;
 
-// 逐字引入生产模型类型——不需要其他 crate 源，
-// 因为模拟对 `models.rs` 是自包含的。
+// Bring in the production model types verbatim — no other crate sources are
+// needed because the mock is self-contained against `models.rs`.
 #[path = "../src/model_catalog.rs"]
 mod model_catalog;
 
@@ -45,14 +49,14 @@ mod model_catalog;
 #[allow(dead_code)]
 mod models;
 
-// 镜像真实的 `llm_client` 模块层次结构，以便 `mock.rs` 的
-// `super::{LlmClient, StreamEventBox}` 路径可以解析。我们重新声明一个本地的
-// `LlmClient` trait + `StreamEventBox` 别名，与生产形态 1:1 匹配
-//（二进制文件中包含的公共表面）。模拟实现了
-// 这个本地的 trait，它在结构上与生产 trait 相同。
+// Mirror the real `llm_client` module hierarchy so that `mock.rs`'s
+// `super::{LlmClient, StreamEventBox}` paths resolve. We re-declare a local
+// `LlmClient` trait + `StreamEventBox` alias that match the production shape
+// 1:1 (the public surface that ships in the binary). The mock implements
+// this local trait, which is structurally identical to the production trait.
 //
-// 辅助文件位于 `tests/support/` 下，因此 cargo 不会尝试
-// 将其编译为自己的测试二进制文件。
+// The helper file lives under `tests/support/` so cargo does not try to
+// compile it as its own test binary.
 #[path = "support/llm_client.rs"]
 mod llm_client;
 
@@ -60,7 +64,7 @@ use crate::llm_client::LlmClient;
 use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::models::{ContentBlock, Delta, Message, MessageRequest, StreamEvent, Usage};
 
-// === 辅助函数 ===============================================================
+// === Helpers ===============================================================
 
 fn user_message(text: &str) -> Message {
     Message {
@@ -155,11 +159,12 @@ async fn drain_stream_text(
     (text, stop_reason)
 }
 
-// === 1. 带流式的完整回合循环 ===============================================
+// === 1. Full turn loop with streaming =======================================
 
 #[tokio::test]
 async fn full_turn_loop_streams_text_chunks() {
-    // 两个文本增量 + 完成原因——测试引擎驱动的规范流式回合循环路径。
+    // Two text deltas + finish reason — exercises the canonical streaming
+    // turn-loop path the engine drives.
     let turn = vec![
         canned::message_start("msg_1"),
         canned::text_block_start(0),
@@ -180,11 +185,11 @@ async fn full_turn_loop_streams_text_chunks() {
     assert_eq!(mock.captured_requests().len(), 1);
 }
 
-// === 2. 推理重放（V4 思考模式 HTTP-400 回归）================================
+// === 2. Reasoning replay (V4 thinking-mode HTTP-400 regression) =============
 
 #[tokio::test]
 async fn reasoning_replay_required_on_subsequent_turn() {
-    // 回合 1：助手发出 thinking + tool_call。回合 2：文本回复。
+    // Turn 1: assistant emits thinking + tool_call. Turn 2: text reply.
     let turn1 = vec![
         canned::message_start("r1"),
         canned::thinking_delta(0, "I should call list_dir."),
@@ -204,15 +209,15 @@ async fn reasoning_replay_required_on_subsequent_turn() {
     ];
     let mock = MockLlmClient::new(vec![turn1, turn2]);
 
-    // === 第 1 轮：用户提示 -> 助手 tool_call ===
+    // === Round 1: user prompt -> assistant tool_call ===
     let req1 = make_request(vec![user_message("list /tmp")]);
     let _ = mock.create_message_stream(req1).await.unwrap().next().await;
-    // （我们不排干——重要的是捕获）
+    // (we don't drain — capture is what matters here)
 
-    // === 第 2 轮：运行时构建下一个请求，包含之前
-    // 助手回合的 reasoning_content。模拟可以验证运行时保留的任何
-    // ContentBlock::Thinking 都存在于下一个传出请求中——
-    // 正是破坏 v0.4.9-v0.5.1 的负载形状。
+    // === Round 2: runtime composes the next request including the prior
+    // assistant turn's reasoning_content. The mock can verify that any
+    // ContentBlock::Thinking the runtime preserves is present in the next
+    // outgoing request — the very payload shape that broke v0.4.9-v0.5.1.
     let next_messages = vec![
         user_message("list /tmp"),
         assistant_thinking("I should call list_dir.", ""),
@@ -222,10 +227,10 @@ async fn reasoning_replay_required_on_subsequent_turn() {
     let req2 = make_request(next_messages);
     let _ = mock.create_message_stream(req2).await.unwrap();
 
-    // 模拟捕获了两个请求。断言第二个请求保留了
-    // 之前助手消息的 Thinking 块——即运行时在重新发送前
-    // 没有剥离 reasoning_content。（如果 reasoning_content 缺失，
-    // V4 思考模式工具回合会拒绝 HTTP 400。）
+    // The mock captured both requests. Assert the SECOND request preserves
+    // the prior assistant message's Thinking block — i.e. the runtime did
+    // not strip reasoning_content before re-sending. (V4 thinking-mode tool
+    // turns reject HTTP 400 if reasoning_content is missing.)
     let captured = mock.captured_requests();
     assert_eq!(captured.len(), 2);
 
@@ -239,7 +244,7 @@ async fn reasoning_replay_required_on_subsequent_turn() {
                     .iter()
                     .any(|b| matches!(b, ContentBlock::Thinking { .. }))
         })
-        .expect("回合 2 请求必须重放助手 Thinking 内容");
+        .expect("turn 2 request must replay assistant Thinking content");
 
     let thinking_text = assistant_with_thinking
         .content
@@ -248,18 +253,18 @@ async fn reasoning_replay_required_on_subsequent_turn() {
             ContentBlock::Thinking { thinking, .. } => Some(thinking.clone()),
             _ => None,
         })
-        .expect("Thinking 块存在");
+        .expect("Thinking block present");
     assert_eq!(
         thinking_text, "I should call list_dir.",
-        "reasoning_content 必须在工具调用回合中逐字重放"
+        "reasoning_content must be replayed verbatim across tool-call rounds"
     );
 }
 
-// === 3. 工具调用往返 ========================================================
+// === 3. Tool-call round-trip ================================================
 
 #[tokio::test]
 async fn tool_call_round_trip_streams_args_then_continues() {
-    // 回合 1 发出带有分块输入 JSON 的 tool_use 块。
+    // Turn 1 emits a tool_use block with chunked input JSON.
     let turn1 = vec![
         canned::message_start("rt1"),
         canned::tool_use_block_start(0, "call_x", "read_file"),
@@ -279,7 +284,7 @@ async fn tool_call_round_trip_streams_args_then_continues() {
     ];
     let mock = MockLlmClient::new(vec![turn1, turn2]);
 
-    // 第 1 轮
+    // Round 1
     let mut s1 = mock
         .create_message_stream(make_request(vec![user_message("read README.md")]))
         .await
@@ -306,11 +311,11 @@ async fn tool_call_round_trip_streams_args_then_continues() {
     }
     assert!(tool_use_seen);
     let parsed: serde_json::Value =
-        serde_json::from_str(&json_seen).expect("连接后的有效 JSON");
+        serde_json::from_str(&json_seen).expect("valid JSON after concat");
     assert_eq!(parsed["path"], "README.md");
 
-    // 第 2 轮——运行时发回 tool_result，模拟用
-    // 最终的助手文本回合回复。
+    // Round 2 — runtime sends back a tool_result and the mock replies with
+    // the final assistant text turn.
     let req2 = make_request(vec![
         user_message("read README.md"),
         assistant_tool_call(
@@ -325,13 +330,13 @@ async fn tool_call_round_trip_streams_args_then_continues() {
     assert_eq!(stop.as_deref(), Some("end_turn"));
 }
 
-// === 4. 一轮中的多个工具调用（并行排序）=====================================
+// === 4. Multiple tool calls in one round (parallel ordering) ================
 
 #[tokio::test]
 async fn parallel_tool_calls_preserve_ordering_in_turn_payload() {
-    // 助手在单个回合中返回两个 tool_calls（索引 0 和 1）。
-    // 运行时可以自由并行执行它们；此测试断言规范事件排序
-    // 在单回合重放后仍然保持。
+    // Assistant returns two tool_calls in a single turn (indices 0 and 1).
+    // The runtime is free to execute them in parallel; this test asserts that
+    // the canonical event ordering survives a single-turn replay.
     let turn = vec![
         canned::message_start("p1"),
         canned::tool_use_block_start(0, "call_one", "list_dir"),
@@ -369,7 +374,7 @@ async fn parallel_tool_calls_preserve_ordering_in_turn_payload() {
     assert_eq!(starts[1], (1, "call_two".to_string()));
 }
 
-// === 5. 压缩风格的非流式调用 ================================================
+// === 5. Compaction-style non-streaming call =================================
 
 #[tokio::test]
 async fn compaction_non_streaming_returns_queued_message_response() {
@@ -391,7 +396,7 @@ async fn compaction_non_streaming_returns_queued_message_response() {
         usage: Usage::default(),
     });
 
-    // 运行时的压缩路径使用 create_message（而不是流）。
+    // The runtime's compaction path uses create_message (not stream).
     let req = MessageRequest {
         stream: Some(false),
         ..make_request(vec![user_message("summarize")])
@@ -400,22 +405,23 @@ async fn compaction_non_streaming_returns_queued_message_response() {
 
     let text = match &resp.content[0] {
         ContentBlock::Text { text, .. } => text.clone(),
-        _ => panic!("预期文本内容"),
+        _ => panic!("expected text content"),
     };
     assert!(text.contains("Summary"));
     assert_eq!(resp.id, "compact_msg");
     assert_eq!(mock.call_count(), 1);
 }
 
-// === 6. 子代理风格回合 ======================================================
+// === 6. Sub-agent style turn ================================================
 //
-// 在 `agent` 摘要后的下一轮必须在报告成功前重新验证声称的副作用。
+// The next turn after an `agent` summary must re-verify the claimed
+// side effect before reporting success.
 
 #[tokio::test]
 async fn v4_parent_reverifies_subagent_file_self_report_before_claiming_success() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let missing = tmp.path().join("child-claimed-write.txt");
-    assert!(!missing.exists(), "fixture 路径必须以缺失状态开始");
+    assert!(!missing.exists(), "fixture path must start missing");
     let missing_path = missing.display().to_string();
 
     let parent = MockLlmClient::new(vec![vec![
@@ -473,38 +479,39 @@ Child results are self-reports; verify side effects with tools like read_file or
 
     assert_eq!(text_before_verification, "");
     assert_eq!(tool_name.as_deref(), Some("read_file"));
-    let parsed: serde_json::Value = serde_json::from_str(&tool_input).expect("工具输入 JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&tool_input).expect("tool input JSON");
     assert_eq!(parsed["path"], missing_path);
 }
 
-// === 7. 请求捕获观察 ========================================================
+// === 7. Request capture observation =========================================
 //
-// 模拟在响应流打开前就已暴露请求捕获，因此 trait 级别测试可以验证
-// 捕获的请求是按调用可观察的，而不是跨调用缓冲的。
+// The mock surfaces request captures BEFORE the response stream is opened, so
+// trait-level tests can verify that captured requests are observable per-call
+// rather than buffered across calls.
 
 #[tokio::test]
 async fn capacity_gate_can_observe_request_before_response_streams() {
     let turn = vec![canned::simple_text_turn("ok")];
     let mock = MockLlmClient::new(turn);
 
-    // 构建一个"接近限制"的请求——许多用户消息。
+    // Build a "near-limit" request — many user messages.
     let mut messages = Vec::new();
     for i in 0..200 {
         messages.push(user_message(&format!("m{i}")));
     }
     let req = make_request(messages);
 
-    // 在运行时排干流之前，模拟已捕获请求。
-    // 容量控制器可以检查此请求，并在估计令牌成本超过软上限时
-    // 短路分发。
+    // BEFORE the runtime drains the stream, the mock has already captured
+    // the request. The capacity controller can inspect this and short-circuit
+    // the dispatch if the estimated token cost exceeds the soft cap.
     let stream_future = mock.create_message_stream(req);
     let mut stream = stream_future.await.unwrap();
 
     assert_eq!(mock.captured_requests().len(), 1);
     let captured = mock.last_request().unwrap();
     assert_eq!(captured.messages.len(), 200);
-    // 验证容量门控可以根据原始消息计数 + 捕获请求的负载大小
-    // 计算"应推迟"的决策。
+    // Verify the capacity gate could compute a "should defer" decision based
+    // on raw message count + payload size of the captured request.
     let total_chars: usize = captured
         .messages
         .iter()
@@ -516,33 +523,34 @@ async fn capacity_gate_can_observe_request_before_response_streams() {
         .sum();
     assert!(
         total_chars > 100,
-        "合成超容量请求应具有非平凡大小"
+        "synthetic over-cap request should have non-trivial size"
     );
 
-    // 排干以保持模拟状态一致。
+    // Drain to keep the mock state consistent.
     while stream.next().await.is_some() {}
 }
 
-// === 8. 压缩默认值（#402 P0）================================================
+// === 8. Compaction defaults (#402 P0) ======================================
 
 #[test]
 fn compaction_config_defaults_are_enabled_for_session_survivability() {
-    // 生产 CompactionConfig 通过 `#[path = ...]` 模块门控，
-    // 此处未连接，但我们可以测试原则：
-    // `should_compact` 函数和 `CompactionConfig` 位于同一 crate 中。
-    // 从生产模块重新导入以验证默认值。
+    // The production CompactionConfig is gated behind a `#[path = ...]` module
+    // that isn't wired here, but we can test the principle: the
+    // `should_compact` function and `CompactionConfig` live in the same crate.
+    // Re-import from the production module to verify the default.
     //
-    // 我们通过模拟路径测试：上面的非流式压缩调用（测试 5）
-    // 已经使用 `stream: Some(false)` 执行了 `create_message`，
-    // 这是 `compact_messages` 使用的代码路径。结合
-    // 容量控制器的 `TargetedContextRefresh`，默认启用的
-    // 压缩配置意味着长会话会在到达上下文窗口限制前自动压缩。
+    // We test via the mock pathway: the non-streaming compaction call (test 5
+    // above) already exercises `create_message` with `stream: Some(false)`,
+    // which is the code path `compact_messages` uses. Combined with the
+    // capacity controller's `TargetedContextRefresh`, the enabled-by-default
+    // compaction config means long sessions auto-compact before hitting the
+    // context window limit.
     //
-    // 此测试是一个烟雾测试，确保默认值编译且正确。
-    // 生产 `CompactionConfig::default()` 由
-    // `compaction::tests::should_compact_respects_enabled_flag` 等测试。
+    // This test is a smoke check that the defaults compile and are correct.
+    // The production `CompactionConfig::default()` is exercised by
+    // `compaction::tests::should_compact_respects_enabled_flag` etc.
     let config = crate::models::compaction_threshold_for_model_at_percent("deepseek-v4-pro", 80.0);
-    // 验证阈值合理（> 0 且 < 上下文窗口）。
-    assert!(config > 0, "压缩阈值必须为正数");
-    assert!(config < 1_000_000, "压缩阈值必须低于 1M");
+    // Verify the threshold is reasonable (> 0 and < context window).
+    assert!(config > 0, "compaction threshold must be positive");
+    assert!(config < 1_000_000, "compaction threshold must be below 1M");
 }

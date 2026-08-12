@@ -1,7 +1,8 @@
-//! 记忆命令区域：持久化记忆与快速笔记。
+//! Memory command area: persistent memory and quick notes.
 
-// 本 group 目录有意包含一个同名的 `memory.rs` 子模块。允许 module_inception 是永久性的结构设计决策，
-// 而非迁移脚手架；详见 docs/architecture/command-dispatch.md。
+// This group dir intentionally has a `memory.rs` child module with the same
+// name. The module_inception allow is a permanent structure rationale, not
+// migration scaffolding; see docs/architecture/command-dispatch.md.
 #[allow(clippy::module_inception)]
 mod memory;
 mod note;

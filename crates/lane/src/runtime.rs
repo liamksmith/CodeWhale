@@ -1,7 +1,7 @@
-//! 运行时后端：tmux 持久化、内联、vm/ci 桩 (#4176)。
+//! Runtime backends: tmux durability, inline, vm/ci stubs (#4176).
 //!
-//! 运行时拥有进程/会话生命周期和流式 JSON 日志捕获。
-//! Fleet 模块不能导入此模块。
+//! Runtime owns process/session lifecycle and stream-json log capture.
+//! Fleet modules must not import this module.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::registry::{LaneRecord, LaneRegistry, LaneStatus};
 use crate::worktree::{WorktreeProvision, provision_worktree, remove_worktree_if_expired};
 
-/// lane 的执行后端。
+/// Execution backend for a lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeBackendKind {
@@ -45,22 +45,22 @@ impl RuntimeBackendKind {
     }
 }
 
-/// 在运行时后端下启动 lane 的输入。
+/// Inputs for starting a lane under a runtime backend.
 #[derive(Debug, Clone)]
 pub struct LaneStartSpec {
-    /// 在后端内运行的命令参数（例如 `codewhale exec …`）。
+    /// Command argv to run inside the backend (e.g. `codewhale exec …`).
     pub command: Vec<String>,
-    /// 命令的工作目录（默认为工作树或当前工作目录）。
+    /// Working directory for the command (defaults to worktree or cwd).
     pub cwd: Option<PathBuf>,
-    /// 设置后，在此仓库下创建一个隔离的 git 工作树和分支。
+    /// When set, provision an isolated git worktree + branch under this repo.
     pub worktree: Option<WorktreeProvision>,
 }
 
-/// 运行时适配器契约。
+/// Runtime adapter contract.
 pub trait RuntimeBackend {
     fn kind(&self) -> RuntimeBackendKind;
 
-    /// 启动 lane 进程/会话；用连接/日志元数据修改记录。
+    /// Start the lane process/session; mutates record with attach/log metadata.
     fn start(
         &self,
         registry: &LaneRegistry,
@@ -68,13 +68,13 @@ pub trait RuntimeBackend {
         spec: &LaneStartSpec,
     ) -> Result<()>;
 
-    /// 人工连接命令，如果有的话（tmux）。
+    /// Human attach command, if any (tmux).
     fn attach_command(&self, record: &LaneRecord) -> Option<String>;
 
-    /// 停止正在运行的会话/进程。
+    /// Stop the running session/process.
     fn stop(&self, registry: &LaneRegistry, record: &mut LaneRecord) -> Result<()>;
 
-    /// 停止后可选的工作树 TTL 清理。
+    /// Optional worktree TTL cleanup after stop.
     fn cleanup_worktree(&self, record: &LaneRecord) -> Result<()> {
         if let Some(path) = record.worktree_path.as_ref() {
             remove_worktree_if_expired(
@@ -124,7 +124,7 @@ fn apply_worktree(record: &mut LaneRecord, spec: &LaneStartSpec) -> Result<Optio
     Ok(Some(provisioned.path))
 }
 
-/// 持久的本地 tmux 会话 + 连接 + 流式 JSON 日志文件。
+/// Durable local tmux sessions + attach + stream-json log file.
 #[derive(Debug, Default)]
 pub struct TmuxRuntime;
 
@@ -142,8 +142,8 @@ impl RuntimeBackend for TmuxRuntime {
         if spec.command.is_empty() {
             bail!("tmux runtime requires a non-empty command");
         }
-        // tmux 可能在 CI 中不存在；在 CODEWHALE_LANE_TMUX_DRY_RUN=1
-        // 或 tmux 缺失时（测试中），回退到 dry-run 会话记录。
+        // tmux may be absent in CI; fall back to a dry-run session record when
+        // CODEWHALE_LANE_TMUX_DRY_RUN=1 or tmux is missing (tests).
         let dry_run = std::env::var_os("CODEWHALE_LANE_TMUX_DRY_RUN").is_some()
             || Command::new("tmux")
                 .arg("-V")
@@ -184,7 +184,7 @@ impl RuntimeBackend for TmuxRuntime {
             return Ok(());
         }
 
-        // 分离式会话：运行命令，将标准输出 tee 到 lane 日志中。
+        // Detached session: run command, tee stdout into the lane log.
         let log_path = record.log_path.display().to_string();
         let shell_cmd = format!(
             "({}) 2>&1 | while IFS= read -r line; do printf '%s\\n' \"$line\" >> {}; done",
@@ -243,7 +243,7 @@ impl RuntimeBackend for TmuxRuntime {
     }
 }
 
-/// 进程内/本地命令运行时（无 tmux）。用于测试和无头模式。
+/// In-process / local command runtime (no tmux). Used for tests and headless.
 #[derive(Debug, Default)]
 pub struct InlineRuntime;
 
@@ -323,7 +323,7 @@ impl RuntimeBackend for InlineRuntime {
     }
 }
 
-/// 远程虚拟机/CI 后端的占位符（仅在阶段 1 中提供）。
+/// Placeholder for remote VM / CI backends (surface only in Phase 1).
 #[derive(Debug)]
 struct StubRuntime {
     kind: RuntimeBackendKind,
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn tmux_dry_run_start_attach_stop_roundtrip() {
-        // 安全性：仅用于测试的 tmux dry-run 环境切换；单线程单元测试。
+        // SAFETY: test-only env toggle for tmux dry-run; single-threaded unit test.
         unsafe {
             std::env::set_var("CODEWHALE_LANE_TMUX_DRY_RUN", "1");
         }
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(record.status, LaneStatus::Stopped);
         let reloaded = reg.load(&record.id).unwrap();
         assert_eq!(reloaded.status, LaneStatus::Stopped);
-        // 安全性：成对清理仅用于测试的 dry-run 标志。
+        // SAFETY: paired cleanup of the test-only dry-run flag.
         unsafe {
             std::env::remove_var("CODEWHALE_LANE_TMUX_DRY_RUN");
         }

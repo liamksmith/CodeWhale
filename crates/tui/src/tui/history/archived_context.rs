@@ -1,4 +1,4 @@
-//! 解析和渲染归档上下文对话单元格。
+//! Parsing and rendering for archived-context transcript cells.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,10 +7,11 @@ use crate::palette;
 
 use super::{HistoryCell, TRANSCRIPT_RAIL};
 
-/// 从助手 Text 块中解析 `<archived_context>` 块。
+/// Parse an `<archived_context>` block from an assistant Text block.
 ///
-/// 当文本包含格式良好的 `<archived_context>...</archived_context>` 块时返回 `Some(HistoryCell::ArchivedContext)`，
-/// 如果文本是普通的助手内容则返回 `None`。
+/// Returns `Some(HistoryCell::ArchivedContext)` when the text contains a
+/// well-formed `<archived_context>...</archived_context>` block, or `None`
+/// if the text is regular assistant content.
 pub(super) fn parse_archived_context(text: &str) -> Option<HistoryCell> {
     let text = text.trim();
     if !text.starts_with("<archived_context") || !text.ends_with("</archived_context>") {
@@ -57,7 +58,7 @@ fn archived_context_attr(tag: &str, name: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// 使用暗色/斜体样式渲染 `<archived_context>` 块。
+/// Render an `<archived_context>` block with dimmed/italic styling.
 pub(super) fn render_archived_context(
     cell: &HistoryCell,
     width: u16,

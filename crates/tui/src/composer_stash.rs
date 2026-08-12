@@ -1,25 +1,29 @@
-//! Composer 的暂停草稿暂存区 (#440)。
+//! Parked-draft stash for the composer (#440).
 //!
-//! 暂存区是历史记录的侧通道：它保存用户有意暂停的草稿（Ctrl+S），
-//! 而不是过去的已提交内容（那些在 `composer_history.rs` 中）。
-//! Pop 语义使其成为 LIFO——最近的暂存内容最先返回。
+//! A stash is a side-channel from history: it holds drafts the user
+//! parked deliberately (Ctrl+S) instead of submissions made in the
+//! past (which live in `composer_history.rs`). Pop semantics make it
+//! a LIFO — the most recent stash comes back first.
 //!
-//! ## 磁盘格式
+//! ## On-disk format
 //!
-//! `~/.codewhale/composer_stash.jsonl` — 每行一个 JSON 对象：
+//! `~/.codewhale/composer_stash.jsonl` — one JSON object per line:
 //!
 //! ```jsonl
 //! {"ts":"2026-05-04T01:23:45Z","text":"draft here"}
 //! ```
 //!
-//! 自修复解析器：格式错误的行被静默跳过，因此单个损坏的写入不会破坏暂存区的其余部分。
-//! 解析器不要求任何特定的字段顺序；只有 `text` 是必需的。
+//! Self-healing parser: malformed lines are skipped silently so a
+//! single bad write doesn't corrupt the rest of the stash. The
+//! parser doesn't require any specific field order; only `text` is
+//! mandatory.
 //!
-//! ## 为什么是 JSONL 而不是纯文本文件？
+//! ## Why JSONL and not a plain text file?
 //!
-//! 草稿可以包含换行符（它们是提示词，而不是单行命令），
-//! 因此以 `\n` 分隔的纯文本文件会破坏多行草稿。
-//! JSONL 在 JSON 字符串内明确地转义换行符，并且时间戳/未来字段可以干净地放置。
+//! Drafts can contain newlines (they're prompts, not single-line
+//! commands), so a `\n`-delimited plain file would mangle multi-line
+//! drafts. JSONL escapes newlines inside JSON strings without
+//! ambiguity and the timestamp / future fields land cleanly.
 
 use std::fs;
 use std::io;
@@ -30,17 +34,20 @@ use serde::{Deserialize, Serialize};
 
 const STASH_FILE_NAME: &str = "composer_stash.jsonl";
 
-/// 硬上限，防止失控脚本用暂停的草稿填满用户的家目录。
-/// 当暂存区超过此计数时，在推送时修剪较旧的条目。
+/// Hard cap so a runaway script can't fill the user's home with
+/// parked drafts. Older entries are pruned at push time when the
+/// stash exceeds this count.
 pub const MAX_STASH_ENTRIES: usize = 200;
 
-/// 一个暂停的草稿。字段使用 `#[serde(default)]`，因此旧版/截断的记录仍能解析，而不会破坏暂存区。
+/// One parked draft. Fields are `#[serde(default)]` so legacy /
+/// truncated records still parse instead of poisoning the stash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StashedDraft {
-    /// RFC 3339 时间戳；在旧版记录上省略。
+    /// RFC 3339 timestamp; omitted on legacy records.
     #[serde(default)]
     pub ts: String,
-    /// 暂停的文本。必需——没有 `text` 的条目在加载时被丢弃（视为格式错误）。
+    /// The parked text. Required — entries with no `text` are
+    /// dropped during load (treated as malformed).
     pub text: String,
 }
 
@@ -55,8 +62,10 @@ fn default_stash_path() -> Option<PathBuf> {
     })
 }
 
-/// 按照写入顺序（最旧在前）从磁盘加载所有暂存的草稿。
-/// 自修复：格式错误的行被静默丢弃。文件不存在时返回空 vec。
+/// Load every stashed draft from disk in the order they were
+/// written (oldest first). Self-healing: malformed lines are
+/// dropped silently. Returns an empty vec when the file doesn't
+/// exist.
 #[must_use]
 pub fn load_stash() -> Vec<StashedDraft> {
     let Some(path) = default_stash_path() else {
@@ -78,9 +87,10 @@ fn load_stash_from(path: &Path) -> Vec<StashedDraft> {
         .collect()
 }
 
-/// 将新草稿推入暂存区。空文本/仅空白文本被静默丢弃，
-/// 因此在空 composer 上误按 Ctrl+S 不会污染文件。
-/// 失败会被记录但不会传播——暂存区是 UX 便利功能，不是正确性关注点。
+/// Push a new draft onto the stash. Empty / whitespace-only text
+/// is silently dropped so a stray Ctrl+S on an empty composer
+/// doesn't pollute the file. Failures are logged but never
+/// propagated — stash is a UX nicety, not a correctness concern.
 pub fn push_stash(text: &str) {
     let Some(path) = default_stash_path() else {
         return;
@@ -115,16 +125,17 @@ fn push_stash_to(path: &Path, text: &str) {
     write_stash_to(path, &entries);
 }
 
-/// 移除并返回最近推送的草稿（如果有）。
-/// 用剩余条目重写磁盘文件。
+/// Remove and return the most recently pushed draft, if any.
+/// Rewrites the on-disk file with the remaining entries.
 #[must_use]
 pub fn pop_stash() -> Option<StashedDraft> {
     let path = default_stash_path()?;
     pop_stash_from(&path)
 }
 
-/// 完全擦除暂存区文件。返回被丢弃的条目数（以便调用者报告）。
-/// 当文件不存在或没有条目时返回 0。
+/// Wipe the stash file entirely. Returns the number of entries
+/// that were dropped (so the caller can report it). Returns 0
+/// when the file doesn't exist or had no entries.
 pub fn clear_stash() -> io::Result<usize> {
     let Some(path) = default_stash_path() else {
         return Ok(0);
@@ -161,8 +172,10 @@ fn write_stash_to(path: &Path, entries: &[StashedDraft]) {
                 payload.push('\n');
             }
             Err(err) => {
-                // 经过 serde 往返的草稿不应该序列化失败，但双重保险
-                // 以防止 `text` 中的奇怪码点在写入过程中破坏文件。
+                // A draft that round-trips through serde shouldn't
+                // fail to serialize, but belt-and-suspenders so a
+                // weird codepoint in `text` doesn't blow the file
+                // away mid-write.
                 tracing::warn!("Skipping stash entry due to serialize failure: {err}");
             }
         }

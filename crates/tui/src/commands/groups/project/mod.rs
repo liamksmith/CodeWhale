@@ -1,4 +1,4 @@
-//! 项目命令区域：工作区引导、LSP 连接、共享和目标。
+//! Project command area: workspace bootstrap, LSP wiring, sharing, and goals.
 
 mod goal;
 mod init;

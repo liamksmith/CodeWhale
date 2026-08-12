@@ -1,4 +1,5 @@
-//! 调试命令区域：令牌/成本内省、缓存工具、撤销/重试和变更日志。
+//! Debug command area: token/cost introspection, cache tooling, undo/retry,
+//! and the change log.
 
 mod balance;
 mod cache;
@@ -155,8 +156,9 @@ pub(in crate::commands) fn dispatch(
         "edit" => undo::edit(app),
         "diff" => undo::diff(app),
         "undo" => {
-            // 首先尝试精确的补丁撤销；如果没有快照可用于快照撤销未能找到任何有用内容，
-            // 则回退到对话撤销。
+            // Try surgical patch-undo first; fall back to conversation undo
+            // if no snapshots are available or if the snapshot undo couldn't
+            // find anything useful.
             let result = undo::patch_undo(app);
             if result.message.as_deref().is_none_or(|m| {
                 m.starts_with("No snapshots found")

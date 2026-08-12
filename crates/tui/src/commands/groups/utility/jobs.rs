@@ -1,4 +1,4 @@
-//! Shell 任务中心命令。
+//! Shell job-center commands.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

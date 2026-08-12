@@ -1,8 +1,9 @@
-//! 项目上下文加载的进程本地缓存。
+//! Process-local cache for project context loading.
 //!
-//! 项目上下文加载器位于提示/会话热路径上，并重复检查相同的工作区、父目录、
-//! 全局、宪章和信任文件。此缓存避免重新读取未更改的上下文，同时保持签名
-//! 足够广泛以覆盖加载器的副作用和权限表面。
+//! The project-context loader sits on prompt/session hot paths and repeatedly
+//! checks the same workspace, parent, global, constitution, and trust files.
+//! This cache avoids rereading unchanged context while keeping the signature
+//! broad enough for the loader's side effects and authority surfaces.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -232,7 +233,7 @@ mod tests {
 
         assert_ne!(
             before, after,
-            "规则文件变更时缓存键必须改变"
+            "cache key must change when rules file changes"
         );
     }
 
@@ -243,7 +244,7 @@ mod tests {
         let rules_dir = workspace.path().join(".codewhale/rules");
         fs::create_dir_all(&rules_dir).expect("mkdir rules");
 
-        // 尚无规则文件
+        // No rules yet
         let before = compute_cache_key(workspace.path(), Some(home.path()));
 
         fs::write(rules_dir.join("new.md"), "content").expect("write new.md");
@@ -251,7 +252,7 @@ mod tests {
 
         assert_ne!(
             before, after,
-            "添加规则文件时缓存键必须改变"
+            "cache key must change when rules file is added"
         );
     }
 }

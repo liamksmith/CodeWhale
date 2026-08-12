@@ -1,8 +1,8 @@
-//! 引擎回合循环的低级工具执行辅助函数。
+//! Low-level tool execution helpers for the engine turn loop.
 //!
-//! 此模块将 MCP 分发、执行锁和并行工具扇出的机制
-//! 从 `engine.rs` 中分离出来；回合循环仍拥有规划、
-//! 审批以及工具结果如何写回会话状态的职责。
+//! This module keeps the mechanics of MCP dispatch, execution locking, and
+//! parallel-tool fanout out of `engine.rs`; the turn loop still owns planning,
+//! approval, and how tool results are written back into session state.
 
 use std::{
     fs::OpenOptions,
@@ -14,41 +14,44 @@ use std::{
 
 use super::*;
 
-/// RAII 守卫，在交互式工具执行期间暂停 TUI 的终端状态所有权，
-/// 然后在 drop 时恢复。
+/// RAII guard that pauses the TUI's terminal-state ownership for the duration
+/// of an interactive tool, then restores it on drop.
 ///
-/// 背景：交互式工具（任何需要原始 TTY 的工具——外部
-/// 编辑器、带标准输入的 `exec_shell` 等）需要 TUI 退出备选屏幕、
-/// 禁用原始模式并释放鼠标捕获，以便子进程看到普通
-/// 终端。TUI 监听 `Event::PauseEvents` / `Event::ResumeEvents`
-/// 并相应地运行 `pause_terminal` / `resume_terminal`。
+/// Background: interactive tools (anything that needs the raw TTY — external
+/// editor, `exec_shell` with stdin, etc.) need the TUI to leave alt-screen,
+/// disable raw mode, and release mouse capture so the child sees a normal
+/// terminal. The TUI listens for `Event::PauseEvents` / `Event::ResumeEvents`
+/// and runs `pause_terminal` / `resume_terminal` in response.
 ///
-/// 早期代码在工具执行前发送 `PauseEvents`，在工具执行后发送
-/// `ResumeEvents`。这在正常路径下有效，但如果工具的未来被丢弃
-/// ——Ctrl+C 取消、子代理中止、工具等待时父任务被取消——
-/// 第二个 `await` 永远不会到达，`ResumeEvents` 也永远不会发出。
-/// 它还允许交互式子进程在 UI 实际离开备选屏幕/原始模式之前启动。
-/// 这两种失败都会导致 TUI 陷入常规 shell 回滚：父 shell 滚动条接管，
-/// 鼠标滚轮滚动主机终端而非转录，并且 TUI 在熟模式输出的底部渲染。
+/// Earlier code sent `PauseEvents` before tool execution and `ResumeEvents`
+/// after. That worked on the happy path, but if the tool's future was dropped
+/// — Ctrl+C cancellation, sub-agent abort, parent task cancelled while the
+/// tool was awaiting — the second `await` never reached and `ResumeEvents`
+/// was never sent. It also let interactive children start before the UI had
+/// actually left alt-screen/raw mode. Both failures strand the TUI in a
+/// regular shell scrollback: the parent shell scrollbar takes over, mouse
+/// wheel scrolls the host terminal instead of the transcript, and the TUI
+/// renders at the bottom of cooked-mode output.
 ///
-/// `Drop` 是同步执行的，不能使用 await，因此我们首先在事件通道的
-/// **克隆**上使用 `try_send` 以非阻塞方式推送 `ResumeEvents`。如果
-/// 通道已满，我们将恢复事件排队到活跃的 Tokio 运行时上，而不是
-/// 丢弃它；否则引擎事件突发可能导致 UI 停留在暂停的终端状态。
+/// `Drop` runs synchronously and can't await, so we first use `try_send` on a
+/// **clone of the event channel** to push `ResumeEvents` non-blockingly. If the
+/// channel is full we enqueue the resume on the active Tokio runtime instead of
+/// dropping it; otherwise a burst of engine events can strand the UI in the
+/// paused terminal state.
 pub(super) struct InteractiveTerminalGuard {
     tx: Option<mpsc::Sender<Event>>,
 }
 
 impl InteractiveTerminalGuard {
-    /// 发送 `PauseEvents` 并激活守卫。如果 `interactive` 为 false，
-    /// 守卫为空操作——`Drop` 会跳过恢复。
+    /// Send `PauseEvents` and arm the guard. If `interactive` is false the
+    /// guard is a no-op — `Drop` will skip the resume.
     pub(super) async fn engage(tx: mpsc::Sender<Event>, interactive: bool) -> Self {
         if !interactive {
             return Self { tx: None };
         }
-        // 尽力而为：如果接收端已消失，TUI 已关闭
-        // 且无需恢复。如果事件已投递，则等待 UI 实际
-        // 释放终端后再启动子进程。
+        // Best-effort: if the receiver is gone the TUI has already shut down
+        // and there's nothing to restore. If the event is delivered, wait for
+        // the UI to actually release the terminal before starting the child.
         let ack = Arc::new(tokio::sync::Notify::new());
         match tx
             .send(Event::PauseEvents {
@@ -63,8 +66,8 @@ impl InteractiveTerminalGuard {
                 {
                     tracing::warn!(
                         target: "engine.tool_execution",
-                        "InteractiveTerminalGuard: 等待终端暂停确认超时；\
-                         继续执行交互式工具"
+                        "InteractiveTerminalGuard: timed out waiting for terminal pause ack; \
+                         continuing with interactive tool"
                     );
                 }
             }
@@ -72,7 +75,7 @@ impl InteractiveTerminalGuard {
                 tracing::debug!(
                     target: "engine.tool_execution",
                     ?err,
-                    "InteractiveTerminalGuard: PauseEvents 前事件通道已关闭"
+                    "InteractiveTerminalGuard: event channel closed before PauseEvents"
                 );
             }
         }
@@ -93,8 +96,9 @@ impl Drop for InteractiveTerminalGuard {
                                     tracing::warn!(
                                         target: "engine.tool_execution",
                                         ?err,
-                                        "InteractiveTerminalGuard: 异步 send(ResumeEvents) 失败；\
-                                         终端可能保持在暂停状态直到下一个暂停/恢复周期"
+                                        "InteractiveTerminalGuard: async send(ResumeEvents) failed; \
+                                         terminal may stay in paused state until the next \
+                                         pause/resume cycle"
                                     );
                                 }
                             });
@@ -103,9 +107,9 @@ impl Drop for InteractiveTerminalGuard {
                             tracing::warn!(
                                 target: "engine.tool_execution",
                                 ?err,
-                                "InteractiveTerminalGuard: 事件通道已满且无可用 Tokio 运行时 \
-                                 来排队 ResumeEvents；终端可能保持在暂停状态直到 \
-                                 下一个暂停/恢复周期"
+                                "InteractiveTerminalGuard: event channel full and no Tokio runtime \
+                                 available to queue ResumeEvents; terminal may stay paused until \
+                                 the next pause/resume cycle"
                             );
                         }
                     }
@@ -113,7 +117,7 @@ impl Drop for InteractiveTerminalGuard {
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                     tracing::debug!(
                         target: "engine.tool_execution",
-                        "InteractiveTerminalGuard: ResumeEvents 前事件通道已关闭"
+                        "InteractiveTerminalGuard: event channel closed before ResumeEvents"
                     );
                 }
             }
@@ -132,7 +136,7 @@ fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
     let line = match serde_json::to_string(&event) {
         Ok(line) => line,
         Err(e) => {
-            tracing::error!("序列化工具审计事件失败: {e}");
+            tracing::error!("Failed to serialize tool audit event: {e}");
             return;
         }
     };
@@ -140,7 +144,7 @@ fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
         && let Err(e) = std::fs::create_dir_all(parent)
     {
         tracing::error!(
-            "创建审计日志目录 {} 失败: {e}",
+            "Failed to create audit log directory {}: {e}",
             parent.display()
         );
         return;
@@ -148,11 +152,11 @@ fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
     match OpenOptions::new().create(true).append(true).open(path) {
         Ok(mut file) => {
             if let Err(e) = writeln!(file, "{line}") {
-                tracing::error!("写入审计日志 {} 失败: {e}", path.display());
+                tracing::error!("Failed to write to audit log {}: {e}", path.display());
             }
         }
         Err(e) => {
-            tracing::error!("打开审计日志 {} 失败: {e}", path.display());
+            tracing::error!("Failed to open audit log {}: {e}", path.display());
         }
     }
 }
@@ -167,7 +171,7 @@ impl Engine {
         let result = pool
             .call_tool(name, input)
             .await
-            .map_err(|e| ToolError::execution_failed(format!("MCP 工具失败: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
         let content = serde_json::to_string(&result).unwrap_or_else(|_| result.to_string());
         Ok(ToolResult::success(content))
     }
@@ -186,7 +190,7 @@ impl Engine {
         };
         let Some(registry) = tool_registry else {
             return Err(ToolError::not_available(
-                "multi_tool_use.parallel 的工具注册表不可用",
+                "tool registry unavailable for multi_tool_use.parallel",
             ));
         };
 
@@ -196,36 +200,36 @@ impl Engine {
         for (index, (tool_name, tool_input)) in calls.into_iter().enumerate() {
             if tool_name == MULTI_TOOL_PARALLEL_NAME {
                 return Err(ToolError::invalid_input(
-                    "multi_tool_use.parallel 不能调用自身",
+                    "multi_tool_use.parallel cannot call itself",
                 ));
             }
             if McpPool::is_mcp_tool(&tool_name) {
                 if !mcp_tool_is_parallel_safe(&tool_name) {
                     return Err(ToolError::invalid_input(format!(
-                        "工具 '{tool_name}' 是 MCP 工具，不能并行运行。\
-                         允许的 MCP 工具：list_mcp_resources, list_mcp_resource_templates, \
-                         mcp_read_resource, read_mcp_resource, mcp_get_prompt。"
+                        "Tool '{tool_name}' is an MCP tool and cannot run in parallel. \
+                         Allowed MCP tools: list_mcp_resources, list_mcp_resource_templates, \
+                         mcp_read_resource, read_mcp_resource, mcp_get_prompt."
                     )));
                 }
             } else {
                 let Some(spec) = registry.get(&tool_name) else {
                     return Err(ToolError::not_available(format!(
-                        "工具 '{tool_name}' 未注册"
+                        "tool '{tool_name}' is not registered"
                     )));
                 };
                 if !spec.is_read_only_for(&tool_input) {
                     return Err(ToolError::invalid_input(format!(
-                        "工具 '{tool_name}' 不是只读的，不能并行运行"
+                        "Tool '{tool_name}' is not read-only and cannot run in parallel"
                     )));
                 }
                 if spec.approval_requirement_for(&tool_input) != ApprovalRequirement::Auto {
                     return Err(ToolError::invalid_input(format!(
-                        "工具 '{tool_name}' 需要审批，不能并行运行"
+                        "Tool '{tool_name}' requires approval and cannot run in parallel"
                     )));
                 }
                 if !spec.supports_parallel_for(&tool_input) {
                     return Err(ToolError::invalid_input(format!(
-                        "工具 '{tool_name}' 不支持并行执行"
+                        "Tool '{tool_name}' does not support parallel execution"
                     )));
                 }
             }
@@ -280,7 +284,7 @@ impl Engine {
                     ParallelToolResultEntry {
                         tool_name,
                         success: false,
-                        content: format!("错误: {message}"),
+                        content: format!("Error: {message}"),
                         error: Some(message),
                     }
                 }
@@ -338,10 +342,11 @@ impl Engine {
             ToolExecGuard::Write(lock.write().await)
         };
 
-        // RAII 暂停/恢复：确保 `Event::ResumeEvents` 总是在
-        // drop 时触发，即使工具未来在等待中被取消。参见
-        // `InteractiveTerminalGuard` 的文档注释了解此修复关闭的回归缺陷
-        //（取消交互式工具后父终端回滚劫持 TUI）。
+        // RAII pause/resume: ensures `Event::ResumeEvents` always fires on
+        // drop, even if the tool future is cancelled mid-await. See
+        // `InteractiveTerminalGuard` doc-comment for the regression this
+        // closes (parent terminal scrollback hijacking the TUI after a
+        // cancelled interactive tool).
         let _terminal = InteractiveTerminalGuard::engage(tx_event, interactive).await;
 
         let outcome = if McpPool::is_mcp_tool(&tool_name) {
@@ -349,7 +354,7 @@ impl Engine {
                 Engine::execute_mcp_tool_with_pool(pool, &tool_name, tool_input).await
             } else {
                 Err(ToolError::not_available(format!(
-                    "工具 '{tool_name}' 未注册"
+                    "tool '{tool_name}' is not registered"
                 )))
             }
         } else if tool_name == CODE_EXECUTION_TOOL_NAME {
@@ -362,7 +367,7 @@ impl Engine {
                 .await
         } else {
             Err(ToolError::not_available(format!(
-                "工具 '{tool_name}' 未注册"
+                "tool '{tool_name}' is not registered"
             )))
         };
 
@@ -413,15 +418,15 @@ mod tests {
     #[tokio::test]
     async fn terminal_guard_queues_resume_when_event_channel_is_full() {
         let (tx, mut rx) = mpsc::channel(1);
-        tx.try_send(Event::status("filler")).expect("填充通道");
+        tx.try_send(Event::status("filler")).expect("fill channel");
 
         drop(InteractiveTerminalGuard { tx: Some(tx) });
 
         assert!(matches!(rx.recv().await, Some(Event::Status { .. })));
         let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("已排队的恢复事件")
-            .expect("事件通道仍打开");
+            .expect("queued resume event")
+            .expect("event channel still open");
         assert!(matches!(resumed, Event::ResumeEvents));
     }
 
@@ -432,27 +437,27 @@ mod tests {
 
         let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("暂停事件")
-            .expect("事件通道仍打开");
+            .expect("pause event")
+            .expect("event channel still open");
         let ack = match event {
             Event::PauseEvents { ack: Some(ack) } => ack,
-            other => panic!("预期带确认的 PauseEvents，实际得到 {other:?}"),
+            other => panic!("expected PauseEvents with ack, got {other:?}"),
         };
 
         tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "守卫在暂停确认前返回");
+        assert!(!task.is_finished(), "guard returned before pause ack");
 
         ack.notify_one();
         let guard = tokio::time::timeout(Duration::from_secs(1), task)
             .await
-            .expect("确认后守卫返回")
-            .expect("守卫任务已加入");
+            .expect("guard returned after ack")
+            .expect("guard task joined");
 
         drop(guard);
         let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("恢复事件")
-            .expect("事件通道仍打开");
+            .expect("resume event")
+            .expect("event channel still open");
         assert!(matches!(resumed, Event::ResumeEvents));
     }
 
@@ -482,17 +487,17 @@ mod tests {
             }),
         );
 
-        let body = std::fs::read_to_string(&path).expect("审计日志已写入");
+        let body = std::fs::read_to_string(&path).expect("audit log written");
         let entries: Vec<serde_json::Value> = body
             .lines()
-            .map(|line| serde_json::from_str(line).expect("审计行是 JSON"))
+            .map(|line| serde_json::from_str(line).expect("audit line is JSON"))
             .filter(|entry: &serde_json::Value| {
                 entry.get("test_marker").and_then(|v| v.as_str()) == Some(marker.as_str())
             })
             .collect();
-        assert_eq!(entries.len(), 2, "两次标记的发出 -> 两行");
+        assert_eq!(entries.len(), 2, "two marked emits -> two lines");
 
-        // 每行往返为 JSON，具有预期的事件键。
+        // Each line round-trips as JSON, has the expected event key.
         let first = &entries[0];
         assert_eq!(
             first.get("event").and_then(|v| v.as_str()),
@@ -513,9 +518,10 @@ mod tests {
     #[test]
     fn emit_tool_audit_creates_parent_directory() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // 父目录尚不存在的路径——写入器应创建它。
+        // Path with a parent that doesn't exist yet — the writer
+        // should create it.
         let nested = tmp.path().join("nested").join("dir").join("audit.log");
         emit_tool_audit_to_path(&nested, json!({"event": "test"}));
-        assert!(nested.exists(), "写入器应为父链创建 mkdir -p");
+        assert!(nested.exists(), "writer should mkdir -p the parent chain");
     }
 }

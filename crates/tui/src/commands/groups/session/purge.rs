@@ -1,4 +1,4 @@
-//! `/purge` 命令。
+//! `/purge` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

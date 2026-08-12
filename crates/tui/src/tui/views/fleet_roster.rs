@@ -1,14 +1,18 @@
-//! `/fleet` 名册——已保存代理团队的 barracks 视图。
+//! `/fleet` roster — the barracks view of the saved agent party.
 //!
-//! 名册视图是 Fleet 档案表面的只读面。第一行是**操作者**——实时的会话路由（你的主模型）：
-//! 当用户选择会话模型时，他们就在选择操作者，而名册就是该操作者的团队。
-//! 在其下方，合并后的 [`FleetRoster`]（内置 < `[fleet.profiles]` 配置 <
-//! `.codewhale/agents/*.toml` 项目成员）渲染为可滚动列表，并带有选中行的详情面板。
-//! 该视图从不写入任何内容；对成员按 `s`/Enter 会将控制权交给 `/fleet setup` 向导
-//! 以进行编写和覆盖（操作者行仅供显示——其路由通过 `/model` 或 `/provider` 更改）。
+//! The roster view is the read side of the Fleet profile surface. The first
+//! row is the **operator** — the live session route (your main model): when a
+//! user picks a session model they are picking the operator, and the roster
+//! is that operator's team. Below it the merged [`FleetRoster`] (built-in <
+//! `[fleet.profiles]` config < `.codewhale/agents/*.toml` project members)
+//! renders as a scrollable list with a detail pane for the selected row. The
+//! view never writes anything; `s` / Enter on a member hands off to the
+//! `/fleet setup` wizard for authoring and overrides (the operator row is
+//! display-only — its route changes via `/model` or `/provider`).
 //!
-//! 注意：与 `fleet_setup.rs` 一样，下面的文案目前有意使用英文
-//!（#3167 重新设计了 Fleet UI 本地化）；命令条目（`CmdFleetDescription`）已经本地化。
+//! NOTE: like `fleet_setup.rs`, the copy below is intentionally English for
+//! now (#3167 reworks Fleet UI localization); the command entry
+//! (`CmdFleetDescription`) is already localized.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -31,8 +35,8 @@ use crate::tui::views::{
 };
 use crate::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
 
-/// 实时的会话路由——名册为其服务的操作者。在打开时读取一次，
-/// 与 [`super::fleet_setup::FleetSetupSnapshot`] 快照它的方式相同。
+/// The live session route — the operator the roster works for. Read once at
+/// open, the same way [`super::fleet_setup::FleetSetupSnapshot`] snapshots it.
 #[derive(Debug, Clone)]
 struct OperatorInfo {
     provider: String,
@@ -328,7 +332,7 @@ impl FleetRosterView {
     }
 }
 
-/// 详情面板的共享字段渲染器。
+/// Shared field renderer for the detail pane.
 fn detail_field(lines: &mut Vec<Line<'static>>, label: &str, body: String) {
     lines.push(Line::from(Span::styled(
         label.to_string(),
@@ -341,7 +345,8 @@ fn detail_field(lines: &mut Vec<Line<'static>>, label: &str, body: String) {
     lines.push(Line::from(""));
 }
 
-/// 固定操作者行的详情面板：实时会话路由，以及名册是该操作者团队的产品事实。
+/// Detail pane for the pinned operator row: the live session route, plus the
+/// product truth that the roster is this operator's team.
 fn operator_detail_lines(operator: &OperatorInfo) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     detail_field(&mut lines, "Member", "operator (session route)".to_string());
@@ -361,8 +366,9 @@ fn operator_detail_lines(operator: &OperatorInfo) -> Vec<Line<'static>> {
     lines
 }
 
-/// 名册成员的已解析工作者姿态：调度此成员时运行时实际授予的内容
-///（角色姿态，而非档案请求的权限）。
+/// The resolved worker posture for a roster member: what the runtime would
+/// actually grant when this member is dispatched (role posture, not the
+/// profile's requested permissions).
 fn member_posture(member: &AgentProfile) -> String {
     let agent_type = roster_member_agent_type(member);
     let runtime = WorkerRuntimeProfile::for_role(agent_type.clone());
@@ -379,8 +385,8 @@ fn member_posture(member: &AgentProfile) -> String {
     format!("{} worker · {write} · {shell}", agent_type.as_str())
 }
 
-/// 成员的路由真相：显式模型固定，否则路由预设，否则同路由继承。
-/// `[subagents]` 覆盖在调度时仍然优先。
+/// The routing truth for a member: explicit model pin, else route preset, else
+/// same-route inheritance. `[subagents]` overrides still win at dispatch.
 fn member_routing(member: &AgentProfile) -> String {
     if let Some(model) = member
         .profile

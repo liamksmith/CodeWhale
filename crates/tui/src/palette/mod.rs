@@ -1,10 +1,13 @@
-//! DeepSeek 颜色调色板与语义角色。
+//! DeepSeek color palette and semantic roles.
 //!
-//! 本模块定义 TUI 的三层颜色系统：
+//! This module defines the color system for the TUI in three layers:
 //!
-//! 1. **RGB 元组**（`*_RGB` 常量）——主题生成和运行时调色板构建所使用的原始颜色值。
-//! 2. **语义 `Color` 常量**——预计算的 `ratatui::style::Color` 值，映射到 UI 角色（表面、文本、强调、状态、模式）。
-//! 3. **向后兼容的别名**（`DEEPSEEK_*`）——委托给当前 Whale 调色板常量的旧名称。
+//! 1. **RGB tuples** (`*_RGB` constants) — raw color values used by theme
+//!    generation and runtime palette construction.
+//! 2. **Semantic `Color` constants** — pre-computed `ratatui::style::Color`
+//!    values mapped to UI roles (surface, text, accent, status, mode).
+//! 3. **Backward-compatible aliases** (`DEEPSEEK_*`) — legacy names that
+//!    delegate to the current Whale palette constants.
 
 mod adapt;
 mod detect;

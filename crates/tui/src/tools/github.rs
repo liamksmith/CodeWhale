@@ -1,4 +1,4 @@
-//! 基于 `gh` CLI 的 GitHub 上下文和受保护写入工具。
+//! GitHub context and guarded write tools backed by the `gh` CLI.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,9 +17,9 @@ use crate::tools::spec::{
 
 const DEFAULT_GH: &str = "/opt/homebrew/bin/gh";
 const FALLBACK_GH_PATHS: &[&str] = &[
-    "/usr/bin/gh",                       // Linux 系统包管理器
-    "/usr/local/bin/gh",                 // macOS Intel Homebrew / 手动安装
-    "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew（官方前缀）
+    "/usr/bin/gh",                       // Linux system package manager
+    "/usr/local/bin/gh",                 // macOS Intel Homebrew / manual install
+    "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew (official prefix)
     "/opt/homebrew/bin/gh",              // macOS Apple Silicon Homebrew
 ];
 const BODY_ARTIFACT_THRESHOLD: usize = 4_000;

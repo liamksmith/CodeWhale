@@ -1,6 +1,6 @@
-//! `/lsp` 命令 — 启用/禁用 LSP 集成。
+//! `/lsp` command — enable/disable LSP integration.
 //!
-//! 桥接到 config::config::lsp_command 进行实际执行。
+//! Bridges to config::config::lsp_command for actual execution.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

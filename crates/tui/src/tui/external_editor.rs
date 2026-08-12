@@ -1,13 +1,13 @@
-//! 编辑器的外部编辑器支持。
+//! External editor support for the composer.
 //!
-//! 在预填充了编辑器当前内容的临时文件上生成 `$VISUAL`/`$EDITOR`（回退 `vi`）。
-//! 在编辑期间 TUI 被挂起，并在返回时重新进入。
-//! 临时文件在所有路径（成功、编辑器失败、IO 错误）上通过
-//! [`tempfile::NamedTempFile`] 清理。
+//! Spawns `$VISUAL`/`$EDITOR` (fallback `vi`) on a temp file pre-populated with
+//! the composer's current contents. The TUI is suspended for the duration of
+//! the edit and re-entered on return. The temp file is cleaned up in all paths
+//! (success, editor failure, IO error) via [`tempfile::NamedTempFile`].
 //!
-//! 参考：codex-rs 的 `tui/src/external_editor.rs` —— 此处的设计镜像了
-//! 该方法，但是同步的（从 TUI 事件循环内联调用），并
-//! 处理自己的原始模式切换，而不是依赖调用者。
+//! Reference: codex-rs's `tui/src/external_editor.rs` — the design here mirrors
+//! that approach but is synchronous (called inline from the TUI event loop) and
+//! handles its own raw-mode toggling rather than relying on the caller.
 
 use std::env;
 use std::fs;
@@ -24,22 +24,22 @@ use tempfile::Builder;
 
 use super::color_compat::ColorCompatBackend;
 
-/// 单次外部编辑器调用的结果。
+/// Outcome of a single external-editor invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditorOutcome {
-    /// 编辑器干净退出且文件内容与种子不同。
+    /// Editor exited cleanly and the file contents differ from the seed.
     Edited(String),
-    /// 编辑器干净退出但内容不变（或修剪后为空）。
-    /// 编辑器应保持原样。
+    /// Editor exited cleanly but the contents are unchanged (or empty after
+    /// trimming). The composer should be left as-is.
     Unchanged,
-    /// 编辑器非零退出或无法生成。
-    /// 编辑器应保持原样并显示状态提示。
+    /// Editor exited non-zero or could not be spawned. The composer should be
+    /// left as-is and a status toast shown.
     Cancelled,
 }
 
-/// 解析编辑器命令，优先使用 `$VISUAL` 而不是 `$EDITOR`，回退到 `vi`。
-/// 返回测试路径的原始字符串；`spawn_editor` 通过 `shlex`（Unix）分割它，
-/// 以便用户可以设置 `EDITOR="code --wait"`。
+/// Resolve the editor command, preferring `$VISUAL` over `$EDITOR`, falling
+/// back to `vi`. Returns the raw string for the test path; `spawn_editor`
+/// splits it via `shlex` (Unix) so users can set `EDITOR="code --wait"`.
 fn resolve_editor() -> String {
     env::var("VISUAL")
         .ok()
@@ -55,8 +55,8 @@ fn split_command(raw: &str) -> Option<Vec<String>> {
 
 #[cfg(not(unix))]
 fn split_command(raw: &str) -> Option<Vec<String>> {
-    // 在 Windows 上我们不支持 shell 引用的编辑器命令；将
-    // 完整字符串视为程序名称。
+    // On Windows we do not support shell-quoted editor commands; treat the
+    // full string as the program name.
     if raw.trim().is_empty() {
         None
     } else {
@@ -64,15 +64,18 @@ fn split_command(raw: &str) -> Option<Vec<String>> {
     }
 }
 
-/// 在不触碰终端状态的情况下运行外部编辑器。为测试公开。
+/// Run the external editor without touching terminal state. Exposed for tests.
 ///
-/// 返回：
-/// - `Ok(EditorOutcome::Edited(new))` 如果编辑器干净退出且内容与 `seed` 不同。
-/// - `Ok(EditorOutcome::Unchanged)` 如果编辑器干净退出但内容匹配 `seed`。
-/// - `Ok(EditorOutcome::Cancelled)` 如果编辑器非零退出或无法生成。
+/// Returns:
+/// - `Ok(EditorOutcome::Edited(new))` if the editor exited cleanly and the
+///   contents differ from `seed`.
+/// - `Ok(EditorOutcome::Unchanged)` if the editor exited cleanly but the
+///   contents match `seed`.
+/// - `Ok(EditorOutcome::Cancelled)` if the editor exited non-zero or could not
+///   be spawned.
 ///
-/// 临时文件在所有路径上都被移除，因为 [`tempfile::NamedTempFile`]
-/// 在函数结束时被丢弃。
+/// The temp file is removed on every path because [`tempfile::NamedTempFile`]
+/// is dropped at the end of the function.
 pub fn run_editor_raw(seed: &str) -> io::Result<EditorOutcome> {
     let mut tmp = Builder::new()
         .prefix("deepseek-edit-")
@@ -103,7 +106,7 @@ pub fn run_editor_raw(seed: &str) -> io::Result<EditorOutcome> {
     }
 
     let new = fs::read_to_string(&path)?;
-    // tmp 在此处超出作用域 —— 文件被取消链接。
+    // tmp goes out of scope here — file is unlinked.
     if new == seed {
         Ok(EditorOutcome::Unchanged)
     } else {
@@ -111,11 +114,11 @@ pub fn run_editor_raw(seed: &str) -> io::Result<EditorOutcome> {
     }
 }
 
-/// 挂起 TUI，在 `current` 上运行外部编辑器，然后重新进入 TUI。
-/// 当用户保存更改时返回新的编辑器文本。
+/// Suspend the TUI, run the external editor on `current`, then re-enter the
+/// TUI. Returns the new composer text iff the user saved changes.
 ///
-/// 在任何错误（原始模式切换、IO、编辑器生成失败）上，
-/// 函数在返回前仍然尝试完全恢复终端。
+/// On any error (raw-mode toggle, IO, editor spawn failure), the function
+/// still attempts to fully restore the terminal before returning.
 pub(crate) fn spawn_editor_for_input(
     terminal: &mut Terminal<ColorCompatBackend<Stdout>>,
     use_alt_screen: bool,
@@ -123,12 +126,12 @@ pub(crate) fn spawn_editor_for_input(
     use_bracketed_paste: bool,
     current: &str,
 ) -> io::Result<EditorOutcome> {
-    // 1. 挂起。
-    // #443：首先弹出键盘增强标志，以便编辑器
-    // 进程不会继承半配置的输入模式。
-    // 尽力而为 —— 匹配 main.rs 中的关闭/panic 路径。
-    // 使用 Windows 感知辅助方法：原始的 crossterm execute!() 在
-    // Windows 上是无操作的，会使编辑器进程处于 Kitty 模式。
+    // 1. Suspend.
+    // #443: pop keyboard enhancement flags first so the editor
+    // process doesn't inherit a half-configured input mode. Best-
+    // effort — matches the shutdown / panic paths in main.rs.
+    // Use the Windows-aware helper: the raw crossterm execute!() is a
+    // no-op on Windows and would leave the editor process in Kitty mode.
     suspend_tui_child_modes(
         terminal.backend_mut(),
         use_mouse_capture,
@@ -139,10 +142,10 @@ pub(crate) fn spawn_editor_for_input(
         let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     }
 
-    // 2. 运行编辑器（同步；继承 stdio）。
+    // 2. Run the editor (synchronous; inherits stdio).
     let result = run_editor_raw(current);
 
-    // 3. 恢复 —— 无论 `result` 如何，尽力恢复。
+    // 3. Resume — best-effort restoration regardless of `result`.
     let _ = enable_raw_mode();
     if use_alt_screen {
         let _ = execute!(terminal.backend_mut(), EnterAlternateScreen);
@@ -152,8 +155,8 @@ pub(crate) fn spawn_editor_for_input(
         use_mouse_capture,
         use_bracketed_paste,
     );
-    // 强制完全重绘，以便编辑期间的 SIGWINCH 不会留下
-    // 过时的视口。
+    // Force a full repaint so a SIGWINCH during the edit doesn't leave the
+    // viewport stale.
     let _ = terminal.clear();
 
     result
@@ -177,9 +180,10 @@ fn suspend_tui_child_modes<W: Write>(
 }
 
 fn disable_mouse_capture_for_child<W: Write>(writer: &mut W) {
-    // Crossterm 的鼠标捕获命令在 Windows 上采用 WinAPI 路径，
-    // 并且不会向 mintty 等 PTY 风格终端发送字节。外部
-    // 编辑器继承 PTY 状态，因此直接在此处发送 xterm 重置序列。
+    // Crossterm's mouse-capture command takes a WinAPI path on Windows and
+    // does not emit bytes into PTY-style terminals such as mintty. External
+    // editors inherit the PTY state, so send the xterm reset sequences
+    // directly here.
     const DISABLE_MOUSE_CAPTURE: &[u8] = b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
     if let Err(err) = writer.write_all(DISABLE_MOUSE_CAPTURE) {
         tracing::debug!(?err, "DisableMouseCapture direct reset ignored");
@@ -192,7 +196,7 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::Mutex;
 
-    /// 序列化改变进程全局环境变量的测试。
+    /// Serialize tests that mutate process-global env vars.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
@@ -237,7 +241,7 @@ mod tests {
         assert_eq!(resolve_editor(), "vi");
     }
 
-    /// 立即退出 0 而不触碰文件的编辑器 ⇒ Unchanged。
+    /// Editor that immediately exits 0 without touching the file ⇒ Unchanged.
     #[test]
     #[cfg(unix)]
     fn run_editor_unchanged_when_editor_is_noop() {
@@ -251,7 +255,7 @@ mod tests {
         assert_eq!(out, EditorOutcome::Unchanged);
     }
 
-    /// 非零退出的编辑器 ⇒ Cancelled。
+    /// Editor that exits non-zero ⇒ Cancelled.
     #[test]
     #[cfg(unix)]
     fn run_editor_cancelled_on_nonzero_exit() {
@@ -265,7 +269,7 @@ mod tests {
         assert_eq!(out, EditorOutcome::Cancelled);
     }
 
-    /// 生成不存在的编辑器二进制文件 ⇒ Cancelled（优雅处理）。
+    /// Spawning an editor binary that doesn't exist ⇒ Cancelled (graceful).
     #[test]
     #[cfg(unix)]
     fn run_editor_cancelled_when_editor_missing() {
@@ -279,7 +283,7 @@ mod tests {
         assert_eq!(out, EditorOutcome::Cancelled);
     }
 
-    /// 重写文件的编辑器 ⇒ Edited(new)。
+    /// Editor that rewrites the file ⇒ Edited(new).
     #[test]
     #[cfg(unix)]
     fn run_editor_returns_edited_contents() {
@@ -302,9 +306,9 @@ mod tests {
         assert_eq!(out, EditorOutcome::Edited("edited body".to_string()));
     }
 
-    /// 验证 `run_editor_raw` 返回后临时文件被取消链接，
-    /// 无论结果如何。我们通过一个脚本测试成功路径，
-    /// 该脚本在退出前将文件路径回显到侧信道。
+    /// Verify that the temp file is unlinked after `run_editor_raw` returns,
+    /// regardless of outcome. We test the success path with a script that
+    /// echoes the file path to a side channel before exiting.
     #[test]
     #[cfg(unix)]
     fn run_editor_cleans_up_temp_file() {

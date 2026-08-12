@@ -1,4 +1,4 @@
-//! 从 TOML 配置加载的执行策略规则。
+//! Execpolicy rules loaded from TOML configuration.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -54,10 +54,10 @@ impl ExecPolicyConfig {
 
         for (group, rules) in &self.rules {
             for pattern in &rules.allow {
-                // 允许规则首先使用参数感知的前缀匹配，以便
-                // `allow = ["git status"]` 匹配 `git status -s` 但**不**匹配
-                // `git push origin main`。对于通配符模式（例如 `cargo *`），
-                // 回退到正则表达式风格的 `pattern_matches`。
+                // Allow rules use arity-aware prefix matching first so that
+                // `allow = ["git status"]` matches `git status -s` but NOT
+                // `git push origin main`.  Fall back to regex-style
+                // `pattern_matches` for wildcard patterns (e.g. `cargo *`).
                 if prefix_allow_matches(pattern, command) || pattern_matches(pattern, command) {
                     let _ = group;
                     return ExecPolicyDecision::Allow;
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_prefix_rule_allows_git_status_with_flags() {
-        // 参数感知：`allow = ["git status"]` 必须匹配 `git status -s`。
+        // Arity-aware: `allow = ["git status"]` must match `git status -s`.
         let config = ExecPolicyConfig {
             rules: BTreeMap::from([(
                 "git".to_string(),
@@ -147,7 +147,7 @@ mod tests {
             config.evaluate("git status --porcelain"),
             ExecPolicyDecision::Allow
         ));
-        // Push 绝对不能匹配 "git status" 的允许规则。
+        // Push must NOT match the "git status" allow rule.
         assert!(matches!(
             config.evaluate("git push origin main"),
             ExecPolicyDecision::AskUser(_)

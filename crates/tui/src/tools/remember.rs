@@ -1,12 +1,14 @@
-//! `remember` 工具——模型可调用的向用户记忆文件添加条目的功能。
+//! `remember` tool — model-callable bullet-add into the user memory file.
 //!
-//! 让模型自身注意到值得跨会话保留的持久偏好、约定或事实，
-//! 并将其写入用户的 `memory.md`。
-//! 该工具自动批准，仅对用户拥有的记忆文件（默认 `~/.deepseek/memory.md`）产生副作用，
-//! 因此不需要像 shell 或任意文件写入那样经过审批流程。
+//! Lets the model itself notice a durable preference, convention, or fact
+//! worth keeping across sessions and write it to the user's `memory.md`.
+//! The tool is auto-approved and side-effecting only on the user-owned
+//! memory file (`~/.deepseek/memory.md` by default), so it doesn't get
+//! gated behind the same approval flow as shell or arbitrary file writes.
 //!
-//! 仅在 `[memory] enabled = true`（或 `DEEPSEEK_MEMORY=on`）时注册。
-//! 禁用时，模型完全看不到此工具，因此提及 `remember` 的提示会直接跳过。
+//! Only registered when `[memory] enabled = true` (or
+//! `DEEPSEEK_MEMORY=on`). When disabled, the tool isn't surfaced to the
+//! model at all, so prompts that mention `remember` simply fall through.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -15,7 +17,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
 
-/// 向用户记忆文件追加一个条目的工具。
+/// Tool that appends one bullet to the user memory file.
 pub struct RememberTool;
 
 #[async_trait]
@@ -52,8 +54,9 @@ impl ToolSpec for RememberTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // 记忆写操作仅限于用户自己的记忆文件；将其置于标准 shell/write 审批流程之后
-        // 会违背自动记忆的目的。
+        // Memory writes are scoped to the user's own memory file; gating
+        // them behind the standard shell/write approval would defeat the
+        // point of automatic memory.
         ApprovalRequirement::Auto
     }
 
@@ -93,7 +96,7 @@ mod tests {
     async fn returns_error_when_memory_disabled() {
         let tmp = tempdir().unwrap();
         let mut ctx = ToolContext::new(tmp.path());
-        ctx.memory_path = None; // 显式禁用
+        ctx.memory_path = None; // explicitly disabled
 
         let tool = RememberTool;
         let err = tool

@@ -1,7 +1,7 @@
-//! 用于执行代表性工具循环的离线评估框架。
+//! Offline evaluation harness for exercising representative tool loops.
 //!
-//! 本模块有意保持自包含，以便日后可以接入 CLI 命令，
-//! 而无需调用网络或任何 LLM 端点。
+//! This module is intentionally self-contained so it can be wired into a CLI
+//! command later without calling the network or any LLM endpoints.
 
 use anyhow::{Context, Result, anyhow};
 use ignore::WalkBuilder;
@@ -48,7 +48,7 @@ fn eval_shell_invocation_for_platform(
     }
 }
 
-/// 评估框架涵盖的代表性工具步骤。
+/// Representative tool steps covered by the evaluation harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum ScenarioStepKind {
     List,
@@ -60,7 +60,7 @@ pub enum ScenarioStepKind {
 }
 
 impl ScenarioStepKind {
-    /// 与此步骤关联的工具名称。
+    /// Tool name associated with this step.
     pub fn tool_name(self) -> &'static str {
         match self {
             ScenarioStepKind::List => "list_dir",
@@ -72,7 +72,7 @@ impl ScenarioStepKind {
         }
     }
 
-    /// 从 CLI 友好的字符串解析步骤类型。
+    /// Parse a step kind from CLI-friendly strings.
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_lowercase().as_str() {
             "list" | "list_dir" => Some(Self::List),
@@ -86,7 +86,7 @@ impl ScenarioStepKind {
     }
 }
 
-/// 单个工具类型的聚合统计数据。
+/// Aggregate statistics for a single tool kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ToolStats {
     pub invocations: usize,
@@ -94,7 +94,7 @@ pub struct ToolStats {
     pub total_duration: Duration,
 }
 
-/// 评估运行产生的一级指标。
+/// Top-level metrics produced by an evaluation run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvalMetrics {
     pub success: bool,
@@ -104,7 +104,7 @@ pub struct EvalMetrics {
     pub per_tool: BTreeMap<ScenarioStepKind, ToolStats>,
 }
 
-/// 框架记录的单个工具调用。
+/// One tool invocation recorded by the harness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvalStep {
     pub kind: ScenarioStepKind,
@@ -115,7 +115,7 @@ pub struct EvalStep {
     pub output: Option<String>,
 }
 
-/// 生成的临时工作区摘要。
+/// Summary of the generated temporary workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceSummary {
     pub root: PathBuf,
@@ -123,25 +123,26 @@ pub struct WorkspaceSummary {
     pub files: Vec<PathBuf>,
 }
 
-/// 离线评估框架的配置。
+/// Configuration for the offline evaluation harness.
 #[derive(Debug, Clone)]
 pub struct EvalHarnessConfig {
-    /// 供报告使用的人类可读场景名称。
+    /// Human-readable scenario name for reporting.
     pub scenario_name: String,
-    /// 如果设置，框架将有意使此步骤失败以测试指标。
+    /// If set, the harness will intentionally fail this step to test metrics.
     pub fail_step: Option<ScenarioStepKind>,
-    /// 在 `exec_shell` 步骤中执行的 shell 命令。
+    /// Shell command executed during the `exec_shell` step.
     pub shell_command: String,
-    /// 必须出现在 shell 输出中以供验证的 token。
+    /// Token that must appear in shell output for validation.
     pub shell_expect_token: String,
-    /// 步骤输出摘要存储的最大字符数。
+    /// Maximum characters stored for step output summaries.
     pub max_output_chars: usize,
-    /// 如果设置，每一步都会作为 JSON Lines fixture 追加到此目录下的文件中。
-    /// fixture 文件以场景命名（例如 `offline-tool-loop.jsonl`）。
-    /// 每行遵循以下模式：`{ "request": <步骤描述符>, "response_events": [<事件>] }`。
-    /// mock LLM 客户端（`crate::llm_client::mock`）可以重放这些
-    /// fixture 以进行确定性离线测试。有关完整的记录/重放流程，请参见
-    /// `crates/tui/tests/README.md`。
+    /// When set, every step is appended as a JSON Lines fixture to a file
+    /// inside this directory. The fixture file is named after the scenario
+    /// (e.g. `offline-tool-loop.jsonl`). Each line follows the schema:
+    /// `{ "request": <step descriptor>, "response_events": [<events>] }`.
+    /// The mock LLM client (`crate::llm_client::mock`) can replay these
+    /// fixtures for deterministic offline tests. See
+    /// `crates/tui/tests/README.md` for the full record/replay flow.
     pub record_dir: Option<PathBuf>,
 }
 
@@ -163,19 +164,19 @@ impl Default for EvalHarnessConfig {
     }
 }
 
-/// 在临时工作区中执行代表性工具循环的离线框架。
+/// Offline harness that exercises representative tool loops in a temp workspace.
 #[derive(Debug, Clone)]
 pub struct EvalHarness {
     config: EvalHarnessConfig,
 }
 
 impl EvalHarness {
-    /// 使用提供的配置创建一个新的框架。
+    /// Create a new harness with the provided configuration.
     pub fn new(config: EvalHarnessConfig) -> Self {
         Self { config }
     }
 
-    /// 执行离线评估场景并返回详细结果。
+    /// Execute the offline evaluation scenario and return detailed results.
     pub fn run(&self) -> Result<EvalRun> {
         let started_at = Instant::now();
         let workspace = tempfile::Builder::new()
@@ -350,25 +351,27 @@ impl EvalHarness {
     }
 }
 
-// === Fixture 记录/重放格式 ===========================================
+// === Fixture record/replay format ===========================================
 //
-// `--record` 标志每行向 `.jsonl` 文件写入一个 JSON 对象：
+// The `--record` flag writes one JSON object per line to a `.jsonl` file:
 //
 //     { "request": { "step": "list_dir", "kind": "List" },
 //       "response_events": [{ "type": "ok", "output": "…" }] }
 //
-// mock LLM 客户端通过 `MockLlmClient::push_message_response`（或其流式变体）
-// 重放这些 fixture，将每个 `response_events` 数组映射到预制的 `Vec<StreamEvent>`。
+// The mock LLM client replays these fixtures via
+// `MockLlmClient::push_message_response` (or the streaming variant) by mapping
+// each `response_events` array onto a canned `Vec<StreamEvent>`.
 //
-// 此格式有意保持最小化——可以添加额外字段（时序、模型、用量）
-// 而不会破坏旧的 fixture，因为每行都是自包含的 JSON 对象。
+// This format is intentionally minimal — additional fields (timing, model,
+// usage) can be added without breaking older fixtures because each line is a
+// self-contained JSON object.
 
-/// `--record` JSONL fixture 文件中一行的模式。
+/// Schema for one line of a `--record` JSONL fixture file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FixtureRecord {
-    /// 步骤描述符（`{ step, kind }`）。
+    /// Step descriptor (`{ step, kind }`).
     pub request: serde_json::Value,
-    /// 一个或多个合成的响应事件。
+    /// One or more synthetic response events.
     pub response_events: Vec<serde_json::Value>,
 }
 
@@ -400,8 +403,9 @@ impl FixtureRecord {
     }
 }
 
-/// 将一条 fixture 记录追加到 `<dir>/<scenario>.jsonl`（如果目录或文件不存在则创建）。
-/// 最大努力：I/O 错误会返回但通常被框架忽略，以便记录失败不会掩盖运行的主要结果。
+/// Append one fixture record to `<dir>/<scenario>.jsonl` (creating dir + file
+/// if missing). Best-effort: I/O errors are returned but generally ignored by
+/// the harness so a recording failure does not mask the run's primary result.
 pub fn record_fixture(dir: &Path, scenario_name: &str, record: FixtureRecord) -> Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create fixture dir: {}", dir.display()))?;
@@ -434,7 +438,7 @@ impl Default for EvalHarness {
     }
 }
 
-/// 运行评估框架的结果。
+/// Result of running the evaluation harness.
 #[derive(Debug)]
 pub struct EvalRun {
     pub scenario_name: String,
@@ -445,12 +449,12 @@ pub struct EvalRun {
 }
 
 impl EvalRun {
-    /// 获取临时工作区的根目录。
+    /// Get the root of the temporary workspace.
     pub fn workspace_root(&self) -> &Path {
         self.workspace.path()
     }
 
-    /// 将运行结果转换为可序列化报告以用于 CLI 输出。
+    /// Convert the run into a serializable report for CLI output.
     pub fn to_report(&self) -> EvalReport {
         EvalReport {
             scenario_name: self.scenario_name.clone(),
@@ -462,7 +466,7 @@ impl EvalRun {
     }
 }
 
-/// 从 `EvalRun` 派生的可序列化报告。
+/// Serializable report derived from an `EvalRun`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct EvalReport {
     pub scenario_name: String,

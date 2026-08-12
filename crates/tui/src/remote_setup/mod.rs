@@ -1,12 +1,14 @@
-//! `codewhale remote-setup` —— 引导式远程代理部署包生成。
+//! `codewhale remote-setup` — guided generation of a remote-agent deploy bundle.
 //!
-//! 仅生成型 MVP：向导收集云目标、聊天桥接和模型提供商，
-//! 然后将部署包（环境文件、systemd 单元、RUNBOOK）渲染到 `--out`。
-//! `--apply` 云 CLI 自动配置路径已打桩（"尚未实现"）——绝不执行任何操作。
+//! Generate-only MVP: the wizard collects a cloud target, a chat bridge, and a
+//! model provider, then renders a deploy bundle (env files, systemd units,
+//! RUNBOOK) to `--out`. The `--apply` cloud-CLI auto-provision path is stubbed
+//! ("not yet implemented") — nothing is ever executed.
 //!
-//! 设计与 `crates/config/src/lib.rs` 中的表驱动提供商注册表一致：
-//! 向导遍历 [`registry::CLOUD_TARGETS`]、[`registry::BRIDGES`]
-//! 以及现有的 `codewhale_config::provider` 注册表，而不是硬编码矩阵。
+//! Design mirrors the table-driven provider registry in
+//! `crates/config/src/lib.rs`: the wizard iterates [`registry::CLOUD_TARGETS`],
+//! [`registry::BRIDGES`], and the existing `codewhale_config::provider` registry
+//! rather than hard-coding the matrix.
 
 pub mod bundle;
 pub mod registry;
@@ -20,36 +22,36 @@ use clap::Args;
 use bundle::{BundleInputs, DEFAULT_PORT, DEFAULT_WORKERS, ProviderInfo, write_bundle};
 use registry::{BRIDGES, BridgeSpec, CLOUD_TARGETS, CloudTarget};
 
-/// `codewhale remote-setup` 的 clap 标志，符合 RFC 命令表面。
+/// Flags for `codewhale remote-setup` (clap), per the RFC command surface.
 #[derive(Args, Debug, Clone, Default)]
 pub struct RemoteSetupArgs {
-    /// 云目标 slug（lighthouse, azure, digitalocean）。跳过提示。
+    /// Cloud target slug (lighthouse, azure, digitalocean). Skips the prompt.
     #[arg(long)]
     pub cloud: Option<String>,
-    /// 聊天桥接 slug（feishu, telegram）。跳过提示。
+    /// Chat bridge slug (feishu, telegram). Skips the prompt.
     #[arg(long)]
     pub bridge: Option<String>,
-    /// 提供商 slug；根据提供商注册表验证。跳过提示。
+    /// Provider slug; validated against the provider registry. Skips the prompt.
     #[arg(long)]
     pub provider: Option<String>,
-    /// 包输出目录（默认为 `./codewhale-deploy/<cloud>-<bridge>`）。
+    /// Bundle output directory (default `./codewhale-deploy/<cloud>-<bridge>`).
     #[arg(long, value_name = "DIR")]
     pub out: Option<PathBuf>,
-    /// 生成包，不执行配置（默认）。
+    /// Emit the bundle, do not provision (default).
     #[arg(long, default_value_t = false)]
     pub generate_only: bool,
-    /// 运行云 CLI 以自动配置（MVP：尚未实现）。
+    /// Run the cloud CLI to auto-provision (MVP: not yet implemented).
     #[arg(long, default_value_t = false, conflicts_with = "generate_only")]
     pub apply: bool,
-    /// 跳过最终确认门控（CI / 非交互式）。
+    /// Skip the final confirmation gate (CI / non-interactive).
     #[arg(long, default_value_t = false)]
     pub yes: bool,
-    /// 如果缺少任何必需值则失败而不提示。
+    /// Fail instead of prompting if any required value is missing.
     #[arg(long, default_value_t = false)]
     pub non_interactive: bool,
 }
 
-/// 由 TUI 命令调度器调用的入口点。
+/// Entry point invoked by the TUI command dispatcher.
 pub fn run_remote_setup(args: RemoteSetupArgs) -> Result<()> {
     print_header();
 
@@ -67,8 +69,8 @@ pub fn run_remote_setup(args: RemoteSetupArgs) -> Result<()> {
     );
     println!("  hint     : {}", bridge.setup_hint);
 
-    // 使用代码库已建立的 CSPRNG 模式（uuid v4，如同 acp_server.rs）
-    // 生成共享运行时令牌——绝不使用 Math.random / 基于时间的随机数。
+    // Generate the shared runtime token with the codebase's established CSPRNG
+    // pattern (uuid v4, as in acp_server.rs) — never Math.random / time-based.
     let runtime_token = generate_runtime_token();
 
     let inputs = BundleInputs {
@@ -98,7 +100,7 @@ pub fn run_remote_setup(args: RemoteSetupArgs) -> Result<()> {
         PathBuf::from("codewhale-deploy").join(format!("{}-{}", cloud.slug, bridge.slug))
     });
 
-    // 始终渲染包，即使请求了 --apply。
+    // Always render the bundle, even when --apply is requested.
     let written = write_bundle(&inputs, &out_dir)?;
     println!();
     println!("Generated bundle in {}:", out_dir.display());
@@ -111,7 +113,7 @@ pub fn run_remote_setup(args: RemoteSetupArgs) -> Result<()> {
     }
 
     if args.apply {
-        // MVP：自动配置路径有意尚未实现。
+        // MVP: the auto-provision path is intentionally not implemented yet.
         println!();
         println!("auto-provision not yet implemented; bundle generated, follow RUNBOOK.md");
     } else {
@@ -135,7 +137,7 @@ fn print_header() {
 }
 
 // ---------------------------------------------------------------------------
-// 解析：标志 -> 提示（除非 --non-interactive） -> 验证后的值
+// Resolution: flag -> prompt (unless --non-interactive) -> validated value
 // ---------------------------------------------------------------------------
 
 fn resolve_cloud(args: &RemoteSetupArgs) -> Result<&'static CloudTarget> {
@@ -195,7 +197,7 @@ fn resolve_provider(args: &RemoteSetupArgs) -> Result<ProviderInfo> {
             codewhale_config::ProviderKind::names_hint()
         );
     }
-    // 从现有注册表中按其规范名称列出提供商。
+    // List providers by their canonical names from the existing registry.
     let providers: Vec<ProviderInfo> = codewhale_config::ProviderKind::all()
         .iter()
         .filter_map(|kind| ProviderInfo::from_slug(kind.as_str()))
@@ -231,10 +233,10 @@ fn bridge_choices() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 提示辅助函数（复用 main.rs 中 `pick_session_id` 的 stdin 模式）
+// Prompt helpers (reuse the stdin pattern from main.rs `pick_session_id`)
 // ---------------------------------------------------------------------------
 
-/// 打印编号菜单，从 stdin 读取基于 1 的选择，返回索引。
+/// Print a numbered menu, read a 1-based selection from stdin, return the index.
 fn prompt_choice(title: &str, options: &[String]) -> Result<usize> {
     println!();
     println!("{title}:");
@@ -259,8 +261,8 @@ fn prompt_choice(title: &str, options: &[String]) -> Result<usize> {
         .ok_or_else(|| anyhow::anyhow!("Selection out of range"))
 }
 
-/// 从两个随机 v4 UUID（通过 uuid 使用 OS CSPRNG）生成运行时令牌，
-/// 匹配此 crate 中现有的令牌生成模式。
+/// Generate a runtime token from two random v4 UUIDs (OS CSPRNG via uuid),
+/// matching the existing token-generation pattern in this crate.
 fn generate_runtime_token() -> String {
     let a = uuid::Uuid::new_v4().simple().to_string();
     let b = uuid::Uuid::new_v4().simple().to_string();
@@ -276,7 +278,7 @@ mod tests {
         let t = generate_runtime_token();
         assert_eq!(t.len(), 64, "two simple uuids = 64 hex chars");
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
-        // 连续两次生成的令牌不同（随机，非固定）。
+        // Two successive tokens differ (random, not fixed).
         assert_ne!(t, generate_runtime_token());
     }
 

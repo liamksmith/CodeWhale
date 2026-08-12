@@ -1,9 +1,10 @@
-//! 技能命令区域：列出和运行技能、回顾和恢复。
+//! Skills command area: listing and running skills, review, and restore.
 
 mod restore;
 mod review;
-    // 此组目录特意包含一个同名的 `skills.rs` 子模块。
-    // module_inception 允许是永久性结构设计，而非迁移脚手架；参见 docs/architecture/command-dispatch.md。
+// This group dir intentionally has a `skills.rs` child module with the same
+// name. The module_inception allow is a permanent structure rationale, not
+// migration scaffolding; see docs/architecture/command-dispatch.md.
 #[allow(clippy::module_inception)]
 mod skills;
 

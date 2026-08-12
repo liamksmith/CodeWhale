@@ -1,4 +1,4 @@
-//! `/agent` 命令。
+//! `/agent` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

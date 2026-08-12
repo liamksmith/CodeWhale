@@ -1,8 +1,9 @@
-//! 离线模型元数据目录（#3072）。
+//! Offline model metadata catalog (#3072).
 //!
-//! 此模块在旧版模型表前方添加了一个无密钥的元数据层。它有意保守：
-//! 启动时读取本地缓存和捆绑的快照，从不执行网络刷新，
-//! 仅当活跃目录条目实际携带该字段时才覆盖旧版数据。
+//! This module adds a secret-free metadata layer in front of the legacy model
+//! tables. It is intentionally conservative: startup reads a local cache plus a
+//! bundled snapshot, never performs a network refresh, and only overrides a
+//! legacy fact when the active catalog entry actually carries that field.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -321,7 +322,7 @@ mod tests {
         for forbidden in ["api_key", "authorization", "token", "secret"] {
             assert!(
                 !lowered.contains(forbidden),
-                "缓存 JSON 不得包含认证字段 {forbidden}: {json}"
+                "cache JSON must not contain auth field {forbidden}: {json}"
             );
         }
         let parsed: CatalogCache = serde_json::from_str(&json).expect("roundtrip");

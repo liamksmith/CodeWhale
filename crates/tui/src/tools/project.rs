@@ -1,4 +1,4 @@
-//! 用于理解代码库结构的项目映射工具。
+//! Project mapping tool for understanding codebase structure.
 
 use crate::utils::{is_key_file, project_tree, summarize_project};
 use anyhow::Result;
@@ -64,7 +64,7 @@ fn generate_project_map(
     let tree = project_tree(root, max_depth, follow_symlinks);
     let summary = summarize_project(root);
 
-    // 对于 key_files，我们只需快速扫描，因为 summarize_project 不再直接返回它们
+    // For key_files, we can just do a quick scan since summarize_project doesn't return them directly anymore
     let mut key_files = Vec::new();
     let mut builder = ignore::WalkBuilder::new(root);
     builder

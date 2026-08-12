@@ -1,30 +1,39 @@
-//! 通过 CodeWhale 请求路由携带的请求调优意图（#3024）。
+//! Request-tuning intent carried through CodeWhale request routing (#3024).
 //!
-//! 此处的请求"调优"指调用方可附加到出站模型请求的可选旋钮，它们塑造模型*如何*响应，
-//! 而不改变*询问什么*：推理努力等级和最大输出 token 数。此模块仅在路由层之间传递该意图。
-//! 客户端代码仍负责将该意图转换为每个提供商的线路格式。
+//! Request "tuning" here means the optional knobs a caller can attach to an
+//! outbound model request that shape *how* the model responds without changing
+//! *what* it is asked: the reasoning-effort tier and the maximum number of
+//! output tokens. This module only carries that intent between routing layers.
+//! Client code is still responsible for translating the intent into each
+//! provider's wire format.
 //!
-//! ## 推理努力枚举复用
+//! ## Reasoning-effort enum reuse
 //!
-//! [`RequestTuning::reasoning_effort`] 复用了规范的 [`crate::tui::app::ReasoningEffort`] 枚举，
-//! 而非定义本地的 `Off/Low/Medium/High` 副本。该枚举是跨 DeepSeek 和 Codex 努力选择器的努力等级的唯一真相来源，
-//! 已被同级顶层模块（`auto_reasoning`、`model_routing`）导入，并携带了未来请求调优消费者所需的提供商标准化逻辑
-//!（`normalize_for_provider`、`api_value_for_provider`）。在此处定义平行的本地枚举会重复该接口并存在漂移风险，
-//! 因此我们导入现有类型。
+//! [`RequestTuning::reasoning_effort`] reuses the canonical
+//! [`crate::tui::app::ReasoningEffort`] enum rather than defining a local
+//! `Off/Low/Medium/High` copy. That enum is the single source of truth for the
+//! effort tiers across the DeepSeek and Codex effort pickers, it is already
+//! imported by sibling top-level modules (`auto_reasoning`, `model_routing`),
+//! and it carries the provider-normalization logic (`normalize_for_provider`,
+//! `api_value_for_provider`) that a future request-tuning consumer will need.
+//! Defining a parallel local enum here would duplicate that surface and risk
+//! drift, so we import the existing type.
 //!
 use crate::tui::app::ReasoningEffort;
 
-/// 调用方可附加到模型请求的可选请求调优旋钮。
+/// Optional request-tuning knobs a caller may attach to a model request.
 ///
-/// 两个字段都是 `Option`：`None` 表示"不调优；使用提供商默认值"。
-/// 这是描述意图的元数据 — 将其应用于线路请求是客户端的责任，而非此模块。
+/// Both fields are `Option`: `None` means "do not tune; use the provider
+/// default". This is metadata describing intent — applying it to a wire
+/// request is the responsibility of the client layer, not this module.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequestTuning {
-    /// 期望的推理努力等级，或 `None` 使用提供商默认值。
+    /// Desired reasoning-effort tier, or `None` for the provider default.
     ///
-    /// 复用规范的 [`ReasoningEffort`] 枚举（参见模块文档）。
+    /// Reuses the canonical [`ReasoningEffort`] enum (see module docs).
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// 期望的最大输出 token 数，或 `None` 使用提供商默认值。
+    /// Desired maximum number of output tokens, or `None` for the provider
+    /// default.
     pub max_output_tokens: Option<u32>,
 }
 

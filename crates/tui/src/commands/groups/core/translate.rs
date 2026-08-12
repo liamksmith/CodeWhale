@@ -1,4 +1,4 @@
-//! `/translate` 命令。
+//! `/translate` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

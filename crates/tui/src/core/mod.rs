@@ -1,15 +1,16 @@
-//! DeepSeek CLI 的核心引擎模块。
+//! Core engine module for `DeepSeek` CLI.
 //!
-//! 本模块提供事件驱动的架构，将 UI 与 AI 交互逻辑分离：
+//! This module provides the event-driven architecture that separates
+//! the UI from the AI interaction logic:
 //!
-//! - `engine`: 处理操作的主引擎
-//! - `events`: 引擎向 UI 发出的事件
-//! - `ops`: UI 向引擎提交的操作
-//! - `session`: 会话状态管理
-//! - `turn`: 轮次上下文与跟踪
+//! - `engine`: The main engine that processes operations
+//! - `events`: Events emitted by the engine to the UI
+//! - `ops`: Operations submitted by the UI to the engine
+//! - `session`: Session state management
+//! - `turn`: Turn context and tracking
 
-// 引擎代码运行在 TUI 备用屏幕（alt-screen）内部 —— 关于为什么原始 stdio 打印
-// 不能出现在此处，请参见 `runtime_log`。请使用 `tracing::*` 替代。
+// Engine code runs inside the TUI alt-screen — see `runtime_log` for why
+// raw stdio prints must not appear here. Use `tracing::*` instead.
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 

@@ -1,32 +1,33 @@
-//! `pandoc_convert` 工具 —— 通过 `pandoc` 二进制程序的通用文档转换
-//! （<https://pandoc.org>）。
+//! `pandoc_convert` tool — universal document conversion via the
+//! `pandoc` binary (<https://pandoc.org>).
 //!
-//! Pandoc 是将散文在作者和工程师实际使用的格式之间转换的
-//! 事实标准瑞士军刀：Markdown 到 HTML、HTML 到 Markdown、
-//! 任何格式到 LaTeX 或 DOCX、RST 到 Markdown、
-//! ReST 导入等。将其作为模型可调用的工具暴露出来，解锁了
-//! 一大类"将此报告重写为……"/"将此变更日志发布为……"
-//! 的工作流，这些工作流以前需要用户在回合之间
-//! 进入终端。
+//! Pandoc is the de-facto Swiss Army knife for moving prose between
+//! the formats writers and engineers actually use: Markdown to HTML,
+//! HTML to Markdown, anything to LaTeX or DOCX, RST to Markdown,
+//! ReST imports, etc. Surfacing it as a model-callable tool unblocks
+//! a large class of "rewrite this report as ..." / "publish this
+//! changelog as ..." workflows that previously required the user
+//! to drop into a terminal between turns.
 //!
-//! 注册由 [`crate::dependencies::resolve_pandoc`] 控制
-//!（参见 [`crate::tools::registry::ToolRegistryBuilder::with_pandoc_tools`]）。
-//! 当 pandoc 未安装时，工具根本不会出现在
-//! 目录中，因此模型永远不会看到它实际上无法使用的二进制文件。
+//! Registration is gated by [`crate::dependencies::resolve_pandoc`]
+//! (see [`crate::tools::registry::ToolRegistryBuilder::with_pandoc_tools`]).
+//! When pandoc isn't installed the tool simply doesn't appear in the
+//! catalog, so the model never sees a binary it can't actually use.
 //!
-//! ## 格式白名单
+//! ## Format whitelist
 //!
-//! Pandoc 支持约 30 种输入格式和约 50 种输出格式，将每一种
-//! 都作为自由文本字符串暴露出来会让模型
-//! 请求 `pdf`（需要安装 LaTeX）、`epub3`（任何地方都能工作，
-//! 但与 `epub` 存在歧义）或 `markown` 等拼写错误。
-//! 下面的白名单是精选子集，a) 覆盖了约 95%
-//! 的真实文档处理需求，b) 不要求除 pandoc
-//! 本身之外额外的系统依赖（LaTeX 引擎、ImageMagick）。
+//! Pandoc supports ~30 input and ~50 output formats, and exposing
+//! every one of them as a free-text string would let the model
+//! ask for `pdf` (which needs LaTeX installed), `epub3` (works
+//! everywhere but ambiguous vs. `epub`), or typos like `markown`.
+//! The whitelist below is the curated subset that a) covers ~95%
+//! of real document-handling needs and b) doesn't require additional
+//! system dependencies (LaTeX engines, ImageMagick) beyond pandoc
+//! itself.
 //!
-//! 添加格式：追加到 [`SUPPORTED_TARGET_FORMATS`] 和
-//! schema 描述中；调度逻辑是白名单驱动的，因此
-//! 列表中的任何内容都原样通过。
+//! Adding a format: append to [`SUPPORTED_TARGET_FORMATS`] and the
+//! schema description; the dispatch logic is whitelist-driven so
+//! anything in the list goes through unchanged.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -39,27 +40,27 @@ use super::spec::{
     optional_str, required_str,
 };
 
-/// 精选的 pandoc 目标格式白名单。每个条目对应
-/// pandoc 原生接受的 `--to=<format>` 值，无需
-/// 额外的系统工具。保持此列表简短且有针对性 ——
-/// 下面的 schema 描述直接引用它。
+/// Curated whitelist of pandoc target formats. Each entry corresponds
+/// to a `--to=<format>` value pandoc accepts natively without
+/// additional system tooling. Keep this list short and intentional —
+/// the schema description below references it verbatim.
 pub(crate) const SUPPORTED_TARGET_FORMATS: &[&str] = &[
-    "markdown",   // Pandoc 风格的 Markdown（安全往返的默认值）
-    "gfm",        // GitHub 风格的 Markdown
-    "commonmark", // 严格 CommonMark
+    "markdown",   // Pandoc-flavored Markdown (the safe round-trip default)
+    "gfm",        // GitHub-Flavored Markdown
+    "commonmark", // strict CommonMark
     "html",       // HTML5
     "rst",        // reStructuredText
-    "latex",      // LaTeX 源码（*生成* 不需要安装 TeX）
+    "latex",      // LaTeX source (does not require a TeX install to *generate*)
     "docx",       // Microsoft Word .docx
-    "odt",        // OpenDocument 文本
+    "odt",        // OpenDocument Text
     "epub",       // EPUB 2/3
-    "plain",      // 纯文本（格式化已剥离）
+    "plain",      // plain text (formatting stripped)
     "asciidoc",   // AsciiDoc
 ];
 
-/// 实现 `pandoc_convert` 的工具。将源文件转换为
-/// 目标格式，并将输出写入磁盘或内联返回
-/// 转换后的文本。
+/// Tool implementing `pandoc_convert`. Converts a source file into
+/// a target format and either writes the output to disk or returns
+/// the converted text inline.
 pub struct PandocConvertTool;
 
 #[async_trait]
@@ -131,18 +132,19 @@ impl ToolSpec for PandocConvertTool {
             None => None,
         };
 
-        // 二进制格式无法可靠地通过 stdout 往返——
-        // 需要 output_path 以便字节能够完整传输。
+        // Binary formats can't round-trip through stdout reliably —
+        // require an output_path so the bytes survive the trip.
         if resolved_output_path.is_none() && format_is_binary(&target_format) {
             return Err(ToolError::invalid_input(format!(
                 "target_format `{target_format}` is binary; provide an `output_path` to write the converted file."
             )));
         }
 
-        // 在执行时也解析 pandoc 二进制文件——注册
-        // 依赖于 resolve_pandoc()，但在目录构建和模型调用之间的
-        // 并发卸载应该产生清晰的错误，而不是
-        // 从原始 Command::spawn 返回晦涩的"程序未找到"。
+        // Resolve the pandoc binary at execution time too — registration
+        // gated on resolve_pandoc(), but a concurrent uninstall between
+        // catalog build and the model's call should produce a clear
+        // error rather than the cryptic "program not found" from raw
+        // Command::spawn.
         let pandoc = crate::dependencies::resolve_pandoc().ok_or_else(|| {
             ToolError::execution_failed(
                 "pandoc_convert: pandoc binary not found on PATH. \
@@ -189,10 +191,10 @@ impl ToolSpec for PandocConvertTool {
     }
 }
 
-/// 输出为二进制的目标格式白名单（因此
-/// 不能作为内联文本返回）。`docx`、`odt` 和 `epub` 是
-/// ZIP 归档；[`SUPPORTED_TARGET_FORMATS`] 中的其他所有格式
-/// 渲染为 UTF-8 文本。
+/// Whitelist of target formats whose output is binary (and therefore
+/// can't be returned as inline text). `docx`, `odt`, and `epub` are
+/// ZIP archives; everything else in [`SUPPORTED_TARGET_FORMATS`]
+/// renders to UTF-8 text.
 pub(crate) fn format_is_binary(target_format: &str) -> bool {
     matches!(target_format, "docx" | "odt" | "epub")
 }
@@ -212,7 +214,7 @@ mod tests {
         msg.contains("getXdgDirectory") || msg.contains("sHGetFolderPath")
     }
 
-    // 仅测试用的跳过诊断；模块级的 print_stderr deny 针对的是生产代码。
+    // Test-only skip diagnostic; the module-wide print_stderr deny targets prod code.
     #[allow(clippy::print_stderr)]
     async fn execute_pandoc_or_skip(input: Value, ctx: &ToolContext) -> Option<ToolResult> {
         match PandocConvertTool.execute(input, ctx).await {
@@ -301,8 +303,8 @@ mod tests {
     #[tokio::test]
     async fn pandoc_convert_roundtrips_markdown_to_html_inline() {
         if !pandoc_present() {
-            // 没有 pandoc 工具就不会注册；镜像
-            // 目录构建行为。
+            // Tool wouldn't be registered without pandoc; mirror the
+            // catalog-build behaviour.
             return;
         }
         let tmp = tempdir().expect("tempdir");

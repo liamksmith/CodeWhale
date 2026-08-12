@@ -1,14 +1,15 @@
-//! 余额：查询当前提供商的账户余额或信用状态。
+//! Balance: query the active provider's account balance or credit status.
 //!
-//! 提供商特定的网络分发仍在待办中。在功能落地之前，明确此命令为占位脚手架，
-//! 以免用户误认为它是实时余额查询。
+//! Provider-specific network dispatch is still pending. Until that lands, keep
+//! this command explicit about being a scaffold so users do not mistake it for
+//! a live balance lookup.
 
 use crate::config::ApiProvider;
 use crate::tui::app::App;
 
 use super::CommandResult;
 
-/// 查询提供商账户余额/信用额度。
+/// Query provider account balance / credits.
 pub fn balance(app: &mut App) -> CommandResult {
     let provider = app.api_provider;
     match provider {

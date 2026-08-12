@@ -1,14 +1,16 @@
-//! 编辑器区域的待处理输入预览组件。
+//! Pending-input preview widget for the composer area.
 //!
-//! 从 `codex-rs/tui/src/bottom_pane/pending_input_preview.rs` 移植，
-//! 用于问题 #85。在回合进行中时，在编辑器上方渲染排队/引导的消息，
-//! 以便在正在运行的回合期间键入的用户输入不会静默消失。
-//! 后备状态仍然区分队列/引导来源，但 UI 渲染一个连贯的待处理输入列表。
+//! Port of `codex-rs/tui/src/bottom_pane/pending_input_preview.rs` for
+//! issue #85. Renders queued/steered messages above the composer when a
+//! turn is in flight, so user input typed during a running turn doesn't
+//! disappear silently. The backing state still distinguishes queue/steer
+//! origins, but the UI renders one coherent pending-input list.
 //!
-//! 空状态渲染零行，以便在没有内容显示时编辑器不会增加无用的高度。
+//! Empty state renders zero rows so the composer doesn't gain wasted height
+//! when there's nothing to show.
 //!
-//! 接入 `ui.rs::render` 中聊天区域和编辑器之间的位置；用户
-//! 可以查看键入的输入何时已被捕获以供后续交付。
+//! Wired into `ui.rs::render` between the chat area and the composer; the user
+//! can see when typed input has been captured for later delivery.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,13 +21,14 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::palette;
 use crate::tui::widgets::Renderable;
 
-/// 每项行数上限，超过后将剩余内容折叠为 `…` 溢出行。
+/// Per-item line cap before we collapse the rest into a `…` overflow row.
 const PREVIEW_LINE_LIMIT: usize = 3;
-const PENDING_STEER_PREFIX: &str = "  ↳ 实时引导待定: ";
-const REJECTED_STEER_PREFIX: &str = "  ↳ 已拒绝的实时引导: ";
-const EDITING_QUEUED_PREFIX: &str = "  ↳ 编辑排队的跟进: ";
+const PENDING_STEER_PREFIX: &str = "  ↳ Live steer pending: ";
+const REJECTED_STEER_PREFIX: &str = "  ↳ Rejected live steer: ";
+const EDITING_QUEUED_PREFIX: &str = "  ↳ Editing queued follow-up: ";
 
-/// 底部提示行应为"编辑最后一条排队消息"操作显示的快捷键描述。
+/// Description of the keybinding the hint line at the bottom should advertise
+/// for the "edit last queued message" action.
 #[derive(Debug, Clone)]
 pub struct EditBinding {
     pub label: &'static str,
@@ -35,7 +38,7 @@ impl EditBinding {
     pub const UP: EditBinding = EditBinding { label: "↑" };
 }
 
-/// 显示回合进行中待处理输入的组件。
+/// Widget showing pending input while a turn is in progress.
 #[derive(Debug, Clone)]
 pub struct PendingInputPreview {
     pub context_items: Vec<ContextPreviewItem>,
@@ -46,8 +49,9 @@ pub struct PendingInputPreview {
     pub edit_binding: EditBinding,
 }
 
-/// 在编辑器上方显示的紧凑发送前上下文行。`included=false`
-/// 标记缺失/跳过的上下文，区别于将发送或内联的文件/媒体。
+/// Compact pre-send context row shown above the composer. `included=false`
+/// marks missing/skipped context distinctly from files/media that will be
+/// sent or inlined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPreviewItem {
     pub kind: String,
@@ -77,8 +81,9 @@ impl PendingInputPreview {
             || self.editing_queued_message.is_some()
     }
 
-    /// 构建此组件在 `width` 处渲染的（可能为空）有序行列表。
-    /// 提取出来以便 `desired_height` 可以调用相同的渲染器而不重复换行逻辑。
+    /// Build the (possibly empty) ordered line list this widget would render
+    /// at `width`. Pulled out so `desired_height` can ask the same renderer
+    /// without duplicating wrapping logic.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
         if (self.context_items.is_empty() && !self.has_pending_inputs()) || width < 4 {
             return Vec::new();
@@ -94,7 +99,7 @@ impl PendingInputPreview {
         if !self.context_items.is_empty() {
             push_section_header(
                 &mut lines,
-                Line::from(vec![Span::raw("• "), Span::raw("下一次发送的上下文")]),
+                Line::from(vec![Span::raw("• "), Span::raw("Context for next send")]),
             );
             for item in &self.context_items {
                 push_context_item(&mut lines, item, width);
@@ -107,7 +112,7 @@ impl PendingInputPreview {
             }
             push_section_header(
                 &mut lines,
-                Line::from(vec![Span::raw("• "), Span::raw("待处理输入")]),
+                Line::from(vec![Span::raw("• "), Span::raw("Pending inputs")]),
             );
             let pending_steer_indent = continuation_indent(PENDING_STEER_PREFIX);
             for steer in &self.pending_steers {
@@ -142,13 +147,13 @@ impl PendingInputPreview {
                     &editing_indent,
                 );
                 lines.push(Line::from(vec![Span::styled(
-                    "    Esc 恢复排队的跟进".to_string(),
+                    "    Esc restores queued follow-up".to_string(),
                     dim,
                 )]));
             }
             for (idx, message) in self.queued_messages.iter().enumerate() {
                 let row_number = idx + 1;
-                let queued_prefix = format!("  ↳ 排队的跟进 #{row_number}: ");
+                let queued_prefix = format!("  ↳ Queued follow-up #{row_number}: ");
                 let queued_message_indent = continuation_indent(&queued_prefix);
                 push_truncated_item(
                     &mut lines,
@@ -166,7 +171,7 @@ impl PendingInputPreview {
             if !self.queued_messages.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
                     format!(
-                        "    Ctrl+S 立即发送 · {} 编辑最后一条排队",
+                        "    Ctrl+S send now · {} edit last queued",
                         self.edit_binding.label
                     ),
                     dim,
@@ -237,9 +242,9 @@ fn push_context_item(lines: &mut Vec<Line<'static>>, item: &ContextPreviewItem, 
         .map(|detail| format!(" · {detail}"))
         .unwrap_or_default();
     let action = if item.selected {
-        " · Backspace/Delete 移除"
+        " · Backspace/Delete removes"
     } else if item.removable {
-        " · 可移除"
+        " · removable"
     } else {
         ""
     };
@@ -258,9 +263,10 @@ fn push_context_item(lines: &mut Vec<Line<'static>>, item: &ContextPreviewItem, 
     }
 }
 
-/// 使用 `↳` 前缀渲染单个桶项，截断到 [`PREVIEW_LINE_LIMIT`] 可见行。
-/// 多行输入在给定的列预算处换行，续行获得 `subsequent_indent`，
-/// 以便前缀和正文保持列对齐。
+/// Render a single bucket item with `↳` prefix, truncating to
+/// [`PREVIEW_LINE_LIMIT`] visible rows. Multi-line input wraps at the given
+/// column budget and the continuation rows get the `subsequent_indent` so
+/// the prefix and the body stay column-aligned.
 fn push_truncated_item(
     lines: &mut Vec<Line<'static>>,
     raw: &str,
@@ -306,9 +312,10 @@ fn push_truncated_item(
     }
 }
 
-/// 朴素且考虑单词的换行，尊重 unicode 显示宽度。匹配 codex 源中
-/// 快照测试预期的行为——超过 `width` 的长 URL 类令牌在自己的行上发出，
-/// 而不是在字符中间硬断。
+/// Naive word-aware wrap that respects unicode display widths. Matches the
+/// behavior expected by snapshot tests in the codex source — long URL-like
+/// tokens that exceed `width` are emitted on their own row instead of being
+/// hard-broken mid-character.
 fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     if width == 0 || text.is_empty() {
         return vec![text.to_string()];
@@ -325,8 +332,9 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
             current_width = 0;
         }
         if word_width > width {
-            // 令牌比预算长：刷新当前，将单词作为自己的行发出即使溢出。
-            // 避免长 URL 扩散为 N 个垃圾省略号行的 codex 问题。
+            // Token longer than the budget: flush current, emit the word as
+            // its own row even though it overflows. Avoids the codex-issue
+            // of a long URL fanning out into N junk-ellipsis rows.
             if !current.is_empty() {
                 out.push(std::mem::take(&mut current));
                 current_width = 0;
@@ -343,10 +351,10 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-// 委托给规范的宽度约定（`ui_text::text_display_width`）：
-// 制表符为 4 列，控制字符占一列，与渲染器绘制的内容一致。
-// 旧的本地副本使用 `unwrap_or(0)` 并忽略制表符，因此预览
-// 换行在那些输入上与实际布局不一致（#3924）。
+// Delegates to the canonical width contract (`ui_text::text_display_width`):
+// tabs are 4 columns and control chars occupy one, matching what the renderer
+// draws. The old local copy used `unwrap_or(0)` and ignored tabs, so preview
+// word-wrap disagreed with the real layout on those inputs (#3924).
 fn display_width(s: &str) -> usize {
     crate::tui::ui_text::text_display_width(s)
 }
@@ -384,8 +392,8 @@ mod tests {
         let mut preview = PendingInputPreview::new();
         preview.queued_messages.push("Hello, world!".to_string());
         let rows = render_to_string(&preview, 40);
-        // 预期：标题行、消息行、操作行、提示行。
-        assert_eq!(rows.len(), 4, "得到行: {rows:?}");
+        // Expect: header line, message line, action line, hint line.
+        assert_eq!(rows.len(), 4, "got rows: {rows:?}");
         assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("Hello, world!"));
         assert!(rows[2].contains("/queue send 1"));
@@ -405,17 +413,17 @@ mod tests {
         assert!(rows[0].contains("Pending inputs"));
         assert!(
             rows.iter()
-                .any(|row| row.contains("编辑排队的跟进: revise before sending")),
-            "缺少编辑标签: {rows:?}"
+                .any(|row| row.contains("Editing queued follow-up: revise before sending")),
+            "missing editing label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("Esc 恢复排队的跟进")),
-            "缺少恢复提示: {rows:?}"
+                .any(|row| row.contains("Esc restores queued follow-up")),
+            "missing restore hint: {rows:?}"
         );
         assert!(
             !rows.iter().any(|row| row.contains("edit last queued")),
-            "编辑模式不应同时宣传打开排队编辑: {rows:?}"
+            "editing mode should not also advertise opening a queued edit: {rows:?}"
         );
     }
 
@@ -460,7 +468,7 @@ mod tests {
 
         assert!(
             rows.iter()
-                .any(|row| row.contains("Backspace/Delete 移除"))
+                .any(|row| row.contains("Backspace/Delete removes"))
         );
         assert!(rows.iter().any(|row| row.contains("▸")));
     }
@@ -472,15 +480,15 @@ mod tests {
         let rows = render_to_string(&preview, 80);
         assert!(
             rows.iter().any(|r| r.contains("Pending inputs")),
-            "缺少待处理输入标题: {rows:?}"
+            "missing pending input header: {rows:?}"
         );
         assert!(
             !rows.iter().any(|r| r.contains("Esc")),
-            "意外的 Esc 提示: {rows:?}"
+            "unexpected Esc hint: {rows:?}"
         );
         assert!(
             !rows.iter().any(|r| r.contains("edit last queued")),
-            "在仅实时引导的视图中意外的编辑提示: {rows:?}"
+            "unexpected edit hint in pending-steer-only view: {rows:?}"
         );
     }
 
@@ -515,23 +523,23 @@ mod tests {
 
         assert!(
             rows.iter()
-                .any(|row| row.contains("实时引导待定: steer")),
-            "缺少实时引导待定标签: {rows:?}"
+                .any(|row| row.contains("Live steer pending: steer")),
+            "missing pending-steer label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("已拒绝的实时引导: rejected")),
-            "缺少已拒绝引导标签: {rows:?}"
+                .any(|row| row.contains("Rejected live steer: rejected")),
+            "missing rejected-steer label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("排队的跟进 #1: queued")),
-            "缺少排队跟进标签: {rows:?}"
+                .any(|row| row.contains("Queued follow-up #1: queued")),
+            "missing queued-follow-up label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("编辑排队的跟进: editing")),
-            "缺少排队编辑标签: {rows:?}"
+                .any(|row| row.contains("Editing queued follow-up: editing")),
+            "missing queued-edit label: {rows:?}"
         );
     }
 
@@ -546,12 +554,12 @@ mod tests {
 
         assert!(rows[1].contains("Queued follow-up #1: alpha"));
         assert!(
-            rows[2].starts_with(&continuation_indent("  ↳ 排队的跟进 #1: ")),
-            "续行应对齐在标签下: {rows:?}"
+            rows[2].starts_with(&continuation_indent("  ↳ Queued follow-up #1: ")),
+            "continuation should align under label: {rows:?}"
         );
         assert!(
             !rows[2].trim().is_empty(),
-            "续行应保留换行文本: {rows:?}"
+            "continuation should keep wrapped text: {rows:?}"
         );
     }
 
@@ -562,8 +570,8 @@ mod tests {
             .queued_messages
             .push("line1\nline2\nline3\nline4\nline5".to_string());
         let rows = render_to_string(&preview, 40);
-        // 标题 + 3 可见行 + 省略号行 + 操作 + 提示 = 7 行。
-        assert_eq!(rows.len(), 7, "得到行: {rows:?}");
+        // Header + 3 visible lines + ellipsis row + actions + hint = 7 rows.
+        assert_eq!(rows.len(), 7, "got rows: {rows:?}");
         assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("line1"));
         assert!(rows[2].contains("line2"));
@@ -582,9 +590,9 @@ mod tests {
                 .to_string(),
         );
         let rows = render_to_string(&preview, 36);
-        // 标题 + URL 行 + 操作行 + 提示 = 4 行；URL 不得
-        // 导致一连串的换行省略号行。
-        assert_eq!(rows.len(), 4, "得到行: {rows:?}");
+        // Header + URL row + action row + hint = 4 rows; the URL must NOT
+        // cause a chain of wrapped-ellipsis rows.
+        assert_eq!(rows.len(), 4, "got rows: {rows:?}");
         assert!(!rows.iter().any(|r| r.contains("…")));
     }
 

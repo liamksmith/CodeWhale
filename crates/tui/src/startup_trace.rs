@@ -1,7 +1,9 @@
-//! 轻量级启动里程碑追踪（#3757）。
+//! Lightweight startup milestone tracing (#3757).
 //!
-//! 记录命名的里程碑相对于单个进程启动时刻的时间，并在 TUI 进入事件循环时向运行时日志输出一行摘要。
-//! 里程碑在内存中缓冲，因为大多数里程碑发生在运行时日志初始化之前；摘要是产物，而非事件本身。
+//! Records named milestones against a single process-start instant and emits
+//! one summary line to the runtime log when the TUI enters its event loop.
+//! Milestones are buffered in memory because most of them occur before the
+//! runtime log is initialized; the summary is the artifact, not the events.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -9,13 +11,14 @@ use std::time::Instant;
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static MILESTONES: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
 
-/// 固定进程启动时刻。首次调用有效；后续调用为空操作，以便测试和替代入口点不会扭曲时间线。
+/// Pin the process-start instant. First call wins; later calls are no-ops so
+/// tests and alternate entry points cannot skew the timeline.
 pub fn mark_process_start() {
     let _ = PROCESS_START.set(Instant::now());
 }
 
-/// 记录当前自进程启动以来的耗时，并关联到指定的 `label`。
-/// 如果从未调用过 [`mark_process_start`]，则为空操作（例如非交互式子命令）。
+/// Record `label` at the current elapsed time since process start. No-op if
+/// [`mark_process_start`] was never called (e.g. non-interactive subcommands).
 pub fn mark(label: &'static str) {
     let Some(start) = PROCESS_START.get() else {
         return;
@@ -26,8 +29,8 @@ pub fn mark(label: &'static str) {
     }
 }
 
-/// 将缓冲的里程碑作为一行摘要输出并清空缓冲区。
-/// 在运行时日志就绪后调用（恰好在事件循环启动之前）。
+/// Emit the buffered milestones as one summary line and clear the buffer.
+/// Called once the runtime log exists (just before the event loop starts).
 pub fn log_summary() {
     let Some(start) = PROCESS_START.get() else {
         return;

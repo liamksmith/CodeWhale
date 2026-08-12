@@ -1,12 +1,12 @@
-//! /share 命令——将当前会话导出为可分享的网页 URL。
+//! /share command — export the current session as a shareable web URL.
 //!
-//! 将当前会话记录渲染为静态 HTML 页面，通过 `gh` CLI 上传到 GitHub Gist，
-//! 并显示生成的 URL。
+//! Renders the current session transcript as a static HTML page, uploads it
+//! to a GitHub Gist via the `gh` CLI, and displays the resulting URL.
 //!
-//! # 用法
+//! # Usage
 //!
-//! - `/share`——导出当前会话并打印 Gist URL
-//! - `/share help`——显示用法
+//! - `/share` — export the current session and print the Gist URL
+//! - `/share help` — show usage
 
 use std::io::Write;
 use std::path::Path;
@@ -17,7 +17,7 @@ use crate::dependencies::ExternalTool;
 use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction};
 
-/// 将当前会话分享为网页 URL。
+/// Share the current session as a web URL.
 fn share(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
 
@@ -40,19 +40,20 @@ fn share(app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-/// 将会话导出为 HTML，上传到 Gist，并显示 URL。
+/// Export the session as HTML, upload to a Gist, and show the URL.
 fn do_share(app: &mut App) -> CommandResult {
-    // 检查是否有会话内容可分享
+    // Check if there's any session content to share
     if app.history.is_empty() {
         return CommandResult::error("Nothing to share. The current session is empty.");
     }
 
-    // 合理性检查：额外信息块是可选的；我们分享的是会话本身。
+    // Sanity-check: the extra info block is optional; the session itself
+    // is what we share.
     let history_len = app.history.len();
     let model = &app.model;
     let mode = app.mode.label();
 
-    // 使用 AppAction 通知引擎执行异步工作。
+    // Use an AppAction to signal the engine to perform the async work.
     CommandResult::with_message_and_action(
         format!(
             "Exporting {history_len} cell(s) from {model} ({mode}) session...\n\n\
@@ -67,21 +68,21 @@ fn do_share(app: &mut App) -> CommandResult {
     )
 }
 
-/// 实际执行分享导出。
+/// Actually perform the share export.
 ///
-/// 在收到 `ShareSession` 操作后从引擎调用。
-/// 它会将会话渲染为 HTML 并通过 `gh gist create` 上传。
+/// This is called from the engine after receiving the `ShareSession` action.
+/// It renders the session as HTML and uploads it via `gh gist create`.
 pub async fn perform_share(history_json: &str, model: &str, mode: &str) -> Result<String, String> {
-    // 从会话数据构建 HTML
+    // Build HTML from the session data
     let html = render_session_html(history_json, model, mode);
 
-    // 写入临时文件
+    // Write to a temp file
     let tmp = match write_temp_html(&html) {
         Ok(file) => file,
         Err(e) => return Err(format!("Failed to write temp file: {e}")),
     };
 
-    // 通过 `gh gist create` 上传
+    // Upload via `gh gist create`
     let url = match upload_gist(tmp.path()).await {
         Ok(url) => url,
         Err(e) => return Err(format!("Failed to upload Gist: {e}")),
@@ -90,7 +91,7 @@ pub async fn perform_share(history_json: &str, model: &str, mode: &str) -> Resul
     Ok(url)
 }
 
-/// 将会话渲染为独立的 HTML 页面。
+/// Render the session as a standalone HTML page.
 fn render_session_html(history_json: &str, model: &str, mode: &str) -> String {
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     let escaped_model = html_escape(model);
@@ -135,7 +136,7 @@ fn render_session_html(history_json: &str, model: &str, mode: &str) -> String {
     )
 }
 
-/// HTML 转义特殊字符。
+/// HTML-escape special characters.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -144,7 +145,7 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// 将 HTML 写入安全临时文件并保持其存活以供上传。
+/// Write HTML to a secure temp file and keep it alive for upload.
 fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
     let mut tmp = tempfile::Builder::new()
         .prefix("codewhale-share-")
@@ -155,7 +156,7 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
     Ok(tmp)
 }
 
-/// 使用 `gh` CLI 将文件上传为 GitHub Gist。
+/// Upload a file as a GitHub Gist using the `gh` CLI.
 async fn upload_gist(path: &Path) -> Result<String, String> {
     let path_owned = path.to_path_buf();
     let output = tokio::task::spawn_blocking(move || {

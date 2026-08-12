@@ -1,37 +1,44 @@
-//! 事后翻译拦截层。
+//! Post-hoc translation interception layer.
 //!
-//! 当输出翻译启用时（`/translate`），此模块提供拦截逻辑，检测英文模型输出
-//! 并在显示前将其替换为中文翻译。主要机制是 `prompts.rs` 中的系统提示指令；
-//! 此模块是当模型输出尽管有指令仍泄露英文时的后备方案。
+//! When output translation is enabled (`/translate`), this module provides
+//! the interception logic that detects English model output and replaces it
+//! with Chinese translations before display. The primary mechanism is the
+//! system prompt instruction in `prompts.rs`; this module is the fallback
+//! for model output that leaks English despite the instruction.
 //!
-//! ## 架构
+//! ## Architecture
 //!
-//! - `needs_translation()` — 启发式检测文本是否主要为英文并应被翻译。
-//! - `translate_text()` — 通过共享的 `DeepSeekClient` 调用当前会话模型，
-//!   将文本翻译为当前区域设置。专用的翻译代理只接收源文本并只返回翻译结果
-//!   — 无工具调用，无对话历史。
-//! - `TranslationStatus` — 在 UI 中追踪每条消息的翻译状态。
+//! - `needs_translation()` — heuristic to detect if text is predominantly
+//!   English and should be translated.
+//! - `translate_text()` — calls the current session model through a
+//!   shared `DeepSeekClient` to translate text to the current locale. The dedicated
+//!   translation agent receives only the source text and returns only the
+//!   translation — no tool calls, no conversation history.
+//! - `TranslationStatus` — tracks per-message translation status in the UI.
 
 use anyhow::Result;
 
 use crate::client::DeepSeekClient;
 
-/// 启发式阈值：如果超过此比例的字母字符是拉丁字母（A-Z / a-z），
-/// 则文本被视为英文。
+/// Heuristic threshold: if more than this fraction of alphabetic characters
+/// are Latin (A-Z / a-z), the text is considered English.
 const ENGLISH_LATIN_RATIO_THRESHOLD: f64 = 0.6;
 
-/// 应用启发式所需的最小字母字符数 — 避免在短混合语言字符串上出现误报。
+/// Minimum number of alphabetic characters required before applying the
+/// heuristic — avoids false positives on short mixed-language strings.
 const MIN_ALPHA_CHARS_FOR_DETECTION: usize = 10;
 
-/// 每个 CJK 字符相当于多少个拉丁字母"信息单位"。
-/// 单个 CJK 字符约携带一个简短英文单词（2-4 个字母）的信息量，
-/// 因此我们将 CJK 加权为 3 倍以便公平比较。
+/// How many Latin-letter "information units" each CJK character is worth.
+/// A single CJK character carries roughly the information of a short English
+/// word (2–4 letters), so we weight CJK at 3× for fair comparison.
 const CJK_CHAR_WEIGHT: usize = 3;
 
-/// 检测文本内容是否主要是英文并应被翻译。
+/// Detect if text content is predominantly English and should be translated.
 ///
-/// 启发式比较 CJK 字符（加权）与拉丁字母。
-/// CJK 字符每个字形携带的信息量更大，因此即使在英文单词中包含少量中文字符的字符串也不会被标记。
+/// The heuristic compares CJK characters (weighted) against Latin letters.
+/// CJK characters carry much more information per glyph, so a string with
+/// even a modest number of Chinese characters among English words will not
+/// be flagged.
 #[must_use]
 pub fn needs_translation(text: &str) -> bool {
     let mut latin_count = 0usize;
@@ -51,7 +58,7 @@ pub fn needs_translation(text: &str) -> bool {
         return false;
     }
 
-    // 如果加权的 CJK 占主导地位，说明已经是中文 — 无需翻译。
+    // If weighted CJK dominates, it's already Chinese — no translation needed.
     if (cjk_count * CJK_CHAR_WEIGHT) > latin_count {
         return false;
     }
@@ -60,7 +67,8 @@ pub fn needs_translation(text: &str) -> bool {
     ratio >= ENGLISH_LATIN_RATIO_THRESHOLD
 }
 
-/// 检查字符是否在 CJK 统一表意文字区块内，或者是常见的中/日/韩字符。
+/// Check if a character is in the CJK Unified Ideographs block or is a
+/// common Chinese/Japanese/Korean character.
 fn is_cjk(ch: char) -> bool {
     matches!(
         ch,
@@ -74,14 +82,15 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
-/// 使用专用翻译代理将文本翻译到请求的目标语言。
+/// Translate text to the requested target language using a dedicated
+/// translation agent.
 ///
-/// 这是一个轻量级的、聚焦的 API 调用 — 无流式传输、无工具调用、无对话历史。
-/// 代理的唯一职责是翻译。
+/// This is a lightweight, focused API call — no streaming, no tool calls,
+/// no conversation history. The agent's only role is translation.
 ///
-/// # 错误
+/// # Errors
 ///
-/// 如果 API 调用失败或响应格式错误，则返回错误。
+/// Returns an error if the API call fails or the response is malformed.
 pub async fn translate_text(
     text: &str,
     client: &DeepSeekClient,
@@ -91,17 +100,18 @@ pub async fn translate_text(
     client.translate(text, model, target_language).await
 }
 
-/// 单条消息翻译操作的状态。
+/// Status of a translation operation for a single message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TranslationStatus {
-    /// 无需翻译（已经是中文或文本不足）。
+    /// No translation needed (already Chinese or not enough text).
     NotNeeded,
-    /// 翻译正在进行中 — 原始英文仍显示，带有指示器。
+    /// Translation is pending — the original English is still displayed
+    /// with an indicator.
     Pending,
-    /// 翻译成功完成。
+    /// Translation completed successfully.
     Done,
-    /// 翻译失败 — 显示原始英文并附带后备说明。
+    /// Translation failed — original English displayed with fallback note.
     Failed,
 }
 

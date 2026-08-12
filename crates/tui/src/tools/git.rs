@@ -1,7 +1,7 @@
-//! Git 强大工具：`git_status` 和 `git_diff`。
+//! Git power tools: `git_status` and `git_diff`.
 //!
-//! 这些工具是围绕常见 git 检查命令的只读包装器，
-//! 限定在工作区范围内，可选地限定在其子路径内。
+//! These tools are read-only wrappers around common git inspection commands,
+//! scoped to the workspace and optionally to a sub-path within it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ const MAX_UNIFIED: u64 = 50;
 
 // === GitStatusTool ===
 
-/// 用于读取工作区简洁 git 状态的工具。
+/// Tool for reading the concise git status of the workspace.
 pub struct GitStatusTool;
 
 #[async_trait]
@@ -103,7 +103,7 @@ impl ToolSpec for GitStatusTool {
 
 // === GitDiffTool ===
 
-/// 用于读取工作区中 git diff 的工具。
+/// Tool for reading git diffs in the workspace.
 pub struct GitDiffTool;
 
 #[async_trait]

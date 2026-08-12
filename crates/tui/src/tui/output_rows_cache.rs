@@ -1,50 +1,56 @@
-//! 每个单元格工具输出整形管道的记忆化缓存。
+//! Memoization for the per-cell tool-output shaping pipeline.
 //!
-//! `output_rows`（在 `tui::history` 中）遍历原始工具输出，对每行进行 ANSI 剥离，
-//! 将类似路径/URL 的行分类，并将其余行包装到当前视口宽度。
-//! `selected_output_indices` 然后计算紧凑"实时"视图显示的头部/尾部/重要性子集。
-//! 这两个函数都是 `(output, width)` 和 `(rows, line_limit)` 的纯函数，
-//! 但它们在每一渲染帧为每个可见的工具单元格被调用。
-//! 对于 120 FPS 渲染循环上的 4 KB 输出，这相当于每帧每个单元格 2-6 次冗余遍历。
+//! `output_rows` (in `tui::history`) walks the raw tool output, ANSI-strips
+//! each line, classifies path/URL-like rows, and wraps the rest to the
+//! current viewport width. `selected_output_indices` then computes the
+//! head/tail/importance subset that the compact "Live" view shows. Both
+//! functions are pure functions of `(output, width)` and `(rows,
+//! line_limit)`, but they are called on every render frame for every
+//! visible tool cell. For a 4 KB output on a 120 FPS render loop, that
+//! is 2–6 redundant walks per frame, per cell.
 //!
-//! 此模块在这两个纯函数前面添加了一个进程本地、内容寻址的缓存。
-//! 该缓存是全局的（每个进程一个），并查询一个小的 `HashMap`，
-//! 键为 `(content_hash, width)` 用于行，`(rows_hash, line_limit)` 用于索引。
-//! 插入顺序 LRU 驱逐保持内存有界。
+//! This module adds a process-local, content-addressed cache in front of
+//! the two pure functions. The cache is global (one per process) and
+//! consults a small `HashMap` keyed on `(content_hash, width)` for the
+//! rows and `(rows_hash, line_limit)` for the indices. Insertion-order
+//! LRU eviction keeps memory bounded.
 //!
-//! ## 缓存何时有益
+//! ## When the cache is a win
 //!
-//! - 反复滚动到视图中的长工具单元格（模型在部分失败后经常重新请求同一个 `read_file`）。
-//! - 在流式传输时以 120 FPS 重新渲染整个记录：
-//!   实时尾部下方已完成工具单元格在每一帧上都不变，因此它们的
-//!   `output_rows` 和 `selected_output_indices` 调用是纯缓存命中。
-//! - 终端大小调整仍然正确失效，因为 `width` 是键的一部分。
+//! - Long tool cells that are scrolled into view repeatedly (the model
+//!   often re-asks for the same `read_file` after a partial failure).
+//! - The whole transcript re-rendering at 120 FPS while streaming: the
+//!   finalized tool cells below the live tail are unchanged on every
+//!   frame, so their `output_rows` and `selected_output_indices` calls
+//!   are pure cache hits.
+//! - Terminal resizes still invalidate correctly because `width` is part
+//!   of the key.
 //!
-//! ## 缓存何时失效
+//! ## When the cache misses
 //!
-//! - 新的工具输出（不同的 `content_hash`）。
-//! - 单元格的首次渲染（缓存为空）。
-//! - 自上次渲染后终端宽度发生变化。
+//! - New tool output (different `content_hash`).
+//! - First render of a cell (cache is cold).
+//! - Terminal width changed since the last render.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use crate::tui::history::OutputRow;
 
-/// LRU 的默认容量。为最坏情况的"200 个单元格的 5,000 行记录，
-/// 加上实时尾部的 4 KB 行缓存"而设计 ——
-/// 远低于一兆字节。
+/// Default capacity for the LRU. Sized for a worst-case \"5,000-line
+/// transcript at 200 cells, plus a 4 KB row cache for the live tail\" —
+/// well under a megabyte.
 const DEFAULT_CAPACITY: usize = 256;
 
-/// 内部缓存条目。存储包装后的 `Vec<OutputRow>` 加上
-/// `Vec<usize>` 的选定索引，以便单次键查找可以满足
-/// 两个渲染步骤。当 `line_limit` 更改时，索引被延迟重新计算；
-/// 行在所有行限制之间共享。
+/// Internal cache entry. Stores the wrapped `Vec<OutputRow>` plus the
+/// `Vec<usize>` of selected indices so a single key lookup can satisfy
+/// both render steps. Indices are recomputed lazily when the
+/// `line_limit` changes; rows are shared across all line limits.
 #[derive(Debug, Clone)]
 struct CacheEntry {
     rows: Vec<OutputRow>,
-    /// `line_limit -> 选定索引` 的映射。受限于
-    /// 渲染器传入的不同行限制（通常为 1-3）。
+    /// Map of `line_limit -> selected indices`. Bounded by the
+    /// distinct line limits passed in by the renderer (typically 1–3).
     selected_by_limit: HashMap<usize, Vec<usize>>,
 }
 
@@ -57,13 +63,13 @@ impl CacheEntry {
     }
 }
 
-/// `(output, width) -> OutputRowsCacheEntry` 的有界 LRU 缓存。
+/// Bounded LRU cache of `(output, width) -> OutputRowsCacheEntry`.
 ///
-/// 驱逐策略是插入顺序：当缓存达到 `capacity` 时，
-/// 最旧插入的键首先被丢弃。重新插入一个
-/// 现有的键（不同的内容）保持原始位置，因此
-/// 在每一帧上重新渲染同一个单元格不会搅动不相关的
-/// 条目。
+/// The eviction policy is insertion-order: when the cache reaches
+/// `capacity`, the oldest-inserted key is dropped first. Re-inserting an
+/// existing key (different content) keeps the original position, so
+/// re-rendering the same cell on every frame does not churn unrelated
+/// entries.
 #[derive(Debug)]
 struct OutputRowsCacheInner {
     capacity: usize,
@@ -73,10 +79,11 @@ struct OutputRowsCacheInner {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct RowsKey {
-    /// 原始工具输出的 64 位内容哈希。两个具有不同字节的输出
-    /// 产生不同的哈希；相同的字节产生相同的哈希。
+    /// 64-bit content hash of the raw tool output. Two outputs with
+    /// different bytes produce different hashes; identical bytes produce
+    /// the same hash.
     content_hash: u64,
-    /// 用于换行的终端宽度。调整大小会使其失效。
+    /// Terminal width used for wrapping. Resize invalidates.
     width: u16,
 }
 
@@ -94,9 +101,9 @@ impl OutputRowsCacheInner {
         }
     }
 
-    /// 获取或计算 `output` 在 `width` 下的包装输出行。
-    /// 命中时，返回缓存的 `Vec<OutputRow>` 的克隆 ——
-    /// 调用者可以在不持有锁的情况下进行迭代。
+    /// Get or compute the wrapped output rows for `output` at `width`.
+    /// On a hit, returns a clone of the cached `Vec<OutputRow>` — the
+    /// caller can iterate without holding a lock.
     fn get_or_compute_rows<F>(
         &mut self,
         content_hash: u64,
@@ -127,10 +134,12 @@ impl OutputRowsCacheInner {
         rows
     }
 
-    /// 获取或计算缓存在给定 `line_limit` 下的选定索引。
-    /// 首先按 `(content_hash, width)` 查找行条目（用于插入行的相同键），
-    /// 然后查询该条目上的每行限制映射。`compute` 仅在
-    /// 第一次调用给定 `(content_hash, width, line_limit)` 三元组时被调用。
+    /// Get or compute the selected indices for the cached rows at the
+    /// given `line_limit`. Looks up the row entry by `(content_hash,
+    /// width)` first (the same key used to insert the rows) and then
+    /// consults the per-line-limit map on that entry. `compute` is
+    /// invoked only on the first call for a given
+    /// `(content_hash, width, line_limit)` triple.
     fn get_or_compute_indices<F>(
         &mut self,
         content_hash: u64,
@@ -160,24 +169,24 @@ impl OutputRowsCacheInner {
 }
 
 thread_local! {
-    /// 线程本地缓存。TUI 渲染循环在单个线程上运行，
-    /// 因此 `!Sync` 缓存就足够了，并且避免了与可能调用同一模块的
-    /// 后台工作线程的争用。
+    /// Thread-local cache. The TUI render loop runs on a single thread,
+    /// so a `!Sync` cache is sufficient and avoids contention with any
+    /// background workers that might call into the same module.
     static GLOBAL_CACHE: RefCell<OutputRowsCacheInner> =
         RefCell::new(OutputRowsCacheInner::new());
 }
 
-/// 重置全局缓存。由测试和 `/clear` 使用。
+/// Reset the global cache. Used by tests and `/clear`.
 #[cfg(test)]
 pub fn reset_for_tests() {
     GLOBAL_CACHE.with(|c| *c.borrow_mut() = OutputRowsCacheInner::new());
 }
 
-/// 查找（或计算）`output` 在 `width` 下的包装输出行。
-/// 命中时，缓存的 `Vec<OutputRow>` 被克隆，无需重新运行
-/// 逐行 ANSI 剥离或换行传递。
-/// 基于字符串键的便捷封装，覆盖了 [`get_or_compute_rows_with_hash`]。只有
-/// 测试现在使用它，因为生产调用者哈希一次并传递哈希。
+/// Look up (or compute) the wrapped output rows for `output` at `width`.
+/// On a hit the cached `Vec<OutputRow>` is cloned without re-running
+/// the per-line ANSI strip or the wrap pass.
+/// String-keyed convenience over [`get_or_compute_rows_with_hash`]. Only the
+/// tests use it now that production callers hash once and pass the hash.
 #[cfg(test)]
 pub fn get_or_compute_rows<F>(output: &str, width: u16, compute: F) -> Vec<OutputRow>
 where
@@ -186,9 +195,9 @@ where
     get_or_compute_rows_with_hash(hash_str(output), width, compute)
 }
 
-/// 同 [`get_or_compute_rows`] 但接受预计算的内容哈希，因此
-/// 已经对输出进行了哈希的调用者（例如也用于键控
-/// [`get_or_compute_indices`]）不会第二次哈希（#3757 review）。
+/// As [`get_or_compute_rows`] but takes a precomputed content hash, so a
+/// caller that already hashed the output (e.g. to also key
+/// [`get_or_compute_indices`]) does not hash it a second time (#3757 review).
 pub fn get_or_compute_rows_with_hash<F>(content_hash: u64, width: u16, compute: F) -> Vec<OutputRow>
 where
     F: FnOnce() -> Vec<OutputRow>,
@@ -199,9 +208,9 @@ where
     })
 }
 
-/// 查找（或计算）之前缓存的行负载在给定 `line_limit` 下的选定索引。
-/// `content_hash` 是传递给 [`get_or_compute_rows`] 的同一个
-/// 64 位内容哈希。
+/// Look up (or compute) the selected indices for a previously-cached
+/// rows payload at the given `line_limit`. `content_hash` is the same
+/// 64-bit content hash that was passed to [`get_or_compute_rows`].
 pub fn get_or_compute_indices<F>(
     content_hash: u64,
     width: u16,
@@ -217,16 +226,17 @@ where
     })
 }
 
-/// FNV-1a 64 位内容哈希。廉价，无每进程密钥，并且在渲染热路径上
-/// 针对中小型工具输出字符串比 `DefaultHasher`（SipHash）
-/// 快约 5-10 倍。缓存是一个正确性优化，而非安全边界——
-/// 64 位碰撞空间对于每进程 LRU 预期的
-/// ≤ 几百个条目来说足够宽，并且碰撞只会导致假失效，
-/// 绝不会导致错误数据。
+/// FNV-1a 64-bit content hash. Cheap, no per-process key, and ~5-10×
+/// faster than `DefaultHasher` (SipHash) on the small-to-medium tool
+/// output strings we see on the render hot path. The cache is a
+/// correctness optimization, not a security boundary — a 64-bit collision
+/// space is more than wide enough for the per-process LRU's expected
+/// ≤ a few hundred entries, and collisions only cause a false miss,
+/// never wrong data.
 pub fn hash_str(s: &str) -> u64 {
-    /// FNV-1a 64 位偏移基准。
+    /// FNV-1a 64-bit offset basis.
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    /// FNV-1a 64 位素数。
+    /// FNV-1a 64-bit prime.
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
     let mut hash = FNV_OFFSET_BASIS;
@@ -234,9 +244,9 @@ pub fn hash_str(s: &str) -> u64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
-    // 最后混合长度，以便两个共享前缀但长度不同
-    //（例如一个带有尾随换行符）的字符串仍然只在
-    // 真正相同的内容上碰撞。
+    // Mix the length in last so two strings that share a prefix but
+    // differ in length (e.g. one has a trailing newline) still collide
+    // only on truly-identical content.
     hash ^= s.len() as u64;
     hash.wrapping_mul(FNV_PRIME)
 }
@@ -324,7 +334,7 @@ mod tests {
         assert_eq!(pick_two_a, pick_two_b);
         assert_eq!(pick_two_a, vec![0, 4]);
 
-        // 不同的 line_limit 必须失效并重新计算。
+        // Different line_limit must miss and recompute.
         let _ = get_or_compute_indices(content_hash, 80, 3, || {
             calls += 1;
             vec![0usize, 1, 4]
@@ -334,13 +344,13 @@ mod tests {
 
     #[test]
     fn capacity_evicts_oldest() {
-        // 构建一个私有缓存，以便我们可以严格控制其大小。
+        // Build a private cache so we can size it tightly.
         let mut cache = OutputRowsCacheInner::with_capacity(2);
 
         let _ = cache.get_or_compute_rows(1, 80, || vec![row("a")]);
         let _ = cache.get_or_compute_rows(2, 80, || vec![row("b")]);
         let _ = cache.get_or_compute_rows(3, 80, || vec![row("c")]);
-        // 第一个条目（哈希 1）应该已被驱逐。
+        // The first entry (hash 1) should have been evicted.
         let mut compute_calls = 0;
         let _ = cache.get_or_compute_rows(1, 80, || {
             compute_calls += 1;
@@ -357,13 +367,14 @@ mod tests {
 
     #[test]
     fn hash_str_differs_on_length_suffix() {
-        // 尾随换行符是不同内容；哈希必须不同。
+        // A trailing newline is a different content; the hash must differ.
         assert_ne!(hash_str("hello"), hash_str("hello\n"));
     }
 
     #[test]
     fn hash_str_handles_empty() {
-        // 空字符串哈希到 FNV 偏移基准；结果只需要稳定。
+        // Empty string hashes to the FNV offset basis; the result just
+        // needs to be stable.
         assert_eq!(hash_str(""), hash_str(""));
     }
 }

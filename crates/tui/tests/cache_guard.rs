@@ -1,20 +1,20 @@
-//! 缓存守卫 CI 测试：验证多轮对话中前缀缓存的稳定性。
+//! Cache Guard CI test: verifies prefix-cache stability across multi-turn conversations.
 //!
-//! 运行 8 个测试用例 × 每轮 14-24 次交互，检查尾部平均
-//! 命中率是否保持在可配置阈值之上（默认 40%）。
+//! Runs 8 test cases × 14-24 turns each, checking that the tail average
+//! hit rate stays above a configurable threshold (default 40%).
 //!
-//! 环境变量：
-//!   CODEWHALE_CACHE_GUARD=1              启用守卫（默认：禁用）
-//!   CODEWHALE_CACHE_GUARD_THRESHOLD=90   命中率阈值（0-100）
-//!   CODEWHALE_CACHE_GUARD_STRICT=1       阈值违例时失败（默认：警告）
+//! Environment variables:
+//!   CODEWHALE_CACHE_GUARD=1              Enable the guard (default: disabled)
+//!   CODEWHALE_CACHE_GUARD_THRESHOLD=90   Hit rate threshold (0-100)
+//!   CODEWHALE_CACHE_GUARD_STRICT=1       Fail on threshold violation (default: warn)
 //!
-//! 用法：
+//! Usage:
 //!   CODEWHALE_CACHE_GUARD=1 cargo test --test cache_guard
 //!   CODEWHALE_CACHE_GUARD=1 CODEWHALE_CACHE_GUARD_STRICT=1 cargo test --test cache_guard
 
-// Mock 不需要外部依赖。
+// No external dependencies needed for the mock.
 
-// === 配置 ===
+// === Configuration ===
 
 const DEFAULT_THRESHOLD: f64 = 40.0;
 const ENABLED_ENV: &str = "CODEWHALE_CACHE_GUARD";
@@ -40,12 +40,13 @@ fn strict() -> bool {
         .unwrap_or(false)
 }
 
-// === Mock 前缀缓存 ===
+// === Mock Prefix Cache ===
 
-/// 模拟 DeepSeek 的服务端前缀缓存行为。
+/// Simulates DeepSeek's server-side prefix cache behavior.
 ///
-/// 缓存基于字节前缀匹配：如果当前请求的前 N 个字节与
-/// 前一个请求的前 N 个字节匹配，则这 N 个字节被计为缓存命中。
+/// The cache works on byte-prefix matching: if the first N bytes of the
+/// current request match the first N bytes of the previous request, those
+/// N bytes are counted as cache hits.
 struct MockPrefixCache {
     previous_body: Vec<u8>,
     total_input_bytes: u64,
@@ -63,7 +64,7 @@ impl MockPrefixCache {
         }
     }
 
-    /// 提交请求体并计算本轮次的缓存命中/未命中。
+    /// Submit a request body and compute cache hit/miss for this turn.
     fn submit(&mut self, body: &[u8]) {
         let common_prefix = body
             .iter()
@@ -85,7 +86,7 @@ impl MockPrefixCache {
         self.previous_body = body.to_vec();
     }
 
-    /// 计算最后 N 轮的平均命中率。
+    /// Compute the average hit rate over the last N turns.
     fn tail_avg(&self, n: usize) -> f64 {
         let start = self.per_turn_hit_rates.len().saturating_sub(n);
         let tail = &self.per_turn_hit_rates[start..];
@@ -96,7 +97,7 @@ impl MockPrefixCache {
         }
     }
 
-    /// 所有轮次的总体命中率。
+    /// Overall hit rate across all turns.
     fn overall_hit_rate(&self) -> f64 {
         if self.total_input_bytes == 0 {
             0.0
@@ -106,9 +107,9 @@ impl MockPrefixCache {
     }
 }
 
-// === 测试用例生成器 ===
+// === Test Case Generators ===
 
-/// 生成模拟的纯对话轮次请求体。
+/// Generate a simulated request body for a plain dialogue turn.
 fn plain_dialogue_body(turn: usize, with_reasoning: bool) -> Vec<u8> {
     let system = "You are a helpful assistant. Answer concisely and accurately.";
     let reasoning_prefix = if with_reasoning {
@@ -122,7 +123,7 @@ fn plain_dialogue_body(turn: usize, with_reasoning: bool) -> Vec<u8> {
     body.into_bytes()
 }
 
-/// 生成模拟的工具循环轮次请求体。
+/// Generate a simulated request body for a tool-loop turn.
 fn tool_loop_body(turn: usize, with_reasoning: bool) -> Vec<u8> {
     let system = "You are a helpful assistant with tool access.";
     let reasoning_prefix = if with_reasoning {
@@ -144,7 +145,7 @@ fn tool_loop_body(turn: usize, with_reasoning: bool) -> Vec<u8> {
     body.into_bytes()
 }
 
-/// 生成模拟的混合大小请求体。
+/// Generate a simulated request body with mixed sizes.
 fn mixed_size_body(turn: usize) -> Vec<u8> {
     let system = "You are a helpful assistant.";
     let user_msg = match turn % 4 {
@@ -162,7 +163,7 @@ fn mixed_size_body(turn: usize) -> Vec<u8> {
     body.into_bytes()
 }
 
-// === 测试运行器 ===
+// === Test Runner ===
 
 struct CaseResult {
     name: String,
@@ -206,7 +207,7 @@ fn run_case(
     }
 }
 
-// === 8 个测试用例 ===
+// === 8 Test Cases ===
 
 #[test]
 fn case_plain_dialogue() {
@@ -280,7 +281,7 @@ fn case_long_tool_loop_no_reasoning() {
     report_and_assert(&result);
 }
 
-// === 硬错误守卫 ===
+// === Hard Error Guard ===
 
 #[test]
 fn compaction_must_cause_at_least_one_miss() {
@@ -291,21 +292,21 @@ fn compaction_must_cause_at_least_one_miss() {
     let mut cache = MockPrefixCache::new();
     let system = "You are a helpful assistant with a very long system prompt that gets compacted.";
 
-    // 模拟 30 轮，其中压缩约在第 20 轮发生。
-    // 压缩后，系统提示词发生显著变化。
+    // Simulate 30 turns where compaction happens around turn 20.
+    // After compaction, the system prompt changes significantly.
     for turn in 0..30 {
         let body = if turn < 20 {
             format!("{system}\n\nUser: turn {turn}\nAssistant:")
         } else {
-            // 压缩后：系统提示词被截断/更改。
+            // Post-compaction: system prompt is truncated/changed.
             format!("You are a helpful assistant.\n\nUser: turn {turn}\nAssistant:")
         };
         cache.submit(body.as_bytes());
     }
 
-    // 压缩后，应该至少有一次显著的未命中。
-    // 阈值被放宽，因为我们的模拟不完美地模拟
-    // DeepSeek 的基数树前缀缓存。
+    // After compaction, there should be at least one significant miss.
+    // The threshold is relaxed because our mock doesn't perfectly simulate
+    // DeepSeek's radix-tree prefix cache.
     let post_compaction_rates: Vec<f64> = cache.per_turn_hit_rates[20..].to_vec();
     let has_significant_miss = post_compaction_rates.iter().any(|&r| r < 0.8);
 
@@ -319,7 +320,7 @@ fn compaction_must_cause_at_least_one_miss() {
     }
 }
 
-// === 辅助函数 ===
+// === Helpers ===
 
 fn report_and_assert(result: &CaseResult) {
     let thresh = threshold();

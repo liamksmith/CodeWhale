@@ -1,7 +1,9 @@
-//! 组拥有的内置命令区域。
+//! Group-owned built-in command areas.
 //!
-//! 每个组模块将命令对象注册到中央命令注册表中。命令实现函数仍归属于各自的组，
-//! 而调度、面板元数据和帮助查找都从同一注册表接口读取。
+//! Each group module registers command objects into the central command
+//! registry. Command implementation functions still live with their owning
+//! groups, while dispatch, palette metadata, and help lookup all read from the
+//! same registry surface.
 
 macro_rules! cached_command_list {
     ($commands:expr) => {{

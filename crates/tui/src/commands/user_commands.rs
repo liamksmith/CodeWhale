@@ -1,29 +1,31 @@
-//! 用户定义的斜杠命令，来自 `~/.codewhale/commands/<name>.md` 和工作区本地的
-//! `<workspace>/.codewhale/commands/<name>.md`。
+//! User-defined slash commands from `~/.codewhale/commands/<name>.md` and
+//! workspace-local `<workspace>/.codewhale/commands/<name>.md`.
 //!
-//! 用户将 `.md` 文件放入命令目录，文件名（不含 `.md` 扩展名）即成为斜杠命令。
-//! 通过 `/name` 调用时，文件内容将作为用户消息发送。
+//! Users drop `.md` files into a commands directory and the filename
+//! (without `.md` extension) becomes a slash command. When invoked via
+//! `/name`, the file contents are sent as a user message.
 //!
-//! 文件可以在 `---` 标记之间包含可选的 YAML 风格前置元数据。
-//! 支持的字段有 `description`、`argument-hint`、`allowed-tools` 和 `pausable`。
-//! 前置元数据在命令体发送给模型之前会被剥离。
+//! Files may include optional YAML-like frontmatter between `---` markers.
+//! Supported fields are `description`, `argument-hint`, `allowed-tools`, and `pausable`.
+//! Frontmatter is stripped before the command body is sent to the model.
 //!
-//! ## 优先级
+//! ## Precedence
 //!
-//! 工作区本地目录按名称遮盖用户全局目录：
+//! Workspace-local directories shadow user-global by name:
 //!
-//! 1. `<workspace>/.codewhale/commands/`（项目本地，最高）
-//! 2. `<workspace>/.deepseek/commands/`（旧版项目本地）
-//! 3. `<workspace>/.claude/commands/`（Claude Code 互操作）
-//! 4. `<workspace>/.cursor/commands/`（Cursor 互操作）
-//! 5. `~/.codewhale/commands/`（用户全局）
-//! 6. `~/.deepseek/commands/`（旧版用户全局）
+//! 1. `<workspace>/.codewhale/commands/` (project-local, highest)
+//! 2. `<workspace>/.deepseek/commands/`  (legacy project-local)
+//! 3. `<workspace>/.claude/commands/`    (Claude Code interop)
+//! 4. `<workspace>/.cursor/commands/`    (Cursor interop)
+//! 5. `~/.codewhale/commands/`           (user-global)
+//! 6. `~/.deepseek/commands/`            (legacy user-global)
 //!
-//! ## 永久角色
+//! ## Permanent Role
 //!
-//! 此模块是 [`super::user_registry::UserCommandRegistry`] 的底层扫描、前置元数据解析和模板层。
-//! 运行时调度位于 `user_registry.rs` 中；此文件仍保留为共享文件 I/O
-//! 和解析边界，如 `docs/architecture/command-dispatch.md` 中所述。
+//! This module is the lower-level scanning, frontmatter parsing, and template
+//! layer for [`super::user_registry::UserCommandRegistry`]. Runtime dispatch
+//! lives in `user_registry.rs`; this file remains as the shared file I/O and
+//! parsing boundary documented in `docs/architecture/command-dispatch.md`.
 
 #[cfg(test)]
 use std::collections::HashSet;
@@ -35,7 +37,7 @@ use crate::tui::app::{App, AppAction, HuntVerdict};
 #[cfg(test)]
 use super::CommandResult;
 
-/// 全局用户命令目录的路径：`~/.codewhale/commands/`。
+/// Path to the global user commands directory: `~/.codewhale/commands/`.
 fn global_commands_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     home.join(".codewhale").join("commands")
@@ -46,7 +48,7 @@ fn legacy_global_commands_dir() -> PathBuf {
     home.join(".deepseek").join("commands")
 }
 
-/// 按优先级顺序返回所有候选命令目录。
+/// Return all candidate commands directories in precedence order.
 pub(crate) fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(ws) = workspace {
@@ -60,7 +62,8 @@ pub(crate) fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     dirs
 }
 
-/// 扫描单个命令目录中的 `.md` 文件，返回 `(name, content)` 对。错误被静默跳过。
+/// Scan a single commands directory for `.md` files and return
+/// `(name, content)` pairs. Errors are silently skipped.
 pub(crate) fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
     let mut commands: Vec<(String, String)> = Vec::new();
 
@@ -92,11 +95,12 @@ pub(crate) fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
     commands
 }
 
-/// 扫描所有候选命令目录并返回合并后的 `(name, content)` 对。
-/// 工作区本地目录按名称遮盖用户全局目录——名称的首次出现优先。
+/// Scan every candidate commands directory and return merged
+/// `(name, content)` pairs. Workspace-local directories shadow
+/// user-global by name — the first occurrence of a name wins.
 ///
-/// 为工作区传入 `None` 以仅扫描全局目录
-///（与没有工作区上下文的调用者向后兼容）。
+/// Pass `None` for the workspace to scan only the global directory
+/// (backward-compatible with callers that don't have workspace context).
 #[cfg(test)]
 pub fn load_user_commands(workspace: Option<&Path>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::new();
@@ -181,11 +185,13 @@ pub(crate) fn parse_allowed_tools(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// 检查输入是否匹配用户定义的命令，并返回内容作为 `SendMessage` 动作。
+/// Check if the input matches a user-defined command and return the
+/// content as a `SendMessage` action.
 ///
-/// `input` 应为完整的命令字符串，包括 `/` 前缀（例如 `/mycmd` 或 `/mycmd with args`）。
-/// 仅考虑命令名称的精确匹配（无部分/别名匹配）。
-/// 替换命令模板中的 $1、$2、$ARGUMENTS 占位符。
+/// The `input` should be the full command string including the `/`
+/// prefix (e.g. `/mycmd` or `/mycmd with args`). Only exact matches
+/// on the command name are considered (no partial/alias matching).
+/// Substitute $1, $2, $ARGUMENTS placeholders in a command template.
 pub(crate) fn apply_template(template: &str, args: &str) -> String {
     let positional: Vec<&str> = args.split_whitespace().collect();
     let mut result = template.replace("$ARGUMENTS", args);

@@ -1,4 +1,4 @@
-//! 任务命令：添加/列出/查看/取消
+//! Task commands: add/list/show/cancel
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

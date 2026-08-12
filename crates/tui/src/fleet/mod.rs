@@ -1,4 +1,4 @@
-//! Agent Fleet 控制平面——本地优先的管理器、分类账和工作者。
+//! Agent Fleet control plane — local-first manager, ledger, and workers.
 
 pub mod alerts;
 pub mod executor;

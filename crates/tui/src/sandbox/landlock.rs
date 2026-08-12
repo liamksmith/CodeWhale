@@ -1,34 +1,35 @@
-//! Linux Landlock 沙箱实现。
+//! Linux Landlock sandbox implementation.
 //!
-//! Landlock 是 Linux 内核 5.13 引入的安全机制，允许进程限制自身的访问权限。
-//! 与 macOS 上使用外部 sandbox-exec 包装器的 Seatbelt 不同，Landlock 直接将限制
-//! 应用于当前进程。
+//! Landlock is a security mechanism introduced in Linux kernel 5.13 that allows
+//! processes to restrict their own access rights. Unlike Seatbelt on macOS which
+//! uses an external sandbox-exec wrapper, Landlock applies restrictions directly
+//! to the current process.
 //!
-//! # 要求
+//! # Requirements
 //!
-//! - 启用了 Landlock 的 Linux 内核 5.13 或更高版本
-//! - 内核必须使用 `CONFIG_SECURITY_LANDLOCK=y` 编译
+//! - Linux kernel 5.13 or later with Landlock enabled
+//! - The kernel must be compiled with `CONFIG_SECURITY_LANDLOCK=y`
 //!
-//! # 工作原理
+//! # How it works
 //!
-//! 1. 使用所需限制创建 landlock 规则集
-//! 2. 添加规则以允许特定文件路径
-//! 3. 使用规则集限制进程
+//! 1. Create a landlock ruleset with desired restrictions
+//! 2. Add rules to allow specific file paths
+//! 3. Restrict the process using the ruleset
 //!
-//! 注意：一旦限制，进程无法获得更多权限。
+//! Note: Once restricted, the process cannot gain more privileges.
 
 use super::{CommandSpec, SandboxPolicy};
 use std::ffi::CString;
 use std::path::Path;
 
-/// 检查系统上是否可用 Landlock。
+/// Check if Landlock is available on this system.
 pub fn is_available() -> bool {
-    // 检查 landlock 系统调用是否可用
+    // Check if the landlock syscall is available
     #[cfg(target_os = "linux")]
     {
-        // 尝试创建一个最小规则集来测试可用性
-        // Landlock ABI 版本检查
-        // 安全保证：系统调用对 ABI 探测使用空规则集指针，不会解引用它。
+        // Try to create a minimal ruleset to test availability
+        // Landlock ABI version check
+        // Safety: syscall uses a null ruleset pointer for ABI probing and does not dereference it.
         unsafe {
             let result = libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -46,10 +47,10 @@ pub fn is_available() -> bool {
     }
 }
 
-/// 获取内核支持的 Landlock ABI 版本。
+/// Get the Landlock ABI version supported by the kernel.
 #[cfg(target_os = "linux")]
 pub fn get_abi_version() -> Option<i32> {
-    // 安全保证：系统调用对 ABI 探测使用空规则集指针，不会解引用它。
+    // Safety: syscall uses a null ruleset pointer for ABI probing and does not dereference it.
     unsafe {
         let result = libc::syscall(
             libc::SYS_landlock_create_ruleset,
@@ -65,7 +66,7 @@ pub fn get_abi_version() -> Option<i32> {
     }
 }
 
-// Landlock 系统调用常量（尚未在 libc crate 中）
+// Landlock syscall constants (not yet in libc crate)
 #[cfg(target_os = "linux")]
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
 
@@ -100,7 +101,7 @@ const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 
-// 组合
+// Combinations
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_READ: u64 = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
@@ -113,14 +114,14 @@ const LANDLOCK_ACCESS_FS_WRITE: u64 = LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_MAKE_SYM
     | LANDLOCK_ACCESS_FS_TRUNCATE;
 
-/// Landlock 规则集属性结构
+/// Landlock ruleset attribute structure
 #[cfg(target_os = "linux")]
 #[repr(C)]
 struct LandlockRulesetAttr {
     handled_access_fs: u64,
 }
 
-/// Landlock 路径下层属性结构
+/// Landlock path beneath attribute structure
 #[cfg(target_os = "linux")]
 #[repr(C)]
 struct LandlockPathBeneathAttr {
@@ -128,11 +129,11 @@ struct LandlockPathBeneathAttr {
     parent_fd: i32,
 }
 
-/// 规则类型常量
+/// Rule type constants
 #[cfg(target_os = "linux")]
 const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 
-/// 已配置的 Landlock 沙箱
+/// A configured Landlock sandbox
 #[cfg(target_os = "linux")]
 pub struct LandlockSandbox {
     ruleset_fd: i32,
@@ -141,9 +142,9 @@ pub struct LandlockSandbox {
 
 #[cfg(target_os = "linux")]
 impl LandlockSandbox {
-    /// 从策略创建新的 Landlock 沙箱
+    /// Create a new Landlock sandbox from policy
     pub fn from_policy(policy: &SandboxPolicy) -> std::io::Result<Self> {
-        // 确定要处理（限制）的文件系统访问
+        // Determine what filesystem access to handle (restrict)
         let handled_access =
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE;
 
@@ -151,8 +152,8 @@ impl LandlockSandbox {
             handled_access_fs: handled_access,
         };
 
-        // 创建规则集
-        // 安全保证：`attr` 在系统调用期间是有效指针，大小正确。
+        // Create the ruleset
+        // Safety: `attr` is a valid pointer for the syscall duration and size is correct.
         let ruleset_fd = unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -176,12 +177,12 @@ impl LandlockSandbox {
         })
     }
 
-    /// 为路径添加只读规则
+    /// Add a read-only rule for a path
     pub fn allow_read(&self, path: &Path) -> std::io::Result<()> {
         self.add_rule(path, LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_EXECUTE)
     }
 
-    /// 为路径添加读写规则
+    /// Add a read-write rule for a path
     pub fn allow_write(&self, path: &Path) -> std::io::Result<()> {
         self.add_rule(
             path,
@@ -189,17 +190,17 @@ impl LandlockSandbox {
         )
     }
 
-    /// 向规则集添加路径规则
+    /// Add a path rule to the ruleset
     fn add_rule(&self, path: &Path, access: u64) -> std::io::Result<()> {
         let path_cstr = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
 
-        // 打开路径获取文件描述符
-        // 安全保证：`path_cstr` 以 NUL 结尾且在调用期间保持有效。
+        // Open the path to get a file descriptor
+        // Safety: `path_cstr` is NUL-terminated and lives for the duration of the call.
         let fd = unsafe { libc::open(path_cstr.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
 
         if fd < 0 {
-            // 路径不存在，跳过此规则
+            // Path doesn't exist, skip this rule
             return Ok(());
         }
 
@@ -208,7 +209,7 @@ impl LandlockSandbox {
             parent_fd: fd,
         };
 
-        // 安全保证：`attr` 在系统调用期间是有效指针。
+        // Safety: `attr` is a valid pointer for the syscall duration.
         let result = unsafe {
             libc::syscall(
                 libc::SYS_landlock_add_rule,
@@ -219,7 +220,7 @@ impl LandlockSandbox {
             )
         };
 
-        // 安全保证：`fd` 是来自 libc::open 的有效文件描述符。
+        // Safety: `fd` is a valid file descriptor from libc::open.
         unsafe {
             libc::close(fd);
         }
@@ -231,19 +232,19 @@ impl LandlockSandbox {
         Ok(())
     }
 
-    /// 将沙箱应用于当前进程
+    /// Apply the sandbox to the current process
     ///
-    /// 警告：这对当前进程是不可逆的！
+    /// WARNING: This is irreversible for the current process!
     pub fn apply(&self) -> std::io::Result<()> {
-        // 首先，使用 prctl 丢弃特权
-        // 安全保证：prctl 调用使用常量参数，不访问内存。
+        // First, drop privileges using prctl
+        // Safety: prctl call uses constant arguments and does not access memory.
         let result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if result < 0 {
             return Err(std::io::Error::last_os_error());
         }
 
-        // 现在限制进程
-        // 安全保证：系统调用使用有效的规则集 fd，没有指针参数。
+        // Now restrict the process
+        // Safety: syscall uses a valid ruleset fd and no pointer arguments.
         let result =
             unsafe { libc::syscall(libc::SYS_landlock_restrict_self, self.ruleset_fd, 0u32) };
 
@@ -258,55 +259,56 @@ impl LandlockSandbox {
 #[cfg(target_os = "linux")]
 impl Drop for LandlockSandbox {
     fn drop(&mut self) {
-        // 安全保证：`ruleset_fd` 是由 landlock 创建的有效描述符。
+        // Safety: `ruleset_fd` is a valid descriptor created by landlock.
         unsafe {
             libc::close(self.ruleset_fd);
         }
     }
 }
 
-/// 创建一个在运行命令之前设置 Landlock 的辅助脚本。
+/// Create a helper script that sets up Landlock before running the command.
 ///
-/// 由于 Landlock 限制当前进程，我们需要一个辅助工具：
-/// 1. 设置 Landlock 规则集
-/// 2. 应用限制
-/// 3. 执行目标命令
+/// Since Landlock restricts the current process, we need a helper that:
+/// 1. Sets up the Landlock ruleset
+/// 2. Applies the restrictions
+/// 3. Execs the target command
 ///
-/// 返回要运行的命令及其辅助参数。
+/// This returns the command to run with the helper.
 #[cfg(target_os = "linux")]
 pub fn create_landlock_wrapper(
     spec: &CommandSpec,
     _writable_paths: &[std::path::PathBuf],
     _readable_paths: &[std::path::PathBuf],
 ) -> Vec<String> {
-    // 为简化起见，我们将使用一个通过辅助二进制文件应用 Landlock 的 shell 包装器
-    // 在生产中，这将是一个作为 CLI 一部分的编译二进制文件
+    // For simplicity, we'll use a shell wrapper that applies Landlock via a helper binary
+    // In production, this would be a compiled binary that's part of the CLI
 
-    // 目前，只需返回原始命令而不进行沙箱处理
-    // 完整实现将包含一个编译好的 landlock-helper 二进制文件
+    // For now, just return the original command without sandboxing
+    // A full implementation would include a compiled landlock-helper binary
     let mut cmd = vec![spec.program.clone()];
     cmd.extend(spec.args.clone());
     cmd
 }
 
-/// 检测故障是由 Landlock 还是 seccomp 拒绝引起的。
+/// Detect if a failure was caused by Landlock or seccomp denial.
 ///
-/// 检查 Landlock 特定模式（EACCES/EPERM）和 seccomp 特定模式
-///（Bad system call / SIGSYS）。Seccomp 违规通过相同的 `was_denied`
-/// 路径报告，因此调用者不需要区分是哪个层阻止了操作。
+/// Checks both Landlock-specific patterns (EACCES/EPERM) and seccomp-specific
+/// patterns (Bad system call / SIGSYS). Seccomp violations are reported through
+/// the same `was_denied` path so callers don't need to distinguish which layer
+/// blocked the operation.
 #[cfg(target_os = "linux")]
 pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     if exit_code == 0 {
         return false;
     }
 
-    // Landlock 拒绝通常导致 EACCES 或 EPERM。
+    // Landlock denials typically result in EACCES or EPERM.
     let landlock_denial = stderr.contains("Permission denied")
         || stderr.contains("Operation not permitted")
         || stderr.contains("EACCES")
         || stderr.contains("EPERM");
 
-    // Seccomp 拒绝（#2182）：SIGSYS（退出码 31 或 "Bad system call"）。
+    // Seccomp denials (#2182): SIGSYS (exit code 31 or "Bad system call").
     let seccomp_denial = exit_code == 31
         || stderr.contains("Bad system call")
         || stderr.contains("bad system call")
@@ -316,7 +318,7 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     landlock_denial || seccomp_denial
 }
 
-// 非 Linux 平台的桩实现
+// Stub implementations for non-Linux platforms
 #[cfg(not(target_os = "linux"))]
 pub fn get_abi_version() -> Option<i32> {
     None
@@ -333,14 +335,14 @@ mod tests {
 
     #[test]
     fn test_is_available() {
-        // 此测试无论平台如何都会通过
+        // This test will pass regardless of platform
         let _ = is_available();
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn test_get_abi_version() {
-        // 可用性取决于内核配置
+        // May or may not be available depending on kernel
         let _ = get_abi_version();
     }
 

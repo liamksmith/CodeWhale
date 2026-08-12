@@ -1,8 +1,10 @@
-//! 工具系统模块与重导出。
+//! Tool system modules and re-exports.
 
-// 工具运行在 TUI 备用屏幕运行时内部。此模块树内的原始 `print!` / `eprintln!` 会泄漏到 ratatui 的 diff 渲染缓冲区，
-// 导致"滚动恶魔"回归问题（#1085 / v0.8.27 后续）。
-// 请改用 `tracing::*` 路由状态/错误报告 — `runtime_log` 订阅器将其捕获到 `~/.deepseek/logs/`。
+// Tools run inside the TUI alt-screen runtime. Raw `print!` / `eprintln!`
+// inside this module tree leaks into ratatui's diff-renderer buffer and
+// produces the "scroll demon" regression (#1085 / v0.8.27 follow-up).
+// Route status/error reporting through `tracing::*` instead — the
+// `runtime_log` subscriber captures it to `~/.deepseek/logs/`.
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 

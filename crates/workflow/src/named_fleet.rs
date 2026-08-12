@@ -1,9 +1,9 @@
-//! 命名舰队名册文件，用于日志车道（#4178）。
+//! Named fleet roster files for dogfood lanes (#4178).
 //!
-//! 格式：`fleets/<name>.toml`（工作区）或
-//! `$CODEWHALE_HOME/fleets/<name>.toml` 中的 TOML。
+//! Format: TOML at `fleets/<name>.toml` (workspace) or
+//! `$CODEWHALE_HOME/fleets/<name>.toml`.
 //!
-//! Fleet 仅将角色解析为配置档案 ID。运行时拥有 tmux/工作树。
+//! Fleet resolves roles → profile ids only. Runtime owns tmux/worktrees.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,31 +11,31 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// 已解析的命名舰队文件。
+/// Parsed named fleet file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedFleet {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    /// 角色名称 → AgentProfile id
+    /// role name → AgentProfile id
     pub roles: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NamedFleetError {
-    #[error("舰队文件未找到：{0}")]
+    #[error("fleet file not found: {0}")]
     NotFound(String),
-    #[error("读取舰队文件 {path} 失败：{message}")]
+    #[error("failed to read fleet file {path}: {message}")]
     Io { path: String, message: String },
-    #[error("解析舰队文件 {path} 失败：{message}")]
+    #[error("failed to parse fleet file {path}: {message}")]
     Parse { path: String, message: String },
-    #[error("舰队 `{fleet}` 缺少必需的角色 `{role}`")]
+    #[error("fleet `{fleet}` is missing required role `{role}`")]
     MissingRole { fleet: String, role: String },
-    #[error("舰队名称不匹配：文件声明为 `{declared}`，期望 `{expected}`")]
+    #[error("fleet name mismatch: file declares `{declared}`, expected `{expected}`")]
     NameMismatch { declared: String, expected: String },
 }
 
-/// 停止运输日志舰队所需的角色（#4178）。
+/// Required roles for the stopship dogfood fleet (#4178).
 pub const STOPSHIP_REQUIRED_ROLES: &[&str] = &[
     "scout",
     "implementer",
@@ -44,12 +44,12 @@ pub const STOPSHIP_REQUIRED_ROLES: &[&str] = &[
     "release_lead",
 ];
 
-/// 解析舰队 TOML 文档。
+/// Parse a fleet TOML document.
 pub fn parse_named_fleet(toml_text: &str) -> Result<NamedFleet, NamedFleetError> {
-    // 最简 TOML 子集，无需向 workflow 添加 toml 依赖：
-    // 对于测试也接受 JSON；对于 TOML 使用针对文档化形状的
-    // 微型手写解析器，或通过 serde json 进行单元测试。
-    // 如果文本看起来像 JSON 则优先使用 JSON；否则使用面向行的 TOML。
+    // Minimal TOML subset without adding a toml dep to workflow:
+    // accept JSON as well for tests; for TOML use a tiny hand parser for
+    // the documented shape, or serde via json for unit tests.
+    // Prefer JSON if the text looks like JSON; otherwise use line-oriented TOML.
     let trimmed = toml_text.trim();
     if trimmed.starts_with('{') {
         return serde_json::from_str(trimmed).map_err(|e| NamedFleetError::Parse {
@@ -93,7 +93,7 @@ fn parse_fleet_toml_minimal(text: &str) -> Result<NamedFleet, NamedFleetError> {
     }
     let name = name.ok_or_else(|| NamedFleetError::Parse {
         path: "<memory>".into(),
-        message: "缺少名称".into(),
+        message: "missing name".into(),
     })?;
     Ok(NamedFleet {
         name,
@@ -102,7 +102,7 @@ fn parse_fleet_toml_minimal(text: &str) -> Result<NamedFleet, NamedFleetError> {
     })
 }
 
-/// 按名称从搜索路径加载舰队（首个命中获胜）。
+/// Load fleet by name from search paths (first hit wins).
 pub fn load_named_fleet(
     name: &str,
     search_roots: &[PathBuf],
@@ -144,7 +144,7 @@ pub fn load_named_fleet_file(
 }
 
 impl NamedFleet {
-    /// 将角色名称解析为配置档案 ID。
+    /// Resolve a role name to a profile id.
     pub fn resolve(&self, role: &str) -> Result<&str, NamedFleetError> {
         let key = role.trim().to_ascii_lowercase();
         self.roles
@@ -162,7 +162,7 @@ impl NamedFleet {
             })
     }
 
-    /// 确保所有必需的停止运输角色都存在。
+    /// Ensure all required stopship roles are present.
     pub fn validate_stopship_roles(&self) -> Result<(), NamedFleetError> {
         for role in STOPSHIP_REQUIRED_ROLES {
             self.resolve(role)?;
@@ -177,7 +177,7 @@ mod tests {
 
     const STOPSHIP_TOML: &str = r#"
 name = "v0868-stopship"
-description = "停止运输日志舰队"
+description = "Stopship dogfood fleet"
 
 [roles]
 scout = "scout"
@@ -208,7 +208,7 @@ release_lead = "manager"
 
     #[test]
     fn loads_workspace_fleet_file() {
-        // 相对于 crate CARGO_MANIFEST_DIR → 仓库根目录 fleets/
+        // Relative to crate CARGO_MANIFEST_DIR → repo root fleets/
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..");

@@ -1,4 +1,4 @@
-//! MCP 管理器格式化和 UI 操作辅助函数。
+//! MCP manager formatting and UI action helpers.
 
 use crate::mcp::{McpManagerSnapshot, McpServerSnapshot};
 use crate::tui::app::App;

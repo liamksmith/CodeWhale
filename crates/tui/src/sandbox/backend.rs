@@ -1,35 +1,37 @@
-//! 可插拔的沙箱后端抽象。
+//! Pluggable sandbox backend abstraction.
 //!
-//! 外部沙箱后端将 shell 命令执行路由到远程服务（例如阿里云 OpenSandbox），而不是在本地生成进程。
-//! 这与操作系统级别的沙箱模块（Seatbelt / Landlock / Windows）互补——当配置后，外部后端*完全替换*本地执行。
+//! External sandbox backends route shell command execution to a remote service
+//! (e.g. Alibaba OpenSandbox) instead of spawning a local process. This is
+//! complementary to the OS-level sandbox module (Seatbelt / Landlock / Windows)
+//! — the external backend *replaces* local execution entirely when configured.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use async_trait::async_trait;
 
-/// 沙箱后端执行的输出。
+/// Output from a sandbox backend execution.
 #[derive(Debug, Clone)]
 pub struct SandboxOutput {
-    /// 命令的标准输出。
+    /// Standard output from the command.
     pub stdout: String,
-    /// 命令的标准错误。
+    /// Standard error from the command.
     pub stderr: String,
-    /// 退出码（0 表示成功）。
+    /// Exit code (0 for success).
     pub exit_code: i32,
 }
 
-/// 外部沙箱后端的类型。
+/// The kind of external sandbox backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxKind {
-    /// 无外部沙箱 — 在本地执行命令。
+    /// No external sandbox — execute commands locally.
     None,
-    /// 阿里云 OpenSandbox 远程执行。
+    /// Alibaba OpenSandbox remote execution.
     OpenSandbox,
 }
 
 impl SandboxKind {
-    /// 从配置中解析沙箱后端名称（不区分大小写）。
+    /// Parse a sandbox backend name from config (case-insensitive).
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -39,7 +41,7 @@ impl SandboxKind {
         }
     }
 
-    /// 人类可读的标签。
+    /// Human-readable label.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -49,26 +51,28 @@ impl SandboxKind {
     }
 }
 
-/// 外部沙箱后端的抽象接口。
+/// Abstract interface for an external sandbox backend.
 ///
-/// 实现将命令发送到远程执行环境并返回结构化输出。该 trait 是 `Send + Sync` 的，
-/// 因此可以存储在 `Arc` 中并在异步任务间共享。
+/// Implementations send commands to a remote execution environment and return
+/// structured output. The trait is `Send + Sync` so it can be stored in an
+/// `Arc` and shared across async tasks.
 #[async_trait]
 pub trait SandboxBackend: Send + Sync {
-    /// 执行 shell 命令并返回其输出。
+    /// Execute a shell command and return its output.
     ///
-    /// `cmd` 是完整的 shell 命令字符串（例如 `"ls -la"`）。
-    /// `env` 包含要设置的额外环境变量。
+    /// `cmd` is the full shell command string (e.g. `"ls -la"`).
+    /// `env` contains additional environment variables to set.
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput>;
 }
 
 use crate::config::Config;
 
-/// 从配置中创建已配置的沙箱后端。
+/// Create the configured sandbox backend from config.
 ///
-/// 当未配置外部沙箱后端时（即 `sandbox_backend` 键缺失、为空或为 `"none"`），返回 `None`。
-/// 当设置为 `"opensandbox"` 时，使用 `sandbox_url` 和 `sandbox_api_key` 构造
-/// [`OpenSandboxBackend`](super::opensandbox::OpenSandboxBackend)。
+/// Returns `None` when no external sandbox backend is configured (i.e. the
+/// `sandbox_backend` key is absent, empty, or `"none"`). When `"opensandbox"`
+/// is set, constructs an [`OpenSandboxBackend`](super::opensandbox::OpenSandboxBackend) using `sandbox_url` and
+/// `sandbox_api_key`.
 pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>> {
     let kind = config
         .sandbox_backend

@@ -1,4 +1,4 @@
-//! `image_analyze` 工具——使用专用的视觉模型分析图像。
+//! `image_analyze` tool — analyze images using a dedicated vision model.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -384,8 +384,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_rejects_absolute_path() {
-        // 信任边界约束：image_path 必须保持在工作区内
-        // ——绝对路径或包含 `..` 的路径必须在进行 base64/API 调用之前拒绝
+        // Trust-boundary pin: image_path must stay inside the workspace
+        // — an absolute path or a `..`-traversing path must reject
+        // before any base64 / API call.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = ImageAnalyzeTool::new(fake_config());

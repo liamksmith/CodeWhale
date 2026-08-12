@@ -340,12 +340,13 @@ fn adapt_bg_maps_rgb_to_indexed_on_ansi256() {
 
 #[test]
 fn adapt_color_drops_to_named_on_ansi16() {
-    // 天蓝色：蓝色主导且明亮 → LightBlue，而非终端青色。
+    // Sky: blue-dominant and bright → LightBlue, not terminal cyan.
     assert_eq!(
         adapt_color(WHALE_INFO, ColorDepth::Ansi16),
         Color::LightBlue
     );
-    // 玫瑰红故意足够亮，以使用终端的亮红色槽位。
+    // Rose Red is intentionally bright enough to use the terminal's
+    // bright red slot.
     assert_eq!(
         adapt_color(WHALE_ERROR, ColorDepth::Ansi16),
         Color::LightRed
@@ -413,7 +414,7 @@ fn blend_at_half_is_midpoint() {
 
 #[test]
 fn pulse_brightness_swings_within_envelope() {
-    // 脉冲在 30%..100% 之间摆动——不低于源值的 30%。
+    // The pulse rides between 30%..100% — never below 30% of the source.
     let src = ACCENT_REASONING_LIVE;
     let mut min_r = u8::MAX;
     let mut max_r = 0u8;
@@ -426,7 +427,7 @@ fn pulse_brightness_swings_within_envelope() {
     let Color::Rgb(src_r, _, _) = src else {
         panic!("expected RGB");
     };
-    // 波谷应接近源值的 30%；波峰应接近源值本身。
+    // Trough should land near 30% of source; crest near source itself.
     let lower = (f32::from(src_r) * 0.30).round() as u8;
     assert!(min_r <= lower + 2, "trough too high: {min_r}");
     assert!(max_r + 2 >= src_r, "crest too low: {max_r}");
@@ -434,14 +435,14 @@ fn pulse_brightness_swings_within_envelope() {
 
 #[test]
 fn pulse_passes_named_colors_unchanged() {
-    // 命名调色板条目没有有意义的混合——保持原样。
+    // Named palette entries don't blend meaningfully — leave them alone.
     assert_eq!(pulse_brightness(Color::Reset, 0), Color::Reset);
     assert_eq!(pulse_brightness(Color::Cyan, 1234), Color::Cyan);
 }
 
 #[test]
 fn nearest_ansi16_routes_known_brand_colors() {
-    // v0.8.45：强调色主色为 Signal Gold (#F6C453)，辅色为 Seafoam。
+    // v0.8.45: accent primary is Signal Gold (#F6C453), secondary is Seafoam.
     assert_eq!(nearest_ansi16(246, 196, 83), Color::LightYellow); // Signal Gold
     assert_eq!(nearest_ansi16(79, 209, 197), Color::LightCyan); // Seafoam
     assert_eq!(nearest_ansi16(42, 74, 127), Color::Blue); // Border
@@ -458,8 +459,8 @@ fn rgb_to_ansi256_uses_stable_extended_palette() {
 
 #[test]
 fn color_depth_detect_is_safe_without_env() {
-    // 不要试图固定结果——CI 环境可能是任何值。只要执行路径，
-    // 这样 panic 就会显现。
+    // Don't try to pin the result — env may be anything in CI. Just
+    // exercise the path so a panic would surface.
     let _ = ColorDepth::detect();
     let _ = adapt_color(WHALE_BG, ColorDepth::detect());
 }

@@ -1,8 +1,9 @@
-//! 代理循环的审批 + 用户输入握手。
+//! Approval + user-input handshake for the agent loop.
 //!
-//! 从 `core/engine.rs`（P1.3）中提取。每当工具需要显式审批（`await_tool_approval`）
-//! 或工具请求实时用户输入（`await_user_input`）时，代理循环会阻塞在这两个 future 上。
-//! 通道和引擎状态对父模块保持私有。
+//! Extracted from `core/engine.rs` (P1.3). The agent loop blocks on these
+//! two futures whenever a tool requires explicit approval (`await_tool_approval`)
+//! or whenever a tool requests live user input (`await_user_input`). Channels
+//! and engine state stay private to the parent module.
 
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ pub(super) enum ApprovalDecision {
     Denied {
         id: String,
     },
-    /// 使用提升的沙箱策略重试一个工具。
+    /// Retry a tool with an elevated sandbox policy.
     RetryWithPolicy {
         id: String,
         policy: crate::sandbox::SandboxPolicy,
@@ -40,20 +41,22 @@ pub(super) enum UserInputDecision {
     },
 }
 
-/// 等待用户工具审批的结果。
+/// Result of awaiting tool approval from the user.
 #[derive(Debug)]
 pub(super) enum ApprovalResult {
-    /// 用户批准了工具执行。
+    /// User approved the tool execution.
     Approved,
-    /// 用户拒绝了工具执行。
+    /// User denied the tool execution.
     Denied,
-    /// 用户请求使用提升的沙箱策略重试。
+    /// User requested retry with an elevated sandbox policy.
     RetryWithPolicy(crate::sandbox::SandboxPolicy),
 }
 
 impl Engine {
-    /// 当引擎知道原因时格式化的取消后缀。
-    /// #1541 打开期间，某些内部取消路径仍使用原始令牌；这些路径保持旧消息，不猜测原因。
+    /// Format a cancellation suffix when the engine knows the cause.
+    /// Some internal cancellation paths still use the raw token while
+    /// #1541 is open; those keep the legacy message without a guessed
+    /// reason.
     fn cancel_reason_suffix(&self) -> String {
         let reason = match self.cancel_reason.lock() {
             Ok(slot) => *slot,

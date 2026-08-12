@@ -1,12 +1,12 @@
-//! 产品定价投影的行为测试 (#3085)。
+//! Behavior tests for the offering pricing projection (#3085).
 
 use super::*;
 use crate::catalog::{CatalogOffering, CatalogSource, bundled_offerings_from_models_dev};
 use crate::models_dev::{ModelsDevCatalog, ModelsDevCost};
 use crate::route::PricingSku;
 
-/// 一个 DeepSeek 形态的定价产品（输入/输出/缓存读取已知，
-/// 缓存写入故意未知），标记了给定的来源 provenance。
+/// A DeepSeek-shaped priced offering (input/output/cache-read known,
+/// cache-write deliberately unknown) tagged with the given provenance source.
 fn priced(source: CatalogSource) -> CatalogOffering {
     CatalogOffering {
         provider: "deepseek".into(),
@@ -55,10 +55,10 @@ fn no_cost_or_empty_cost_object_is_unknown() {
     offering.cost = None;
     assert!(
         OfferingPricing::from_catalog_offering(&offering).is_none(),
-        "成本缺失为未知，而非免费"
+        "absent cost is unknown, not free"
     );
 
-    // 成本对象存在但没有具体价格时仍视为未知。
+    // A cost object present but with no concrete price is still unknown.
     offering.cost = Some(ModelsDevCost::default());
     assert!(OfferingPricing::from_catalog_offering(&offering).is_none());
 }
@@ -66,7 +66,7 @@ fn no_cost_or_empty_cost_object_is_unknown() {
 #[test]
 fn estimate_cost_sums_priced_classes() {
     let p = OfferingPricing::from_catalog_offering(&priced(CatalogSource::Bundled)).unwrap();
-    // 1M 输入 @0.28 + 0.5M 输出 @0.42 + 2M 缓存读取 @0.028 = 0.546
+    // 1M input @0.28 + 0.5M output @0.42 + 2M cache_read @0.028 = 0.546
     let usage = TokenUsage {
         input: 1_000_000,
         output: 500_000,
@@ -79,8 +79,8 @@ fn estimate_cost_sums_priced_classes() {
 
 #[test]
 fn estimate_cost_is_none_when_a_used_class_is_unpriced() {
-    // cache_write 价格未知；无法诚实估计缓存写入令牌的费用，
-    // 因此整个估计为 None 而非低估。
+    // cache_write price is unknown; charging cache-write tokens cannot be
+    // estimated honestly, so the whole estimate is None rather than under-reported.
     let p = OfferingPricing::from_catalog_offering(&priced(CatalogSource::Bundled)).unwrap();
     let usage = TokenUsage {
         input: 100,
@@ -110,7 +110,7 @@ fn route_pricing_sku_is_token_when_priced_and_unknown_otherwise() {
         other => panic!("expected Token, got {other:?}"),
     }
 
-    // 无成本 → 诚实的 UnknownOrStale，绝不会虚构零价格。
+    // No cost → honest UnknownOrStale, never a fabricated zero price.
     let mut unpriced = priced(CatalogSource::Bundled);
     unpriced.cost = None;
     assert!(matches!(
@@ -170,7 +170,7 @@ fn staleness_applies_to_live_rows_only() {
     assert!(!live_price.is_stale(1_500, 3_600), "within TTL");
     assert!(live_price.is_stale(5_000, 3_600), "past TTL");
 
-    // 捆绑价格没有获取时钟，不会因时间而变旧。
+    // A bundled price has no fetch clock and is not age-stale.
     let bundled = OfferingPricing::from_catalog_offering(&priced(CatalogSource::Bundled)).unwrap();
     assert!(!bundled.is_stale(u64::MAX, 1));
 }
@@ -204,8 +204,9 @@ fn pricing_flows_from_the_models_dev_parser() {
 
 #[test]
 fn cache_only_offering_is_unknown_at_the_route_layer() {
-    // 仅在缓存类别上定价（无输入/输出）：路由 Token 徽章将没有可见费率，
-    // 因此 route_pricing_sku 降级为 UnknownOrStale——但缓存费率仍可用于 estimate_cost。
+    // Priced only on cache classes (no input/output): the route Token badge
+    // would have no visible rates, so route_pricing_sku degrades to
+    // UnknownOrStale — yet the cache rate is still usable for estimate_cost.
     let mut offering = priced(CatalogSource::Bundled);
     offering.cost = Some(ModelsDevCost {
         input: None,
@@ -231,8 +232,8 @@ fn cache_only_offering_is_unknown_at_the_route_layer() {
 
 #[test]
 fn user_override_source_maps_through_from_catalog_offering() {
-    // 通过 hydration 路径（而非直接构造）为覆盖分支测试
-    // provenance_from_source / effective_at_from_source。
+    // Exercises provenance_from_source / effective_at_from_source for the
+    // override arm via the hydration path (not direct construction).
     let pricing = OfferingPricing::from_catalog_offering(&priced(CatalogSource::UserOverride))
         .expect("priced");
     assert_eq!(pricing.provenance, PricingProvenance::UserOverride);
@@ -246,8 +247,8 @@ fn staleness_is_inclusive_at_the_ttl_boundary() {
         fetched_at: 1_000,
     };
     let p = OfferingPricing::from_catalog_offering(&priced(live)).unwrap();
-    // age == max_age_secs 计为过期（`>=` 语义）...
+    // age == max_age_secs counts as stale (`>=` semantics)...
     assert!(p.is_stale(1_100, 100));
-    // ...少一秒仍然新鲜。
+    // ...one second younger is still fresh.
     assert!(!p.is_stale(1_099, 100));
 }

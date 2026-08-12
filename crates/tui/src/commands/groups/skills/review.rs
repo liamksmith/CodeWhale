@@ -1,4 +1,4 @@
-//! Review 命令：激活 review 技能并立即发送目标。
+//! Review command: activate review skill and send a target immediately.
 
 use crate::skills::{SkillRegistry, default_skills_dir};
 use crate::tui::app::{App, AppAction};
@@ -140,10 +140,10 @@ mod tests {
     fn test_review_without_skill_installed() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        // 将技能目录设置为空的临时目录
+        // Set skills dir to empty temp dir
         app.skills_dir = tmpdir.path().join("nonexistent_skills");
         let result = review(&mut app, Some("file.rs"));
-        // 命令要么报错找不到技能，要么在全局技能存在时正常工作
+        // The command should either error about missing skill or work if global skill exists
         assert!(result.message.is_some() || result.action.is_some());
     }
 

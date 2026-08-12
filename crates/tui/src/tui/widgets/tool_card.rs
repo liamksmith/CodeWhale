@@ -1,58 +1,65 @@
-//! v0.6.6 会话记录重新设计的工具卡视觉词汇。
+//! Tool-card visual vocabulary for the v0.6.6 transcript redesign.
 //!
-//! 工具卡是代理运行 `read_file`、`exec_shell`、`apply_patch` 等时出现的方框。
-//! 视觉词汇有意保持稀疏：单个动词字形标识族，左侧轨道将卡片锚定到时间线，
-//! 旋转器节奏重用现有工具状态动画。
+//! Tool cards are the boxes that appear when the agent runs `read_file`,
+//! `exec_shell`, `apply_patch`, etc. The visual vocabulary is intentionally
+//! sparse: a single verb glyph identifies the family, a left rail anchors
+//! the card to the timeline, and the spinner cadence reuses the existing
+//! tool-status animation.
 //!
-//! 此模块拥有：
+//! This module owns:
 //!
-//! - [`ToolFamily`] — 规范语义族以及尚未有族的事物的 `Generic` 回退。
-//! - [`tool_family_for_title`] — 将遗留 `render_tool_header` 标题字符串
-//!   （`"Shell"`、`"Patch"`、`"Workspace"` 等）映射到族。使现有调用点
-//!   可以放入族字形而无需重构每个单元格。
-//! - [`family_glyph`] / [`family_label`] — 每个族的动词字形 + 标签。
-//!   字形是单个字素；标签是短动词。
-//! - [`CardRail`] / [`rail_glyph`] — 锚定到左边距的 `╭ │ ╰` 轨道，
-//!   使眼睛可以分组多行卡片。
+//! - [`ToolFamily`] — the canonical semantic families plus a `Generic`
+//!   fallback for anything we don't have a family for yet.
+//! - [`tool_family_for_title`] — maps the legacy `render_tool_header` title
+//!   string (`"Shell"`, `"Patch"`, `"Workspace"`, etc.) to a family. Lets
+//!   the existing call sites drop in family glyphs without re-architecting
+//!   each cell.
+//! - [`family_glyph`] / [`family_label`] — the verb glyph + label per
+//!   family. Glyphs are single graphemes; labels are short verbs.
+//! - [`CardRail`] / [`rail_glyph`] — the `╭ │ ╰` rail anchored to the
+//!   left margin so the eye can group multi-line cards.
 //!
-//! 实际行的组合仍在 `history.rs` 内部进行；此模块是词汇表，不是布局引擎。
-//! 保持小型意味着未来的视觉刷新只需触摸这里的常量。
+//! The actual line composition still happens inside `history.rs`; this
+//! module is the vocabulary, not the layout engine. Keeping it small means
+//! a future visual refresh only has to touch the constants here.
 
 use crate::localization::Locale;
 
-/// 工具族——代理正在执行的动词。用于选择卡片标题的字形和标签。
+/// Tool family — the verb the agent is performing. Used to pick a glyph
+/// and label for the card header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFamily {
-    /// 读取、列出、探索。`▷ read`。
+    /// Reads, listings, exploration. `▷ read`.
     Read,
-    /// 编辑、补丁、写入。`◆ patch`。
+    /// Edits, patches, writes. `◆ patch`.
     Patch,
-    /// Shell、子进程。`▶ run`。
+    /// Shell, child processes. `▶ run`.
     Run,
-    /// Grep、模糊文件搜索、网络搜索。`⌕ find`。
+    /// Grep, fuzzy file search, web search. `⌕ find`.
     Find,
-    /// 单个子代理分发。`◐ delegate`。
+    /// Single sub-agent dispatch. `◐ delegate`.
     Delegate,
-    /// 多代理扇出分发（rlm）。`⋮⋮ fanout`。
+    /// Multi-agent fanout dispatch (rlm). `⋮⋮ fanout`.
     Fanout,
-    /// 递归语言模型工作。`⋮⋮ rlm`。
+    /// Recursive language model work. `⋮⋮ rlm`.
     Rlm,
-    /// 验证门控、测试和验证器。`✓ verify`。
+    /// Verification gates, tests, and validators. `✓ verify`.
     Verify,
-    /// 推理/思维链。`… think`。推理有自己的渲染路径
-    ///（`history.rs` 中的 `render_thinking`）；
-    /// 在此声明族是为了完整性，以便任何未来代码可以访问
-    /// 匹配的字形 + 标签词汇。
+    /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
+    /// render path (`render_thinking` in `history.rs`); the family is
+    /// declared here for completeness so any future code that reaches for
+    /// it has the matching glyph + label vocabulary.
     #[allow(dead_code)]
     Think,
-    /// 任何我们还没有族字形的——回退到中性项目符号，
-    /// 以便卡片仍然干净渲染。
+    /// Anything we don't have a family glyph for yet — falls back to a
+    /// neutral bullet so the card still renders cleanly.
     Generic,
 }
 
-/// 将遗留工具标题字符串（传递给 `render_tool_header` 的值）映射到族。
-/// 任何无法识别的回退到 [`ToolFamily::Generic`]，以便卡片仍然渲染——
-/// 它们只是失去动词字形处理，直到族被添加到此。
+/// Map a legacy tool-header title string (the value passed to
+/// `render_tool_header`) to a family. Anything unrecognised falls back to
+/// [`ToolFamily::Generic`] so cards still render — they just lose the
+/// verb-glyph treatment until the family is added here.
 #[must_use]
 pub fn tool_family_for_title(title: &str) -> ToolFamily {
     match title {
@@ -65,9 +72,10 @@ pub fn tool_family_for_title(title: &str) -> ToolFamily {
     }
 }
 
-/// 将任意工具名称（如向模型暴露的——例如 `read_file`、`apply_patch`、`agent`）
-/// 映射到族。由 `GenericToolCell` 使用，其中 `tool_family_for_title` 快捷方式
-/// 不够，因为每个通用单元格共享标题 `"Tool"`。
+/// Map an arbitrary tool name (as exposed to the model — e.g. `read_file`,
+/// `apply_patch`, `agent`) to a family. Used by `GenericToolCell`
+/// where the `tool_family_for_title` shortcut isn't enough because every
+/// generic cell shares the title `"Tool"`.
 #[must_use]
 pub fn tool_family_for_name(name: &str) -> ToolFamily {
     match name {
@@ -89,16 +97,16 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
         | "task_gate_run"
         | "validate_data"
         | "wait_for_dev_server" => ToolFamily::Verify,
-        // 工作流运行是多子活动；重用扇出字形，以便
-        // 紧凑历史卡片（#4122）与直接多代理卡片共享视觉词汇，
-        // 而不是中性通用项目符号。
+        // Workflow runs are multi-child activity; reuse fanout glyph so the
+        // compact history card (#4122) shares visual vocabulary with direct
+        // multi-agent cards rather than the neutral generic bullet.
         "workflow" => ToolFamily::Fanout,
         _ => ToolFamily::Generic,
     }
 }
 
-/// 任意工具名称的用户面向标签。已知工具折叠为语义动词；
-/// 未知工具保留其确切名称以便调试。
+/// User-facing label for an arbitrary tool name. Known tools collapse to the
+/// semantic verb; unknown tools keep their exact name for debugging.
 #[cfg(test)]
 #[must_use]
 fn tool_display_label_for_name(name: &str) -> String {
@@ -125,8 +133,8 @@ fn family_message_id(family: ToolFamily) -> crate::localization::MessageId {
     }
 }
 
-/// 任意工具名称的紧凑活动/状态标签。已知内置工具使用语义动词；
-/// 未知工具保留 `tool NAME` 形式。
+/// Compact activity/status label for arbitrary tool names. Known built-ins use
+/// the semantic verb; unknown tools keep the `tool NAME` form.
 #[must_use]
 pub fn tool_activity_label_for_name(name: &str, locale: Locale) -> String {
     let family = tool_family_for_name(name);
@@ -138,7 +146,8 @@ pub fn tool_activity_label_for_name(name: &str, locale: Locale) -> String {
     }
 }
 
-/// 从公共工具名称和已清洗的参数摘要为工具标题构建紧凑语义摘要。
+/// Build a compact semantic summary for a tool header from the public tool
+/// name and the already-sanitized argument summary.
 #[must_use]
 pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> Option<String> {
     let family = tool_family_for_name(name);
@@ -255,8 +264,8 @@ fn is_noisy_summary_key(key: &str) -> bool {
     )
 }
 
-/// 族的动词字形。单字素，使得 `render_tool_header` 中的标题布局计算
-/// 保持简单（一个单元格宽）。
+/// The verb glyph for a family. Single grapheme so the header layout math
+/// in `render_tool_header` stays simple (one cell wide).
 #[must_use]
 pub fn family_glyph(family: ToolFamily) -> &'static str {
     match family {
@@ -265,16 +274,17 @@ pub fn family_glyph(family: ToolFamily) -> &'static str {
         ToolFamily::Run => "\u{25B6}",            // ▶
         ToolFamily::Find => "\u{2315}",           // ⌕
         ToolFamily::Delegate => "\u{25D0}",       // ◐
-        ToolFamily::Fanout => "\u{22EE}\u{22EE}", // ⋮⋮（两个单元格）
-        ToolFamily::Rlm => "\u{22EE}\u{22EE}",    // ⋮⋮（两个单元格）
+        ToolFamily::Fanout => "\u{22EE}\u{22EE}", // ⋮⋮ (two cells)
+        ToolFamily::Rlm => "\u{22EE}\u{22EE}",    // ⋮⋮ (two cells)
         ToolFamily::Verify => "\u{2713}",
         ToolFamily::Think => "\u{2026}",   // …
         ToolFamily::Generic => "\u{2022}", // •
     }
 }
 
-/// 族的简短动词标签——出现在卡片标题中，位于字形旁边。
-/// 有意小写；动词字形 + 标签是新的卡片标题词汇。
+/// The short verb label for a family — appears in card headers next to the
+/// glyph. Lowercased on purpose; the verb-glyph + label is the new card
+/// title vocabulary.
 #[must_use]
 pub fn family_label(family: ToolFamily) -> &'static str {
     match family {
@@ -291,25 +301,25 @@ pub fn family_label(family: ToolFamily) -> &'static str {
     }
 }
 
-/// 多行卡片中某行的位置——驱动左侧轨道字形，使从顶部到底部的方框
-/// 读作一个连续组。
+/// Position of a line within a multi-line card — drives the left-rail
+/// glyph so the box reads as a contiguous group from top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub enum CardRail {
-    /// 卡片的第一个行——标题。`╭`。
+    /// First line of the card — the header. `╭`.
     Top,
-    /// 任何中间行——正文内容。`│`。
+    /// Any middle line — body content. `│`.
     Middle,
-    /// 卡片的最后一行。`╰`。
+    /// Last line of the card. `╰`.
     Bottom,
-    /// 单行卡片——完全没有轨道。
+    /// Single-line card — no rail at all.
     Single,
 }
 
-/// 将 [`CardRail`] 位置映射到其轨道字形。返回为 `&str`，
-/// 因为调用者将其粘贴到 span 中。
+/// Map a [`CardRail`] position to its rail glyph. Returned as a `&str`
+/// because callers paste it into a span.
 #[must_use]
-#[allow(dead_code)]
+#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub fn rail_glyph(rail: CardRail) -> &'static str {
     match rail {
         CardRail::Top => "\u{256D}",    // ╭
@@ -431,7 +441,7 @@ mod tests {
 
     #[test]
     fn each_family_has_a_glyph_and_label() {
-        // 烟雾测试——发现未来重构中意外的空值。
+        // Smoke test — surface accidental empties from a future refactor.
         for family in [
             ToolFamily::Read,
             ToolFamily::Patch,
@@ -446,11 +456,11 @@ mod tests {
         ] {
             assert!(
                 !family_glyph(family).is_empty(),
-                "族 {family:?} 有空字形",
+                "family {family:?} has empty glyph",
             );
             assert!(
                 !family_label(family).is_empty(),
-                "族 {family:?} 有空标签",
+                "family {family:?} has empty label",
             );
         }
     }
@@ -515,7 +525,7 @@ mod tests {
                 let msg = tr(locale, *id);
                 assert!(
                     !msg.eq_ignore_ascii_case(eng),
-                    "{} 泄漏了精确英文 '{}' 对于 '{:?}': {msg}",
+                    "{} leaked exact English '{}' for '{:?}': {msg}",
                     locale.tag(),
                     eng,
                     id
@@ -546,7 +556,7 @@ mod tests {
                 let label = tool_activity_label_for_name(tool, locale);
                 assert!(
                     !label.eq_ignore_ascii_case(eng),
-                    "{} 泄漏了英文 '{}' 对于工具 '{tool}': {label}",
+                    "{} leaked English '{}' for tool '{tool}': {label}",
                     locale.tag(),
                     eng,
                 );

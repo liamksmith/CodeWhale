@@ -1,19 +1,19 @@
-//! 活跃 Models.dev 目录获取 + 无密钥的磁盘缓存（#4187）。
+//! Live Models.dev catalog fetch + secret-free disk cache (#4187).
 //!
-//! OpenCode 风格的生产者：
-//! - 启动时读取过时/新鲜的磁盘缓存（从不阻塞模型选择），
-//! - 在后台以有限超时和显式 User-Agent（无凭据）获取
-//!   `https://models.dev/catalog.json`，
-//! - 通过临时文件 + 重命名原子写入缓存，
-//! - 将解析后的行编译为 [`CatalogOffering`] 并发布到
-//!   [`crate::provider_lake`]，
-//! - 在任何失败时回退到之前的缓存或捆绑的快照。
+//! OpenCode-style producer that:
+//! - reads a stale/fresh disk cache on startup (never blocks model selection),
+//! - fetches `https://models.dev/catalog.json` in the background with a bounded
+//!   timeout and explicit user-agent (no credentials),
+//! - writes the cache atomically via temp file + rename,
+//! - compiles parsed rows into [`CatalogOffering`]s and publishes them into
+//!   [`crate::provider_lake`],
+//! - falls back to the prior cache or the bundled snapshot on any failure.
 //!
-//! 覆盖旋钮（测试/自测）：
-//! - `CODEWHALE_MODELS_DEV_URL` — 基础 URL（附加 `/catalog.json`）或完整的
-//!   `*.json` URL。
-//! - `CODEWHALE_MODELS_DEV_PATH` — 本地文件路径；跳过网络。
-//! - `CODEWHALE_DISABLE_MODELS_DEV_FETCH` — 当为真值时，从不访问网络。
+//! Override knobs (tests / dogfood):
+//! - `CODEWHALE_MODELS_DEV_URL` — base URL (appends `/catalog.json`) or a full
+//!   `*.json` URL.
+//! - `CODEWHALE_MODELS_DEV_PATH` — local file path; skips the network.
+//! - `CODEWHALE_DISABLE_MODELS_DEV_FETCH` — when truthy, never hits the network.
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -26,43 +26,43 @@ use codewhale_config::models_dev::{MODELS_DEV_CATALOG_URL, ModelsDevCatalog};
 use codewhale_config::persistence::atomic_write;
 use serde::{Deserialize, Serialize};
 
-/// 活跃 Models.dev 快照的默认 TTL（24 小时，#4187 / #4114）。
+/// Default TTL for a live Models.dev snapshot (24h, #4187 / #4114).
 pub const DEFAULT_MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// Models.dev 获取的有限 HTTP 超时。
+/// Bounded HTTP timeout for the Models.dev fetch.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// 显式 User-Agent；无凭据，无会话 Cookie。
+/// Explicit user-agent; no credentials, no session cookies.
 pub const USER_AGENT: &str = concat!("CodeWhale/", env!("CARGO_PKG_VERSION"), " (+models-dev)");
 
-/// CodeWhale `catalog` 状态目录下的文件名。
+/// Filename under the CodeWhale `catalog` state dir.
 pub const CACHE_FILE: &str = "models-dev-catalog.json";
 
-/// 环境变量：覆盖 Models.dev 基础 URL 或完整目录 URL。
+/// Env: override Models.dev base URL or full catalog URL.
 pub const ENV_MODELS_DEV_URL: &str = "CODEWHALE_MODELS_DEV_URL";
-/// 环境变量：从本地路径加载目录 JSON（跳过网络）。
+/// Env: load catalog JSON from a local path (skips network).
 pub const ENV_MODELS_DEV_PATH: &str = "CODEWHALE_MODELS_DEV_PATH";
-/// 环境变量：完全禁用网络获取（`1`/`true`/`yes`/`on`）。
+/// Env: disable network fetch entirely (`1`/`true`/`yes`/`on`).
 pub const ENV_DISABLE_FETCH: &str = "CODEWHALE_DISABLE_MODELS_DEV_FETCH";
 
 const CACHE_SCHEMA_VERSION: u32 = 1;
 
-/// Models.dev 活跃层的新鲜度/来源，用于 UI 芯片显示（#4187）。
+/// Provenance / freshness of the Models.dev live layer for UI chips (#4187).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelsDevFreshness {
-    /// 没有活跃/缓存层；选择器仅看到捆绑行。
+    /// No live/cache layer; pickers see bundled rows only.
     #[default]
     Bundled,
-    /// TTL 内的活跃（或磁盘缓存）行。
+    /// Live (or disk-cache) rows within TTL.
     Live,
-    /// 超过 TTL 的磁盘缓存/之前的活跃行；仍可见。
+    /// Disk-cache / prior live rows past TTL; still visible.
     Stale,
-    /// 上次刷新失败；之前的/捆绑的行仍然可用。
+    /// Last refresh failed; prior/bundled rows remain available.
     Failed,
 }
 
-/// 供 UI / `/model refresh` 反馈的安静状态快照。
+/// Quiet status snapshot for UI / `/model refresh` feedback.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelsDevStatus {
     pub freshness: ModelsDevFreshness,
@@ -83,17 +83,17 @@ static STATUS: RwLock<ModelsDevStatus> = RwLock::new(ModelsDevStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedModelsDevCache {
     schema_version: u32,
-    /// 载荷获取时的 Unix 秒数（或从覆盖路径加载时）。
+    /// Unix seconds the payload was fetched (or loaded from an override path).
     fetched_at: u64,
-    /// 用于 [`CatalogSource::Live`] 的源 URL/路径指纹。
+    /// Fingerprint of the source URL/path used for [`CatalogSource::Live`].
     source_fingerprint: String,
-    /// 人类可读的源标签（URL 或 `file:…`）；绝非密钥。
+    /// Human-readable source label (URL or `file:…`); never a secret.
     source_label: String,
-    /// 原始 Models.dev 目录 JSON 正文（构建时无密钥）。
+    /// Raw Models.dev catalog JSON body (secret-free by construction).
     body: String,
 }
 
-/// Models.dev 刷新未发布新行的原因。
+/// Why a Models.dev refresh did not publish new rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelsDevRefreshError {
     Disabled,
@@ -117,7 +117,7 @@ impl std::fmt::Display for ModelsDevRefreshError {
     }
 }
 
-/// 解析 CodeWhale `catalog` 状态目录下的磁盘缓存路径。
+/// Resolve the on-disk cache path under the CodeWhale `catalog` state dir.
 #[must_use]
 pub fn cache_path() -> Option<PathBuf> {
     codewhale_config::resolve_state_dir("catalog")
@@ -125,7 +125,7 @@ pub fn cache_path() -> Option<PathBuf> {
         .map(|dir| dir.join(CACHE_FILE))
 }
 
-/// 当前的安静状态（供 UI / 斜杠命令反馈）。
+/// Current quiet status (for UI / slash-command feedback).
 #[must_use]
 pub fn status() -> ModelsDevStatus {
     STATUS.read().map(|guard| guard.clone()).unwrap_or_default()
@@ -148,7 +148,7 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 从环境变量覆盖或 Models.dev 默认值解析目录 URL。
+/// Resolve the catalog URL from env override or the Models.dev default.
 #[must_use]
 pub fn resolve_catalog_url() -> String {
     match std::env::var(ENV_MODELS_DEV_URL) {
@@ -166,11 +166,11 @@ pub fn resolve_catalog_url() -> String {
     }
 }
 
-/// 在任何选择器读取之前从磁盘 Models.dev 缓存种子 ProviderLake。
+/// Seed ProviderLake from the on-disk Models.dev cache before any picker read.
 ///
-/// 缺失/损坏/空的缓存是无操作的——捆绑行仍然可用。
-/// 过时的缓存仍然会发布（新鲜度 = Stale），以便离线启动保留
-/// 上次已知的活跃行。
+/// Missing / corrupt / empty caches are a no-op — bundled rows remain available.
+/// Stale caches still publish (freshness = Stale) so offline startups keep the
+/// last-known live rows.
 pub fn maybe_load_persisted_cache() {
     let Some(path) = cache_path() else {
         return;
@@ -198,10 +198,10 @@ pub fn maybe_load_persisted_cache() {
     }
 }
 
-/// 强制刷新：优先使用 `CODEWHALE_MODELS_DEV_PATH`，否则进行网络获取。
+/// Force a refresh: prefer `CODEWHALE_MODELS_DEV_PATH`, else network fetch.
 ///
-/// 成功时，更新磁盘缓存和 ProviderLake。失败时，保留任何
-/// 之前的活跃/捆绑行，并记录安静的 Failed 状态。
+/// On success, updates the disk cache and ProviderLake. On failure, keeps any
+/// prior live/bundled rows and records a quiet Failed status.
 pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError> {
     if let Ok(path) = std::env::var(ENV_MODELS_DEV_PATH) {
         let trimmed = path.trim();
@@ -258,7 +258,7 @@ pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError
     Ok(count)
 }
 
-/// 尽力而为的后台刷新：永不 panic，永不阻塞调用方。
+/// Best-effort background refresh: never panics, never blocks callers.
 pub fn spawn_background_refresh() {
     if env_truthy(ENV_DISABLE_FETCH) && std::env::var(ENV_MODELS_DEV_PATH).is_err() {
         return;
@@ -374,8 +374,8 @@ fn publish_from_body(
 
 fn mark_failed(err: ModelsDevRefreshError) {
     let mut next = status();
-    // 保留之前的 offering_count / fetched_at，以便 UI 仍然可以显示最后
-    // 的行，但将上次刷新结果与 TTL 过时状态明确区分。
+    // Keep prior offering_count / fetched_at so UI can still show the last
+    // rows, but mark the last refresh outcome distinctly from TTL staleness.
     next.freshness = ModelsDevFreshness::Failed;
     next.last_error = Some(err.to_string());
     set_status(next);
@@ -402,7 +402,8 @@ fn save_cache_file(
     atomic_write(path, &bytes).map_err(|err| ModelsDevRefreshError::Io(err.to_string()))
 }
 
-/// 为单元测试公开的编译辅助函数：正文 → 带有规范化提供者 ID 的活跃提供物。
+/// Compile helper exposed for unit tests: body → live offerings with normalized
+/// provider ids.
 #[cfg(test)]
 pub(crate) fn offerings_from_json_for_test(
     body: &str,
@@ -523,7 +524,7 @@ mod tests {
         assert!(st.last_error.is_none());
         assert!(st.offering_count >= 2);
 
-        // 缓存文件应存在且不含密钥。
+        // Cache file should exist and be secret-free.
         let cache = cache_path().expect("cache path");
         assert!(cache.exists());
         let on_disk = std::fs::read_to_string(&cache).expect("read cache");
@@ -580,7 +581,7 @@ mod tests {
         let cache = cache_dir.join(CACHE_FILE);
         let stale = PersistedModelsDevCache {
             schema_version: CACHE_SCHEMA_VERSION,
-            fetched_at: 1, // 很远的过去 → 过时
+            fetched_at: 1, // far in the past → stale
             source_fingerprint: "stale-fp".into(),
             source_label: "https://models.dev/catalog.json".into(),
             body: FIXTURE.into(),
@@ -614,7 +615,7 @@ mod tests {
         let count = rt.block_on(refresh(true)).expect("seed from path");
         assert!(count >= 2);
 
-        // 指向一个不可达的 URL 并强制网络（清除路径覆盖）。
+        // Point at a dead URL and force network (clear path override).
         let _path = EnvVarGuard::remove(ENV_MODELS_DEV_PATH);
         let _disable = EnvVarGuard::remove(ENV_DISABLE_FETCH);
         let _url = EnvVarGuard::set(ENV_MODELS_DEV_URL, "http://127.0.0.1:1");

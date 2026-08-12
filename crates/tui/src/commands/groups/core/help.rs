@@ -1,4 +1,4 @@
-//! `/help` 命令。
+//! `/help` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

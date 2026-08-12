@@ -1,4 +1,4 @@
-//! 鼠标捕获 TUI 会话的右键上下文菜单。
+//! Right-click context menu for mouse-captured TUI sessions.
 
 use std::cell::Cell;
 

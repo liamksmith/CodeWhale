@@ -1,14 +1,16 @@
-//! xAI / Grok OAuth 凭据加载、刷新和设备码登录。
+//! xAI / Grok OAuth credential loading, refresh, and device-code login.
 //!
-//! 两种方式，参见 [#4257](https://github.com/Hmbown/CodeWhale/issues/4257)：
+//! Two paths, matching [#4257](https://github.com/Hmbown/CodeWhale/issues/4257):
 //!
-//! 1. **委托登录** — 复用官方 Grok CLI 令牌文件，
-//!    位于 `~/.grok/auth.json`（或 `$GROK_HOME/auth.json` / `$GROK_AUTH_PATH`）。
-//! 2. **原生设备码** — 从 `auth.x.ai` 请求一个码，打印验证 URL + 用户码，
-//!    轮询令牌端点，并将令牌写回 Grok CLI 认证文件格式（因此两个工具保持兼容）。
+//! 1. **Delegate-login** — reuse the official Grok CLI token file at
+//!    `~/.grok/auth.json` (or `$GROK_HOME/auth.json` / `$GROK_AUTH_PATH`).
+//! 2. **Native device-code** — request a code from `auth.x.ai`, print the
+//!    verification URL + user code, poll the token endpoint, and write tokens
+//!    back to the Grok CLI auth file shape (so both tools stay compatible).
 //!
-//! 访问令牌以 `Authorization: Bearer` 形式在 OpenAI 兼容的
-//! xAI Chat Completions 路由（`https://api.x.ai/v1`）上发送。令牌值永远不会被记录。
+//! Access tokens are sent as `Authorization: Bearer` on the OpenAI-compatible
+//! xAI Chat Completions route (`https://api.x.ai/v1`). Token values are never
+//! logged.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,26 +22,26 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Grok CLI 官方公开 OIDC 客户端 ID（公开客户端；无密钥）。
+/// Official Grok CLI public OIDC client id (public client; no secret).
 pub const GROK_OIDC_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-/// 默认颁发者/授权服务器。
+/// Default issuer / authorization server.
 pub const XAI_OIDC_ISSUER: &str = "https://auth.x.ai";
-/// 设备码登录请求的作用域（与 Grok CLI 表面一致）。
+/// Scopes requested by device-code login (matches Grok CLI surface).
 pub const DEFAULT_SCOPES: &str =
     "openid profile email offline_access api:access grok-cli:access team:read";
 const REFRESH_SKEW_SECS: i64 = 60;
 const DEVICE_POLL_DEFAULT_SECS: u64 = 5;
 const DEVICE_POLL_MAX_SECS: u64 = 900;
 
-/// `~/.grok/auth.json` 中的一个条目（map key = `{issuer}::{client_id}`）。
+/// One entry in `~/.grok/auth.json` (map key = `{issuer}::{client_id}`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrokAuthEntry {
-    /// 访问令牌（JWT）。字段名与 Grok CLI 匹配（`key`）。
+    /// Access token (JWT). Field name matches the Grok CLI (`key`).
     #[serde(default)]
     pub key: Option<String>,
     #[serde(default)]
     pub refresh_token: Option<String>,
-    /// 由 Grok CLI 写入的 RFC3339 过期时间戳。
+    /// RFC3339 expiry timestamp written by the Grok CLI.
     #[serde(default)]
     pub expires_at: Option<String>,
     #[serde(default)]
@@ -48,7 +50,7 @@ pub struct GrokAuthEntry {
     pub oidc_client_id: Option<String>,
     #[serde(default)]
     pub auth_mode: Option<String>,
-    /// 重写时保留未知的 CLI 字段。
+    /// Preserve unknown CLI fields on rewrite.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -75,7 +77,7 @@ struct DeviceCodeResponse {
     error_description: Option<String>,
 }
 
-/// 已解析的 bearer 凭据，可用于 API。
+/// Resolved bearer credential ready for API use.
 #[derive(Debug, Clone)]
 pub struct XaiOAuthCredentials {
     pub access_token: String,
@@ -89,7 +91,7 @@ pub struct XaiOAuthCredentials {
     pub client_id: String,
 }
 
-/// `[providers.xai] auth_mode` 是否选择 OAuth 路径。
+/// Whether `[providers.xai] auth_mode` selects the OAuth path.
 #[must_use]
 pub fn auth_mode_uses_xai_oauth(mode: &str) -> bool {
     matches!(
@@ -110,9 +112,9 @@ fn normalize_auth_mode(mode: &str) -> String {
     mode.trim().to_ascii_lowercase().replace(['-', ' '], "_")
 }
 
-/// 解析 Grok CLI 认证文件路径。
+/// Resolve the Grok CLI auth file path.
 ///
-/// 优先级：
+/// Priority:
 /// 1. `GROK_AUTH_PATH` / `XAI_AUTH_PATH`
 /// 2. `$GROK_HOME/auth.json`
 /// 3. `~/.grok/auth.json`
@@ -143,7 +145,7 @@ pub fn credentials_present() -> bool {
     auth_file_path().exists()
 }
 
-/// 从 Grok CLI 认证文件加载并刷新 OAuth 凭据。
+/// Load + refresh OAuth credentials from the Grok CLI auth file.
 pub fn get_access_token() -> Result<String> {
     Ok(get_credentials()?.access_token)
 }
@@ -203,11 +205,12 @@ pub fn get_credentials() -> Result<XaiOAuthCredentials> {
     Ok(credentials_from_entry(scope, &entry, token))
 }
 
-/// 交互式设备码登录。将验证 URL + 用户码打印到 `stderr`，
-/// 轮询直到获得批准，并写入 `~/.grok/auth.json`。
+/// Interactive device-code login. Prints verification URL + user code to
+/// `stderr`, polls until approved, and writes `~/.grok/auth.json`.
 ///
-/// CLI/TUI 接线（`codewhale auth` / 斜杠命令）的公共残余入口点。
-/// 从能够打印验证 URL 的无头或 TUI 界面调用。
+/// Public residual entry point for CLI/TUI wiring (`codewhale auth` /
+/// slash command). Call from a headless or TUI surface that can print the
+/// verification URL.
 pub fn device_code_login() -> Result<XaiOAuthCredentials> {
     let issuer = std::env::var("GROK_OIDC_ISSUER")
         .or_else(|_| std::env::var("XAI_OIDC_ISSUER"))
@@ -311,7 +314,7 @@ pub fn missing_auth_message() -> String {
     )
 }
 
-// ── 内部实现 ──────────────────────────────────────────────────────────────
+// ── internals ──────────────────────────────────────────────────────────────
 
 type AuthFile = BTreeMap<String, GrokAuthEntry>;
 
@@ -363,7 +366,7 @@ fn write_auth_file(path: &Path, file: &AuthFile) -> Result<()> {
 }
 
 fn select_entry(file: &mut AuthFile) -> Option<(String, GrokAuthEntry)> {
-    // 优先使用官方的 Grok CLI 客户端 ID 作用域（如果存在）。
+    // Prefer the official Grok CLI client id scope when present.
     let preferred_suffix = format!("::{GROK_OIDC_CLIENT_ID}");
     if let Some((k, v)) = file
         .iter()
@@ -392,13 +395,13 @@ fn entry_access_token_is_fresh(entry: &GrokAuthEntry) -> bool {
         let now = now_unix_secs().unwrap_or(0);
         return exp - now > REFRESH_SKEW_SECS;
     }
-    // 当 expires_at 缺失时回退到 JWT exp 声明。
+    // Fall back to JWT exp claim when expires_at is missing.
     match jwt_expiry_seconds(token) {
         Some(exp) => {
             let now = now_unix_secs().unwrap_or(0) as u64;
             (exp as i64) - (now as i64) > REFRESH_SKEW_SECS
         }
-        // 未知过期时间 → 视为已过期，以便执行刷新。
+        // Unknown expiry → treat as stale so refresh runs.
         None => false,
     }
 }
@@ -588,7 +591,7 @@ fn now_unix_secs() -> Option<i64> {
 }
 
 fn parse_rfc3339_secs(raw: &str) -> Option<i64> {
-    // 优先使用 chrono 进行完整 RFC3339 解析；否则回退到简单的 UTC 格式。
+    // Prefer chrono when available for full RFC3339; fall back to simple UTC forms.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
         return Some(dt.timestamp());
     }

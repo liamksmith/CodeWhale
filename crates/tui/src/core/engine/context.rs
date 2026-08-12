@@ -1,7 +1,8 @@
-//! 引擎的上下文预算和提示词塑形辅助函数。
+//! Context budgeting and prompt-shaping helpers for the engine.
 //!
-//! 这些函数由流式轮询循环、容量流程和引擎会话维护代码共享。
-//! 将它们放在这里可以防止顶级引擎模块积累不相关的上下文策略细节。
+//! These functions are shared by the streaming turn loop, capacity flow, and
+//! engine session maintenance code. Keeping them here prevents the top-level
+//! engine module from accumulating unrelated context-policy details.
 
 use crate::compaction::estimate_tokens;
 use crate::config::ApiProvider;
@@ -12,31 +13,33 @@ use crate::tools::spec::ToolResult;
 use codewhale_config::route::RouteLimits;
 use serde_json::Value;
 
-/// 常规代理轮询请求的最大输出 token 数。故意设置得很大：
-/// V4 思考模型可以在可见回复之前为困难提示产生数万个推理 token，
-/// 而 DeepSeek V4 拥有 1M 上下文窗口。v0.7.5 保持此上限固定，
-/// 而不是在压力下静默降低 `max_tokens`；硬循环/预检检查在发送
-/// 下一个请求前保留此预算加上安全余量。
+/// Max output tokens requested for normal agent turns. Generous on purpose:
+/// V4 thinking models can produce tens of thousands of reasoning tokens on
+/// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
+/// context window. v0.7.5 keeps this cap fixed instead of silently lowering
+/// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
+/// plus safety headroom before sending the next request.
 pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
 
-/// API 请求中发送的安全最大输出 token 数。此值必须足够低，
-/// 以便与上下文限制小于模型本机窗口的提供商兼容（例如，使用
-/// `--max-model-len 131072` 的自托管 vLLM/SGLang）。
-/// DeepSeek 的 API 仍将根据需要生成任意数量的 token 供思考；
-/// 此上限只是防止来自限制严格的提供商的 HTTP 400。
+/// Safe max output tokens sent in the API request. This must be low enough to
+/// work with providers that have smaller context limits than the model's native
+/// window (e.g., self-hosted vLLM/SGLang with `--max-model-len 131072`).
+/// DeepSeek's API will still produce as many tokens as needed for thinking;
+/// this cap just prevents HTTP 400 from providers with tight limits.
 const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
 
-/// 计算给定模型在 API 请求中发送的有效 `max_tokens`。使用
-/// `API_MAX_OUTPUT_TOKENS`（64K），这适合通用提供商限制
-///（128K+ 总计）。对于上下文窗口较小的非 V4 模型，上限为
-/// 上下文窗口的一半。
+/// Compute the effective `max_tokens` to send in the API request for a given
+/// model. Uses `API_MAX_OUTPUT_TOKENS` (64K) which fits within common provider
+/// limits (128K+ total). For non-V4 models with smaller context windows, caps
+/// at half the context window.
 ///
-/// 覆盖：当环境变量 `DEEPSEEK_MAX_OUTPUT_TOKENS` 设置为正整
-/// 数时，此函数直接返回该值。用于自托管提供商（vLLM/SGLang），
-/// 其 `max-model-len` 很紧张，上述模型表启发式方法会过度分配。
-/// 示例：vLLM 以 `--max-model-len 65536` 提供 Qwen3.6 服务时，
-/// 应设置 `DEEPSEEK_MAX_OUTPUT_TOKENS=16384`，以使输入 + 输出
-/// 远低于提供商的硬限制。
+/// Override: when the env var `DEEPSEEK_MAX_OUTPUT_TOKENS` is set to a positive
+/// integer, this function returns that value directly. Use this for self-hosted
+/// providers (vLLM/SGLang) whose `max-model-len` is tight and where the
+/// model-table heuristic above would over-allocate. Example: vLLM serving
+/// Qwen3.6 with `--max-model-len 65536` should set
+/// `DEEPSEEK_MAX_OUTPUT_TOKENS=16384` so input + output stays well under the
+/// provider's hard limit.
 pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
     if let Ok(raw) = std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS")
         && let Ok(n) = raw.trim().parse::<u32>()
@@ -46,11 +49,11 @@ pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
     }
     let window = context_window_for_model(model).unwrap_or(128_000);
     if window >= 500_000 {
-        // V4 类模型在大型上下文提供商上：使用 64K，这对大多数部署
-        // 都是安全的，同时仍允许大量输出。
+        // V4-class models on large-context providers: use 64K which is safe
+        // for most deployments while still allowing substantial output.
         API_MAX_OUTPUT_TOKENS
     } else {
-        // 较小的模型：上限为上下文窗口的一半（为输入留出空间）
+        // Smaller models: cap at half the context window (leave room for input)
         let capped = window / 2;
         capped.min(API_MAX_OUTPUT_TOKENS)
     }
@@ -74,25 +77,25 @@ pub(super) fn effective_max_output_tokens_for_route(
         .unwrap_or(cap)
         .max(1)
 }
-/// 当需要紧急修剪时保留的最近消息数量。
+/// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
-/// 在失败轮询前允许的紧急恢复尝试次数。
+/// Allow a few emergency recovery attempts before failing the turn.
 pub(super) const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
-/// 任何插入模型上下文的工具输出的硬上限。
+/// Hard cap for any tool output inserted into model context.
 const TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS: usize = 12_000;
-/// 已知噪声工具插入模型上下文的软上限。
+/// Soft cap for known noisy tools inserted into model context.
 const TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS: usize = 2_000;
-/// 压缩工具输出到模型上下文时保留的片段长度。
+/// Snippet length kept when compacting tool output for model context.
 const TOOL_RESULT_CONTEXT_SNIPPET_CHARS: usize = 900;
-/// 工具输出插入大型上下文模型的硬上限。
+/// Hard cap for tool output inserted into a large-context model.
 const LARGE_CONTEXT_TOOL_RESULT_HARD_LIMIT_CHARS: usize = 48_000;
-/// 已知噪声工具插入大型上下文模型的软上限。
+/// Soft cap for known noisy tools inserted into a large-context model.
 const LARGE_CONTEXT_TOOL_RESULT_SOFT_LIMIT_CHARS: usize = 8_000;
-/// 压缩大型上下文噪声输出时保留的片段长度。
+/// Snippet length kept when compacting large-context noisy output.
 const LARGE_CONTEXT_TOOL_RESULT_SNIPPET_CHARS: usize = 4_000;
-/// 上下文窗口大小，超过该值时可以放宽工具输出限制。
+/// Context window size at which tool output limits can be relaxed.
 const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
-/// 从元数据提供的输出摘要中保留的最大字符数。
+/// Max chars to keep from metadata-provided output summaries.
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 
 pub(super) const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
@@ -369,9 +372,9 @@ fn compact_run_verifiers_result_for_context(raw: &str) -> Option<String> {
     let level = json_text(&parsed, "level");
     if profile.is_some() || level.is_some() {
         lines.push(format!(
-            "selection: profile={profile}, level={level}",
-            profile = profile.unwrap_or("?"),
-            level = level.unwrap_or("?")
+            "selection: profile={}, level={}",
+            profile.unwrap_or("?"),
+            level.unwrap_or("?")
         ));
     }
 
@@ -533,12 +536,12 @@ pub(super) fn extract_compaction_summary_prompt(
     }
 }
 
-#[allow(dead_code)] // 为将来的引擎侧调用方暴露；当前调用路径通过 compaction::estimate_input_tokens_conservative 经过 token_estimate_cache。
+#[allow(dead_code)] // exposed for future engine-side callers; current call path goes through compaction::estimate_input_tokens_conservative via token_estimate_cache.
 fn estimate_text_tokens_conservative(text: &str) -> usize {
     text.chars().count().div_ceil(3)
 }
 
-#[allow(dead_code)] // 见上方的 estimate_text_tokens_conservative
+#[allow(dead_code)] // see estimate_text_tokens_conservative above
 fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
     match system {
         Some(SystemPrompt::Text(text)) => estimate_text_tokens_conservative(text),
@@ -550,7 +553,7 @@ fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
     }
 }
 
-#[allow(dead_code)] // 见上方的 estimate_text_tokens_conservative
+#[allow(dead_code)] // see estimate_text_tokens_conservative above
 pub(super) fn estimate_input_tokens_conservative(
     messages: &[Message],
     system: Option<&SystemPrompt>,
@@ -563,28 +566,29 @@ pub(super) fn estimate_input_tokens_conservative(
         .saturating_add(framing_overhead)
 }
 
-/// 上下文窗口在此大小或以上时，在计算内部输入预算时保留完整的
-/// [`TURN_MAX_OUTPUT_TOKENS`]（262K），为 V4 类交织思考留出空间。
-/// 低于此值时，回退到 [`effective_max_output_tokens`]，以便较小的
-/// 自托管窗口不会下溢为负预算。
+/// Context windows at or above this size reserve the full
+/// [`TURN_MAX_OUTPUT_TOKENS`] (262K) when computing the internal input budget,
+/// leaving room for V4-class interleaved thinking. Below it, the reservation
+/// falls back to [`effective_max_output_tokens`] so a smaller self-hosted
+/// window does not underflow to a negative budget.
 const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 
-/// 提供商/模型路由的内部输入侧 token 预算：
-/// `window - reserved_output - headroom`。由预检检查、
-/// 紧急恢复和容量修剪使用，以决定何时进行压缩。
-/// 未知模型 ID 回退到提供商的保守默认值，而不是禁用预检；
-/// 自定义长上下文部署仍可以使用 `-256k`/`-1024k` 模型后缀
-/// 来广告其窗口。
+/// Internal input-side token budget for a provider/model route:
+/// `window - reserved_output - headroom`. Used by the preflight check,
+/// emergency recovery, and capacity trimming to decide when to compact.
+/// Unknown model ids fall back to the provider's conservative default instead
+/// of disabling preflight; custom long-context deployments can still advertise
+/// their window with a `-256k`/`-1024k` model suffix.
 ///
-/// 保留的输出项取决于窗口大小：
-///   * `window >= 500K`（V4 类大型上下文）→ [`TURN_MAX_OUTPUT_TOKENS`]
-///     （262K）。保留"为交织思考留出空间"的约定。
-///   * `window < 500K`（较小/自托管，例如 256K vLLM Qwen 窗口）
-///     → [`effective_max_output_tokens`]，即 API 实际上限的输出。
-///     如果在此处保留完整的 262K，将计算出
-///     `256K - 262K - 1K`，这会使 `checked_sub` 下溢为 `None`，
-///     并*静默禁用每个预检和紧急恢复路径*——然后会话将一直运行
-///     直到提供商因上下文长度硬拒绝。
+/// The reserved-output term is window-dependent:
+///   * `window >= 500K` (V4-class large-context) -> [`TURN_MAX_OUTPUT_TOKENS`]
+///     (262K). Preserves the "leave room for interleaved thinking" contract.
+///   * `window < 500K` (smaller / self-hosted, e.g. a 256K vLLM Qwen window)
+///     -> [`effective_max_output_tokens`], i.e. what the API actually caps
+///     output at. Reserving the full 262K here would compute
+///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
+///     *silently disables every preflight and emergency recovery path* — the
+///     session then runs until the provider hard-rejects on context length.
 #[cfg(test)]
 pub(super) fn context_input_budget_for_provider(
     provider: ApiProvider,
@@ -593,11 +597,12 @@ pub(super) fn context_input_budget_for_provider(
     context_input_budget_for_route(provider, model, None, 0)
 }
 
-/// 公开以便外部调用方（例如，派生自己的压缩触发线的宿主/桥接）可以
-/// 重用*完全相同的*内部输入预算计算——窗口减去与窗口相关的输出保留
-///（`route_output_reservation_for_window`，它编码了 ≥500K→262K 与
-/// 较小窗口的区分）再减去余量——而不是重新派生这些常量并静默偏离引擎。
-/// 传递 `input_tokens = 0` 以获取路由的完整紧急输入预算。
+/// Public so external callers (e.g. a host/bridge deriving its own compaction
+/// trigger line) can reuse the *exact* same internal input-budget math — window
+/// minus the window-dependent output reservation (`route_output_reservation_for_window`,
+/// which encodes the ≥500K→262K vs smaller-window split) minus headroom —
+/// instead of re-deriving those constants and silently drifting from the engine.
+/// Pass `input_tokens = 0` to get the full emergency input budget for the route.
 pub fn context_input_budget_for_route(
     provider: ApiProvider,
     model: &str,

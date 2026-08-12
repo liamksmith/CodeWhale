@@ -1,4 +1,4 @@
-//! 可选的集群告警路由及适配器负载。
+//! Opt-in fleet alert routing and adapter payloads.
 
 #![allow(dead_code)]
 

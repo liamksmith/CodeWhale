@@ -1,95 +1,96 @@
-//! macOS Seatbelt（sandbox-exec）配置文件生成。
+//! macOS Seatbelt (sandbox-exec) profile generation.
 //!
-//! Seatbelt 是 Apple 的强制访问控制框架，使用基于 Scheme 的策略语言
-//! 来定义进程可以访问哪些系统资源。此模块根据配置的 `SandboxPolicy`
-//! 动态生成沙箱配置文件。
+//! Seatbelt is Apple's mandatory access control framework that uses the
+//! Scheme-based policy language to define what system resources a process
+//! can access. This module generates sandbox profiles dynamically based
+//! on the configured `SandboxPolicy`.
 //!
-//! # 工作原理
+//! # How it works
 //!
-//! 1. 以 SBPL 格式生成 Seatbelt 策略字符串
-//! 2. 调用 `/usr/bin/sandbox-exec -p <policy>` 运行命令
-//! 3. 内核强制执行策略，阻止未授权的操作
+//! 1. We generate a Seatbelt policy string in the SBPL format
+//! 2. We invoke `/usr/bin/sandbox-exec -p <policy>` to run the command
+//! 3. The kernel enforces the policy, blocking unauthorized operations
 //!
-//! # 参考
+//! # References
 //!
-//! - Apple 的 sandbox(7) 手册页
+//! - Apple's sandbox(7) man page
 //! - <https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf>
 
-// 注意：cfg(target_os = "macos") 已在 mod.rs 的模块级别应用
+// Note: cfg(target_os = "macos") is already applied at the module level in mod.rs
 
 use super::policy::SandboxPolicy;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// macOS 上 sandbox-exec 二进制文件的路径。
+/// Path to the sandbox-exec binary on macOS.
 pub const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 
-/// 提供最小进程功能的基础 Seatbelt 策略。
+/// Base seatbelt policy that provides minimal process functionality.
 ///
-/// 此策略：
-/// - 默认拒绝所有操作
-/// - 允许进程执行和分支
-/// - 允许同一沙箱内的信号
-/// - 允许读取用户偏好（许多工具需要）
-/// - 允许基本进程内省
-/// - 允许写入 /dev/null
-/// - 允许读取 sysctl 值
-/// - 允许 POSIX 信号量和伪 TTY 操作
+/// This policy:
+/// - Denies everything by default
+/// - Allows process execution and forking
+/// - Allows signals within the same sandbox
+/// - Allows reading user preferences (needed by many tools)
+/// - Allows basic process introspection
+/// - Allows writing to /dev/null
+/// - Allows reading sysctl values
+/// - Allows POSIX semaphores and pseudo-TTY operations
 const SEATBELT_BASE_POLICY: &str = r#"
 (version 1)
 (deny default)
 
-; 核心进程操作
+; Core process operations
 (allow process-exec)
 (allow process-fork)
 (allow signal (target same-sandbox))
 (allow process-info* (target same-sandbox))
 
-; 用户偏好（许多 CLI 工具需要）
+; User preferences (needed by many CLI tools)
 (allow user-preference-read)
 
-; 基本 I/O 到 /dev/null
+; Basic I/O to /dev/null
 (allow file-write-data
   (require-all
     (path "/dev/null")
     (vnode-type CHARACTER-DEVICE)))
 
-; 系统信息
+; System information
 (allow sysctl-read)
 
-; IPC 原语
+; IPC primitives
 (allow ipc-posix-sem)
 (allow ipc-posix-shm-read*)
 (allow ipc-posix-shm-write-create)
 (allow ipc-posix-shm-write-data)
 (allow ipc-posix-shm-write-unlink)
 
-; 终端支持（shell 命令必需的）
+; Terminal support (essential for shell commands)
 (allow pseudo-tty)
 (allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
 (allow file-read* file-write* file-ioctl (literal "/dev/tty"))
 (allow file-read* file-write* file-ioctl (regex #"^/dev/ttys[0-9]+$"))
 
-; macOS 特定设备访问
+; macOS-specific device access
 (allow file-read* (literal "/dev/urandom"))
 (allow file-read* (literal "/dev/random"))
 (allow file-ioctl (literal "/dev/dtracehelper"))
 
-; Mach IPC（许多系统服务需要）
+; Mach IPC (needed by many system services)
 (allow mach-lookup)
 "#;
 
-/// 网络访问策略补充。
+/// Network access policy additions.
 const SEATBELT_NETWORK_POLICY: &str = r"
-; 网络访问
+; Network access
 (allow network-outbound)
 (allow network-inbound)
 (allow system-socket)
 (allow network-bind)
 ";
 
-/// 检查此系统上是否可用 sandbox-exec 并允许使用。
+/// Check if sandbox-exec is available and permitted on this system.
 pub fn is_available() -> bool {
     static SEATBELT_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
@@ -109,10 +110,10 @@ pub fn is_available() -> bool {
     })
 }
 
-/// 创建 sandbox-exec 的命令行参数。
+/// Create the command-line arguments for sandbox-exec.
 ///
-/// 返回应预先添加到命令前面的参数 Vec。
-/// 格式为：`sandbox-exec -p <policy> -D KEY=VALUE ... -- <original command>`
+/// Returns a Vec of arguments that should be prepended to the command.
+/// The format is: `sandbox-exec -p <policy> -D KEY=VALUE ... -- <original command>`
 pub fn create_seatbelt_args(
     command: Vec<String>,
     policy: &SandboxPolicy,
@@ -123,47 +124,47 @@ pub fn create_seatbelt_args(
 
     let mut args = vec!["-p".to_string(), full_policy];
 
-    // 为变量替换添加参数定义
+    // Add parameter definitions for variable substitution
     for (key, value) in params {
         args.push(format!("-D{}={}", key, value.to_string_lossy()));
     }
 
-    // sandbox-exec 参数与实际命令之间的分隔符
+    // Separator between sandbox-exec args and the actual command
     args.push("--".to_string());
     args.extend(command);
 
     args
 }
 
-/// 为给定的策略生成完整的 Seatbelt 策略字符串。
+/// Generate the complete Seatbelt policy string for the given policy.
 fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     let mut full_policy = SEATBELT_BASE_POLICY.to_string();
 
-    // 添加读取访问策略
+    // Add read access policy
     if SandboxPolicy::has_full_disk_read_access() {
-        full_policy.push_str("\n; 完整文件系统读取访问\n(allow file-read*)");
+        full_policy.push_str("\n; Full filesystem read access\n(allow file-read*)");
     }
 
-    // 添加写入访问策略
+    // Add write access policy
     let file_write_policy = generate_write_policy(policy, cwd);
     if !file_write_policy.is_empty() {
-        full_policy.push_str("\n\n; 写入访问策略\n");
+        full_policy.push_str("\n\n; Write access policy\n");
         full_policy.push_str(&file_write_policy);
     }
 
-    // 如果启用则添加网络策略
+    // Add network policy if enabled
     if policy.has_network_access() {
         full_policy.push('\n');
         full_policy.push_str(SEATBELT_NETWORK_POLICY);
     }
 
-    // 添加 Darwin 用户缓存目录访问（许多 macOS 工具需要）
-    full_policy.push_str("\n\n; Darwin 用户缓存目录\n");
+    // Add Darwin user cache directory access (needed by many macOS tools)
+    full_policy.push_str("\n\n; Darwin user cache directory\n");
     full_policy
         .push_str(r#"(allow file-read* file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
 
-    // 添加工具经常需要的常见 macOS 目录
-    full_policy.push_str("\n\n; 常见 macOS 目录\n");
+    // Add common macOS directories that tools often need
+    full_policy.push_str("\n\n; Common macOS directories\n");
     full_policy.push_str(r#"(allow file-read* (subpath "/usr/lib"))"#);
     full_policy.push('\n');
     full_policy.push_str(r#"(allow file-read* (subpath "/usr/share"))"#);
@@ -174,16 +175,17 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     full_policy.push('\n');
     full_policy.push_str(r#"(allow file-read* (subpath "/private/var/db"))"#);
 
-    // Cargo home（#558）：cargo build/test/publish 需要访问 ~/.cargo/registry
-    // 和 ~/.cargo/git 以获取 crate 元数据、下载的 tarball 和解压的
-    // 源码。沙箱化的 workspace-write 之前拒绝这些访问，
-    // 使得在 TUI 的 shell 工具内无法运行 `cargo publish`。
-    // 读取访问始终允许；当策略允许任何写入时，也会授予写入访问
-    //（注册表缓存需要可变才能在缓存未命中时由 `cargo build` 填充）。
-    // 当既未设置 `CARGO_HOME` 也未设置 `HOME` 时完全跳过——没有
-    // 其中一个，我们就无法将路径接入策略参数。
+    // Cargo home (#558): cargo build/test/publish reach into ~/.cargo/registry
+    // and ~/.cargo/git for crate metadata, downloaded tarballs, and unpacked
+    // sources. Sandboxed workspace-write was previously rejecting these,
+    // making `cargo publish` unrunnable from inside the TUI's shell tool.
+    // Read access is always allowed; write access is granted whenever the
+    // policy allows any write at all (the registry caches need to be
+    // mutable for `cargo build` to populate them on a cache miss). Skipped
+    // entirely when neither `CARGO_HOME` nor `HOME` is set — without one of
+    // those we have no path to plumb into the policy params.
     if resolve_cargo_home().is_some() {
-        full_policy.push_str("\n\n; Cargo home (~/.cargo) — 注册表/索引/git 缓存\n");
+        full_policy.push_str("\n\n; Cargo home (~/.cargo) — registry/index/git caches\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#);
         if !matches!(policy, SandboxPolicy::ReadOnly) {
             full_policy.push('\n');
@@ -193,15 +195,15 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         }
     }
 
-    // npm 缓存（#1267）：基于 npx 的 MCP 服务器在首次运行时下载
-    // 包时会写入 ~/.npm。没有写入访问，npx 子进程会立即失败
-    // 并显示"Stdio transport closed"，使得在默认 workspace-write
-    // 策略下，所有 stdio MCP 服务器在 macOS 上均不可用。
-    // 读取访问始终允许；写入访问镜像 cargo 的模式——
-    // 对所有允许写入的策略授予访问，对 ReadOnly 策略跳过。
-    // 当既未设置 `NPM_CONFIG_CACHE` 也未设置 `HOME` 时完全跳过。
+    // npm cache (#1267): npx-based MCP servers write to ~/.npm when downloading
+    // packages on first run. Without write access the npx subprocess fails
+    // immediately with "Stdio transport closed", making all stdio MCP servers
+    // broken on macOS under the default workspace-write policy.
+    // Read access is always allowed; write access mirrors the cargo pattern —
+    // granted for all policies that allow any write, skipped for ReadOnly.
+    // Skipped entirely when neither `NPM_CONFIG_CACHE` nor `HOME` is set.
     if resolve_npm_cache_dir().is_some() {
-        full_policy.push_str("\n\n; npm cache (~/.npm) — npx 包下载\n");
+        full_policy.push_str("\n\n; npm cache (~/.npm) — npx package downloads\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#);
         if !matches!(policy, SandboxPolicy::ReadOnly) {
             full_policy.push('\n');
@@ -212,10 +214,10 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     full_policy
 }
 
-/// 解析用户的 cargo home —— `CARGO_HOME`（如果已设置），否则为 `$HOME/.cargo`。
-/// 仅当两种环境变量均未设置的主机上返回 `None`
-///（在真正的 macOS 用户账户上基本不会发生；可以在未导出 `HOME` 的
-/// CI 容器中发生）。
+/// Resolve the user's cargo home — `CARGO_HOME` if set, else `$HOME/.cargo`.
+/// Returns `None` only on hosts where neither env var is set (essentially
+/// never on a real macOS user account; can happen in CI containers without
+/// `HOME` exported).
 fn resolve_cargo_home() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("CARGO_HOME")
         && !explicit.trim().is_empty()
@@ -226,8 +228,8 @@ fn resolve_cargo_home() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".cargo"))
 }
 
-/// 解析 npm 缓存目录 —— `NPM_CONFIG_CACHE`（如果已设置），否则为 `$HOME/.npm`。
-/// 仅当两种环境变量均未设置时返回 `None`。
+/// Resolve the npm cache directory — `NPM_CONFIG_CACHE` if set, else `$HOME/.npm`.
+/// Returns `None` only on hosts where neither env var is set.
 fn resolve_npm_cache_dir() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("NPM_CONFIG_CACHE")
         && !explicit.trim().is_empty()
@@ -238,19 +240,19 @@ fn resolve_npm_cache_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".npm"))
 }
 
-/// 生成 Seatbelt 策略的写入访问部分。
+/// Generate the write access portion of the Seatbelt policy.
 fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
-    // 完全磁盘写入访问
+    // Full disk write access
     if policy.has_full_disk_write_access() {
         return r#"(allow file-write* (regex #"^/"))"#.to_string();
     }
 
-    // 只读——无需写入策略
+    // Read-only - no write policy needed
     if matches!(policy, SandboxPolicy::ReadOnly) {
         return String::new();
     }
 
-    // 工作区写入——枚举允许的路径
+    // Workspace write - enumerate allowed paths
     let writable_roots = policy.get_writable_roots(cwd);
     if writable_roots.is_empty() {
         return String::new();
@@ -262,11 +264,11 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         let root_param = format!("WRITABLE_ROOT_{index}");
 
         if root.read_only_subpaths.is_empty() {
-            // 简单情况：整个子树可写
+            // Simple case: entire subtree is writable
             policies.push(format!("(subpath (param \"{root_param}\"))"));
         } else {
-            // 复杂情况：可写但有只读例外
-            // 使用 require-all 组合 subpath 与每个例外的 require-not
+            // Complex case: writable with read-only exceptions
+            // Use require-all to combine subpath with require-not for each exception
             let mut parts = vec![format!("(subpath (param \"{}\"))", root_param)];
 
             for (subpath_index, _) in root.read_only_subpaths.iter().enumerate() {
@@ -282,17 +284,17 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         return String::new();
     }
 
-    // 使用 allow 组合所有写入策略
+    // Combine all write policies with allow
     format!("(allow file-write*\n  {})", policies.join("\n  "))
 }
 
-/// 为策略中的变量替换生成参数定义。
+/// Generate parameter definitions for variable substitution in the policy.
 ///
-/// sandbox-exec 允许使用 -DKEY=VALUE 来替换策略中的 `(param "KEY")`。
+/// sandbox-exec allows -DKEY=VALUE to substitute `(param "KEY")` in the policy.
 fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)> {
     let mut params = Vec::new();
 
-    // 添加可写根目录参数
+    // Add writable root parameters
     let writable_roots = policy.get_writable_roots(cwd);
 
     for (index, root) in writable_roots.iter().enumerate() {
@@ -302,7 +304,7 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
             .unwrap_or_else(|_| root.root.clone());
         params.push((format!("WRITABLE_ROOT_{index}"), canonical));
 
-        // 添加只读子路径的参数
+        // Add parameters for read-only subpaths
         for (subpath_index, subpath) in root.read_only_subpaths.iter().enumerate() {
             let canonical_subpath = subpath.canonicalize().unwrap_or_else(|_| subpath.clone());
             params.push((
@@ -312,11 +314,11 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
         }
     }
 
-    // 添加 Darwin 用户缓存目录
+    // Add Darwin user cache directory
     if let Some(cache_dir) = get_darwin_user_cache_dir() {
         params.push(("DARWIN_USER_CACHE_DIR".to_string(), cache_dir));
     } else {
-        // 回退到合理的默认值
+        // Fallback to a reasonable default
         if let Ok(home) = std::env::var("HOME") {
             params.push((
                 "DARWIN_USER_CACHE_DIR".to_string(),
@@ -325,10 +327,11 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
         }
     }
 
-    // Cargo home（#558）：与 `generate_policy` 在 `resolve_cargo_home()`
-    // 成功时发出的策略行配对。两个辅助函数使用相同的回退链，
-    // 因此策略文本和 -DKEY=VALUE 参数保持同步——只发出一个而缺少
-    // 另一个，sandbox-exec 会拒绝加载配置文件。
+    // Cargo home (#558): paired with the policy lines emitted by
+    // `generate_policy` when `resolve_cargo_home()` succeeds. Both helpers
+    // use the same fallback chain so the policy text and the -DKEY=VALUE
+    // params stay in sync — emit one without the other and sandbox-exec
+    // refuses to load the profile.
     if let Some(home) = resolve_cargo_home() {
         let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
         params.push((
@@ -339,9 +342,10 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
         params.push(("CARGO_HOME".to_string(), canonical_home));
     }
 
-    // npm 缓存（#1267）：与 `generate_policy` 在 `resolve_npm_cache_dir()`
-    // 成功时发出的策略行配对。两个辅助函数使用相同的回退链，
-    // 因此策略文本和 -DKEY=VALUE 参数保持同步。
+    // npm cache (#1267): paired with the policy lines emitted by
+    // `generate_policy` when `resolve_npm_cache_dir()` succeeds. Both helpers
+    // use the same fallback chain so the policy text and the -DKEY=VALUE
+    // params stay in sync.
     if let Some(npm_cache) = resolve_npm_cache_dir() {
         let canonical = npm_cache
             .canonicalize()
@@ -352,15 +356,15 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
     params
 }
 
-/// 使用 confstr 获取 Darwin 用户缓存目录。
+/// Get the Darwin user cache directory using confstr.
 ///
-/// 返回 macOS 分配的用户级缓存目录，通常是类似
-/// /var/folders/xx/xxx.../C/ 的路径。
+/// This returns the per-user cache directory that macOS assigns,
+/// typically something like /var/folders/xx/xxx.../C/
 fn get_darwin_user_cache_dir() -> Option<PathBuf> {
-    // 使用 libc 调用 confstr 获取 _CS_DARWIN_USER_CACHE_DIR
+    // Use libc to call confstr for _CS_DARWIN_USER_CACHE_DIR
     let mut buf = vec![0i8; (libc::PATH_MAX as usize) + 1];
 
-    // 安全性：`buf` 是一个大小为 PATH_MAX + 1 的可写缓冲区，用于 confstr。
+    // Safety: `buf` is a writable buffer sized to PATH_MAX + 1 for confstr.
     let len =
         unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr(), buf.len()) };
 
@@ -368,25 +372,25 @@ fn get_darwin_user_cache_dir() -> Option<PathBuf> {
         return None;
     }
 
-    // 将 C 字符串转换为 Rust PathBuf
-    // 安全性：当 len > 0 时，confstr 保证 `buf` 中的字符串以 NUL 结尾。
+    // Convert the C string to a Rust PathBuf
+    // Safety: confstr guarantees a NUL-terminated string in `buf` when len > 0.
     let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
     let path_str = cstr.to_str().ok()?;
     let path = PathBuf::from(path_str);
 
-    // 尝试规范化，但如果失败则返回原始路径
+    // Try to canonicalize, but return the raw path if that fails
     path.canonicalize().ok().or(Some(path))
 }
 
-/// 从命令输出检测沙箱拒绝。
+/// Detect sandbox denial from command output.
 ///
-/// 如果输出表明沙箱阻止了操作，则返回 true。
+/// Returns true if the output suggests the sandbox blocked an operation.
 pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     if exit_code == 0 {
         return false;
     }
 
-    // 常见的沙箱拒绝消息
+    // Common sandbox denial messages
     let denial_patterns = [
         "Operation not permitted",
         "sandbox-exec",
@@ -401,12 +405,12 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
 mod tests {
     use super::*;
 
-    // 修改 HOME/CARGO_HOME 的测试使用 crate::test_support::lock_test_env()
-    // 以避免与在此 crate 中读取这些变量的兄弟测试竞争。
+    // Tests that mutate HOME/CARGO_HOME use crate::test_support::lock_test_env()
+    // so they don't race with sibling tests in this crate that read those vars.
     #[test]
     fn test_is_available() {
-        // 此测试仅检查函数不会 panic
-        // 在 macOS 上应返回 true，在其他平台上返回 false
+        // This test just checks the function doesn't panic
+        // On macOS it should return true, on other platforms false
         let _ = is_available();
     }
 
@@ -420,7 +424,7 @@ mod tests {
         assert!(result.contains("(deny default)"));
         assert!(result.contains("(allow file-read*)"));
         assert!(result.contains("file-write*"));
-        // 默认策略没有网络
+        // Default policy has no network
         assert!(!result.contains("network-outbound"));
     }
 
@@ -441,7 +445,7 @@ mod tests {
         let result = generate_policy(&policy, cwd);
 
         assert!(result.contains("(allow file-read*)"));
-        // 不应有工作区写入规则
+        // Should not have workspace write rules
         assert!(!result.contains("WRITABLE_ROOT"));
     }
 
@@ -451,19 +455,21 @@ mod tests {
         let cwd = Path::new("/tmp/test");
         let params = generate_params(&policy, cwd);
 
-        // 应至少有一个缓存目录参数
+        // Should have at least the cache dir param
         assert!(params.iter().any(|(k, _)| k == "DARWIN_USER_CACHE_DIR"));
     }
 
-    /// #558：cargo publish 需要访问 ~/.cargo/registry；seatbelt
-    /// 必须允许其内部的读+写。策略文本和参数表必须同步——
-    /// 只发出一个而缺少另一个，sandbox-exec 会拒绝加载配置文件。
+    /// #558: cargo publish reaches into ~/.cargo/registry; the seatbelt has
+    /// to allow read+write inside it. Both the policy text and the param
+    /// table must be in sync — emitting one without the other makes
+    /// sandbox-exec refuse to load the profile.
     #[test]
     fn test_cargo_home_paths_emitted_in_policy_and_params_when_home_set() {
         let _guard = crate::test_support::lock_test_env();
 
-        // 安全性：HOME / CARGO_HOME 是进程全局的。lock_test_env
-        // 序列化修改它们的测试，我们总是在返回前恢复之前的值。
+        // SAFETY: HOME / CARGO_HOME are process-global. lock_test_env
+        // serializes tests that mutate them, and we always restore the
+        // prior value before returning.
         let saved_home = std::env::var_os("HOME");
         let saved_cargo = std::env::var_os("CARGO_HOME");
         unsafe {
@@ -484,7 +490,7 @@ mod tests {
         assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_REGISTRY"));
         assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_GIT"));
 
-        // 只读策略仍应发出 CARGO_HOME 读取规则但跳过写入。
+        // Read-only policy should still emit CARGO_HOME read rule but skip writes.
         let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, cwd);
         assert!(
             read_only_text.contains(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#),
@@ -496,8 +502,8 @@ mod tests {
             "read-only mode must NOT grant write access to the cargo registry"
         );
 
-        // 恢复。
-        // 安全性：恢复测试在入口处保存的先前值。
+        // Restore.
+        // SAFETY: restoring the prior value the test stashed at entry.
         unsafe {
             match saved_home {
                 Some(v) => std::env::set_var("HOME", v),
@@ -510,17 +516,17 @@ mod tests {
         }
     }
 
-    /// #558：如果既未设置 `CARGO_HOME` 也未设置 `HOME`，则 cargo 行
-    /// 及其参数都必须省略——只发出一个而缺少另一个会在加载时
-    /// 导致 sandbox-exec 崩溃。
+    /// #558: if neither `CARGO_HOME` nor `HOME` is set, the cargo lines and
+    /// their params must both be omitted — emitting one without the other
+    /// would crash sandbox-exec on profile load.
     #[test]
     fn test_cargo_home_skipped_when_no_env() {
         let _guard = crate::test_support::lock_test_env();
 
         let saved_home = std::env::var_os("HOME");
         let saved_cargo = std::env::var_os("CARGO_HOME");
-        // 安全性：HOME/CARGO_HOME 是进程全局的；lock_test_env 序列化
-        // 此处的修改，我们在返回前恢复之前的值。
+        // SAFETY: HOME/CARGO_HOME are process-global; lock_test_env serializes
+        // mutations here and we restore the prior values before returning.
         unsafe {
             std::env::remove_var("HOME");
             std::env::remove_var("CARGO_HOME");
@@ -534,8 +540,8 @@ mod tests {
         assert!(!policy_text.contains("CARGO_HOME"));
         assert!(!params.iter().any(|(k, _)| k.starts_with("CARGO_HOME")));
 
-        // 恢复。
-        // 安全性：恢复测试在入口处保存的先前值。
+        // Restore.
+        // SAFETY: restoring the prior values the test stashed at entry.
         unsafe {
             match saved_home {
                 Some(v) => std::env::set_var("HOME", v),
@@ -548,17 +554,18 @@ mod tests {
         }
     }
 
-    /// #1267：npx MCP 服务器在首次运行时写入 ~/.npm；seatbelt 必须
-    /// 允许写入 npm 缓存目录。策略文本和参数表必须同步——
-    /// 只发出一个而缺少另一个，sandbox-exec 会拒绝加载配置文件。
+    /// #1267: npx MCP servers write to ~/.npm on first run; the seatbelt must
+    /// allow writes to the npm cache directory. Both the policy text and the
+    /// param table must be in sync — emitting one without the other makes
+    /// sandbox-exec refuse to load the profile.
     #[test]
     fn test_npm_cache_paths_emitted_in_policy_and_params_when_home_set() {
         let _guard = crate::test_support::lock_test_env();
 
         let saved_home = std::env::var_os("HOME");
         let saved_npm = std::env::var_os("NPM_CONFIG_CACHE");
-        // 安全性：HOME/NPM_CONFIG_CACHE 是进程全局的；lock_test_env
-        // 序列化此处的修改，我们总是恢复之前的值。
+        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; lock_test_env
+        // serializes mutations here, and we always restore the prior value.
         unsafe {
             std::env::set_var("HOME", "/tmp/seatbelt-npm-test");
             std::env::remove_var("NPM_CONFIG_CACHE");
@@ -583,7 +590,7 @@ mod tests {
             "NPM_CACHE_DIR param missing"
         );
 
-        // ReadOnly 策略：读取访问允许，写入访问必须不存在。
+        // ReadOnly policy: read access allowed, write access must be absent.
         let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, cwd);
         assert!(
             read_only_text.contains(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#),
@@ -594,8 +601,8 @@ mod tests {
             "read-only mode must NOT grant write access to the npm cache"
         );
 
-        // 恢复。
-        // 安全性：恢复测试在入口处保存的先前值。
+        // Restore.
+        // SAFETY: restoring the prior values the test stashed at entry.
         unsafe {
             match saved_home {
                 Some(v) => std::env::set_var("HOME", v),
@@ -608,16 +615,16 @@ mod tests {
         }
     }
 
-    /// #1267：如果既未设置 `NPM_CONFIG_CACHE` 也未设置 `HOME`，则 npm 行
-    /// 及其参数都必须省略。
+    /// #1267: if neither `NPM_CONFIG_CACHE` nor `HOME` is set, the npm lines
+    /// and their param must both be omitted.
     #[test]
     fn test_npm_cache_skipped_when_no_env() {
         let _guard = crate::test_support::lock_test_env();
 
         let saved_home = std::env::var_os("HOME");
         let saved_npm = std::env::var_os("NPM_CONFIG_CACHE");
-        // 安全性：HOME/NPM_CONFIG_CACHE 是进程全局的；lock_test_env
-        // 序列化此处的修改，我们在返回前恢复之前的值。
+        // SAFETY: HOME/NPM_CONFIG_CACHE are process-global; lock_test_env
+        // serializes mutations here and we restore the prior values before returning.
         unsafe {
             std::env::remove_var("HOME");
             std::env::remove_var("NPM_CONFIG_CACHE");
@@ -631,8 +638,8 @@ mod tests {
         assert!(!policy_text.contains("NPM_CACHE_DIR"));
         assert!(!params.iter().any(|(k, _)| k == "NPM_CACHE_DIR"));
 
-        // 恢复。
-        // 安全性：恢复测试在入口处保存的先前值。
+        // Restore.
+        // SAFETY: restoring the prior values the test stashed at entry.
         unsafe {
             match saved_home {
                 Some(v) => std::env::set_var("HOME", v),
@@ -666,14 +673,14 @@ mod tests {
 
         let args = create_seatbelt_args(command, &policy, cwd);
 
-        // 应以 -p 和策略开头
+        // Should start with -p and the policy
         assert_eq!(args[0], "-p");
         assert!(args[1].contains("(version 1)"));
 
-        // 应包含分隔符
+        // Should contain the separator
         assert!(args.contains(&"--".to_string()));
 
-        // 应以原始命令结尾
+        // Should end with the original command
         assert!(args.contains(&"echo".to_string()));
         assert!(args.contains(&"hello".to_string()));
     }

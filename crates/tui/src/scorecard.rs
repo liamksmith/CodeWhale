@@ -1,38 +1,40 @@
-//! Token / 缓存 / 成本计分卡（#3388）。
+//! Token / cache / cost scorecard (#3388).
 //!
-//! 代理运行 Token 经济学的发布门控视图：每轮输入/输出/缓存读取 Token
-//! 和成本、聚合总计 + 缓存命中率，以及针对已提交基线的回归检测。
-//! 这是"Token、缓存和上下文纪律"EPIC 所要求的度量层——它使成本/Token
-//! 回归可见，而不是静默地交付。
+//! A release-gate view of an agent run's token economics: per-turn input /
+//! output / cache-read tokens and cost, aggregate totals + cache-hit ratio, and
+//! regression detection against a committed baseline. This is the measurement
+//! layer the "token, cache, and context discipline" EPIC asks for — it makes a
+//! cost/token regression visible instead of silently shipping.
 //!
-//! 核心是纯离线的：它将已记录的每轮 [`Usage`]（每轮捕获，在 `TurnRecord`
-//! 中持久化）转换为计分卡，重用现有定价层而不是重新发明成本计算。
-//! `scorecard` 子命令是该模块的一个薄 I/O 包装。
+//! The core here is pure and offline: it turns already-recorded per-turn
+//! [`Usage`] (captured on every turn, persisted in `TurnRecord`) into a
+//! scorecard, reusing the existing pricing layer rather than reinventing cost
+//! math. The `scorecard` subcommand is a thin I/O wrapper over this module.
 
 use serde::{Deserialize, Serialize};
 
 use crate::models::Usage;
 use crate::pricing::{calculate_turn_cost_estimate_from_usage, token_usage_for_pricing};
 
-/// 一轮的归一化 Token 经济学。
+/// One turn's normalized token economics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TurnScore {
     pub turn_id: String,
     pub model: String,
-    /// 非缓存（可计费）输入 Token。
+    /// Non-cached (billable) input tokens.
     pub input_tokens: u64,
-    /// 输出 Token，包括推理输出。
+    /// Output tokens, including reasoning output.
     pub output_tokens: u64,
-    /// 缓存读取（缓存命中）输入 Token。
+    /// Cache-read (cache-hit) input tokens.
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
     pub cost_cny: f64,
-    /// 当 `model` 没有定价行时为 true：成本报告为 0 但没有意义，
-    /// 因此摘要可以标记它，而不是暗示"$0.00"。
+    /// True when no pricing row exists for `model`: cost is reported as 0 but is
+    /// not meaningful, so the summary can flag it rather than imply "$0.00".
     pub cost_unpriced: bool,
 }
 
-/// 一次运行的聚合指标。序列化/反序列化为基线文件。
+/// Aggregate metrics for a run. Serializes/deserializes as the baseline file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ScorecardMetrics {
     pub turns: usize,
@@ -41,38 +43,39 @@ pub struct ScorecardMetrics {
     pub total_cache_read_tokens: u64,
     pub total_cost_usd: f64,
     pub total_cost_cny: f64,
-    /// `cache_read / (input + cache_read)`；当没有输入 Token 时为 `0.0`。
-    /// 越高越好（更多的提示词从缓存中提供）。
+    /// `cache_read / (input + cache_read)`; `0.0` when there are no input
+    /// tokens. Higher is better (more of the prompt was served from cache).
     pub cache_hit_ratio: f64,
 }
 
-/// 与基线相比增长超过允许阈值的指标。
+/// A metric that grew beyond the allowed threshold versus the baseline.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Regression {
     pub metric: String,
     pub baseline: f64,
     pub current: f64,
-    /// 相对于基线的百分比增长。基线为 0 时为 `f64::INFINITY`。
+    /// Percent increase over baseline. `f64::INFINITY` when baseline was 0.
     pub pct_increase: f64,
 }
 
-/// 完整计分卡：每轮明细加上聚合。
+/// Full scorecard: per-turn breakdown plus aggregates.
 #[derive(Debug, Clone, Serialize)]
 pub struct Scorecard {
     pub per_turn: Vec<TurnScore>,
     pub metrics: ScorecardMetrics,
 }
 
-/// 计分卡的一行输入：轮次 ID、服务的模型以及该轮记录的用量。
+/// One row of input to the scorecard: a turn id, the model that served it, and
+/// the turn's recorded usage.
 pub struct TurnInput<'a> {
     pub turn_id: String,
     pub model: String,
     pub usage: &'a Usage,
 }
 
-/// 从计分卡输入文件读取的记录轮次（JSON 数组）。
-/// 匹配 `TurnEnd` hook 已经发出的每轮数据（`model` + `usage`），
-/// 因此运行的轮次可以被捕获并进行离线评分。
+/// A recorded turn as read from a scorecard input file (a JSON array of these).
+/// Matches the per-turn data the `TurnEnd` hook already emits (`model` + `usage`),
+/// so a run's turns can be captured and scored offline.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecordedTurn {
     #[serde(default)]
@@ -82,15 +85,15 @@ pub struct RecordedTurn {
 }
 
 impl Scorecard {
-    /// 从记录的每轮用量构建计分卡。纯离线；成本通过共享定价层计算
-    ///（`None` 定价 → 无定价，0 成本）。
+    /// Build a scorecard from recorded per-turn usage. Pure + offline; cost is
+    /// computed via the shared pricing layer (`None` pricing → unpriced, 0 cost).
     #[must_use]
     pub fn from_turns(turns: &[TurnInput<'_>]) -> Self {
         let mut per_turn = Vec::with_capacity(turns.len());
         let mut metrics = ScorecardMetrics::default();
 
         for turn in turns {
-            // 一次性将提供商用量归一化为规范的可计费类别。
+            // Normalize provider usage into canonical billable classes once.
             let classes = token_usage_for_pricing(turn.usage);
             let cost = calculate_turn_cost_estimate_from_usage(&turn.model, turn.usage);
             let (cost_usd, cost_cny, cost_unpriced) = match cost {
@@ -127,7 +130,7 @@ impl Scorecard {
         Self { per_turn, metrics }
     }
 
-    /// 渲染一个紧凑的人类可读摘要（用于非 JSON 输出）。
+    /// Render a compact human-readable summary (used for non-JSON output).
     #[must_use]
     pub fn to_summary(&self) -> String {
         let m = &self.metrics;
@@ -157,9 +160,9 @@ impl Scorecard {
 }
 
 impl ScorecardMetrics {
-    /// 标记比 `baseline` 增长超过 `threshold_pct` 的指标。成本
-    /// 和 Token 计数是"越低越好"，因此只有*增长*才是回归。
-    ///（缓存命中率相反，单独报告。）
+    /// Flag metrics that grew more than `threshold_pct` over `baseline`. Cost
+    /// and token counts are "lower is better", so only *increases* are
+    /// regressions. (Cache-hit ratio is the opposite, reported separately.)
     #[must_use]
     pub fn regressions_against(
         &self,
@@ -188,8 +191,8 @@ impl ScorecardMetrics {
             self.total_output_tokens as f64,
             threshold_pct,
         );
-        // 缓存命中率在*下降*时发生回归；将下降表示为正百分比，
-        // 使其与其他指标读起来一致。
+        // Cache-hit ratio regresses when it *drops*; express the drop as a
+        // positive percentage so it reads like the others.
         if baseline.cache_hit_ratio > 0.0 {
             let drop_pct = (baseline.cache_hit_ratio - self.cache_hit_ratio)
                 / baseline.cache_hit_ratio
@@ -249,10 +252,10 @@ mod tests {
 
     #[test]
     fn aggregates_tokens_and_cache_hit_ratio_independent_of_pricing() {
-        // input_tokens 包含缓存命中；token_usage_for_pricing 将它们拆分：
-        // 非缓存输入 = 1000-200 = 800，cache_read = 200。
+        // input_tokens includes cache hits; token_usage_for_pricing splits them:
+        // non-cached input = 1000-200 = 800, cache_read = 200.
         let u1 = usage(1000, 500, 200);
-        let u2 = usage(2000, 100, 800); // 非缓存 = 1200，cache_read = 800
+        let u2 = usage(2000, 100, 800); // non-cached = 1200, cache_read = 800
         let turns = [
             TurnInput {
                 turn_id: "t1".into(),
@@ -303,17 +306,17 @@ mod tests {
             cache_hit_ratio: 0.5,
         };
         let current = ScorecardMetrics {
-            total_cost_usd: 0.20,      // +100% → 回归
-            total_input_tokens: 1010,  // +1% → 低于 5% 阈值，无回归
-            total_output_tokens: 2000, // +100% → 回归
-            cache_hit_ratio: 0.5,      // 未变化
+            total_cost_usd: 0.20,      // +100% → regression
+            total_input_tokens: 1010,  // +1% → under 5% threshold, no regression
+            total_output_tokens: 2000, // +100% → regression
+            cache_hit_ratio: 0.5,      // unchanged
             ..baseline.clone()
         };
         let regs = current.regressions_against(&baseline, 5.0);
         let names: Vec<&str> = regs.iter().map(|r| r.metric.as_str()).collect();
         assert!(names.contains(&"total_cost_usd"));
         assert!(names.contains(&"total_output_tokens"));
-        assert!(!names.contains(&"total_input_tokens")); // 低于阈值
+        assert!(!names.contains(&"total_input_tokens")); // under threshold
     }
 
     #[test]

@@ -7,27 +7,31 @@ pub(super) fn take_delta_from_buffer(
     let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
     let total = guard.len();
     let start = (*cursor).min(total);
-    // 只克隆未读取的部分（增量），而不是整个累积缓冲区。
-    // 长时间运行的进程可能产生数兆字节的输出；每次轮询时克隆完整缓冲区会使 ShellManager 互斥锁持有 O(total_bytes) 时间。
+    // Clone only the unread portion (the delta), not the entire accumulated buffer.
+    // Long-running processes can produce megabytes of output; cloning the full
+    // buffer on every poll held the ShellManager mutex for O(total_bytes) time.
     let delta = guard[start..].to_vec();
     *cursor = total;
     (delta, total)
 }
 
-/// 仅读取字节缓冲区的尾部并返回 (total_len, tail_string)。
+/// Read only the tail of a byte buffer and return (total_len, tail_string).
 ///
-/// 当只需要尾部摘录时（例如作业面板显示），避免克隆完整缓冲区。
-/// `max_tail_chars` 以 Unicode 标量值为单位；我们从末尾最多读取 `max_tail_chars * 4` 字节以考虑多字节 UTF-8 序列。
+/// Avoids cloning the full buffer when only a trailing excerpt is needed
+/// (e.g. for the job-panel display). `max_tail_chars` is in Unicode scalar
+/// values; we read at most `max_tail_chars * 4` bytes from the end to account
+/// for multi-byte UTF-8 sequences.
 pub(super) fn tail_from_buffer(
     buffer: &Arc<Mutex<Vec<u8>>>,
     max_tail_chars: usize,
 ) -> (usize, String) {
     let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
     let total = guard.len();
-    // 高估字节数（UTF-8 最坏情况每个字符 4 字节）。
+    // Over-estimate byte count (4 bytes per char worst case for UTF-8).
     let mut tail_start = total.saturating_sub(max_tail_chars.saturating_mul(4));
-    // 向前跳到下一个有效的 UTF-8 码点边界，以免将起始为继续字节（0x80-0xBF）的切片
-    // 传递给 from_utf8_lossy，后者会输出前导的 U+FFFD 替换字符。
+    // Snap forward to the next valid UTF-8 codepoint boundary so we don't
+    // pass a slice beginning with continuation bytes (0x80-0xBF) to
+    // from_utf8_lossy, which would emit a leading U+FFFD replacement char.
     while tail_start < total && (guard[tail_start] & 0xC0) == 0x80 {
         tail_start += 1;
     }

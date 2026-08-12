@@ -1,15 +1,15 @@
-//! 用于配置/缓存/工作区位置的文件系统路径解析辅助函数。
+//! Filesystem path resolution helpers for config/cache/workspace locations.
 //!
-//! 纯路径构建辅助函数，从 `config.rs` 原样提取。它们仅依赖于
-//! `std`、`dirs` 和 `shellexpand` 以及彼此，因此构成了一个
-//! 干净的叶子模块。`config.rs` 通过 `use paths::{...}` 将其拉回，
-//! 用于仍保留在那里的工作区信任和配置加载逻辑，并重新导出
-//! 两个 `pub(crate)` 入口点（`effective_home_dir`、`expand_path`），
-//! 以便外部的 `crate::config::` 调用者保持不变（#3311）。
+//! Pure path-building helpers extracted verbatim from `config.rs`. They depend
+//! only on `std`, `dirs`, and `shellexpand` plus one another, so they form a
+//! clean leaf. `config.rs` pulls them back in (`use paths::{...}`) for the
+//! workspace-trust and config-loading logic that stays there, and re-exports
+//! the two `pub(crate)` entry points (`effective_home_dir`, `expand_path`) so
+//! external `crate::config::` callers resolve unchanged (#3311).
 //!
-//! 可见性说明：在 `config.rs` 中为文件私有 `fn` 的辅助函数
-//! 在此处为 `pub(crate)`，纯粹为了让父模块能够引用它们；
-//! 没有一个被公开重新导出，因此 crate 的外部表面不变。
+//! Visibility note: helpers that were file-private `fn` in `config.rs` are
+//! `pub(crate)` here purely so the parent module can name them; none are
+//! re-exported publicly, so the crate's external surface is unchanged.
 
 use std::path::{Path, PathBuf};
 

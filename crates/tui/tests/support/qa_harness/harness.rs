@@ -1,9 +1,9 @@
-//! 端到端测试框架，组合 [`PtySession`] + [`Frame`]。
+//! End-to-end harness composing [`PtySession`] + [`Frame`].
 //!
-//! 测试通过 [`Harness::builder`] 构建 [`Harness`]，使用
-//! [`Harness::send`] / [`Harness::paste`] 驱动 TUI，通过
-//! [`Harness::wait_for`] 轮询已解析的终端状态，并对 [`Harness::frame`] /
-//! 文件系统状态进行断言。
+//! Tests build a [`Harness`] via [`Harness::builder`], drive the TUI with
+//! [`Harness::send`] / [`Harness::paste`], poll the parsed terminal state
+//! with [`Harness::wait_for`], and assert on [`Harness::frame`] /
+//! filesystem state.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -74,8 +74,8 @@ impl HarnessBuilder {
         self
     }
 
-    /// 将 `$HOME`（和配置/缓存默认路径）指向一个新的目录，使生成的
-    /// 二进制文件无法读取或修改开发者的真实用户配置。
+    /// Point `$HOME` (and config/cache defaults) at a fresh dir so the spawned
+    /// binary cannot read or mutate the developer's real user config.
     pub fn seal_home(mut self, home: impl Into<PathBuf>) -> Self {
         self.seal_home = Some(home.into());
         self
@@ -139,8 +139,8 @@ impl Harness {
         self.pty.write_bytes(&super::paste::unbracketed(text))
     }
 
-    /// 将子进程自上次调用以来写入的所有内容拉入帧解析器。
-    /// 如果有新字节到达则返回 `true`。
+    /// Pull whatever the child has written since last call into the frame
+    /// parser. Returns `true` if any new bytes arrived.
     pub fn pump(&mut self) -> bool {
         let bytes = self.pty.drain();
         let any = !bytes.is_empty();
@@ -151,14 +151,14 @@ impl Harness {
         any
     }
 
-    /// 泵取输出并返回解析后的帧。便于断言使用。
+    /// Pump output and return the parsed frame. Convenience for asserts.
     pub fn frame(&mut self) -> &Frame {
         self.pump();
         &self.frame
     }
 
-    /// 阻塞（短暂休眠）直到 `predicate(frame)` 为真或 `timeout` 超时。
-    /// 每次轮询时泵取 PTY。
+    /// Block (briefly sleeping) until `predicate(frame)` is true or `timeout`
+    /// elapses. Pumps the PTY on each tick.
     pub fn wait_for<F>(&mut self, mut predicate: F, timeout: Duration) -> Result<()>
     where
         F: FnMut(&Frame) -> bool,
@@ -180,14 +180,14 @@ impl Harness {
         }
     }
 
-    /// 等待字面子串出现在屏幕上的任何位置。
+    /// Wait for the literal substring to appear anywhere on the screen.
     pub fn wait_for_text(&mut self, needle: &str, timeout: Duration) -> Result<()> {
         let owned = needle.to_string();
         self.wait_for(move |f| f.contains(&owned), timeout)
     }
 
-    /// 等待稳定输出：连续 `quiet_for` 个泵取周期内没有新字节，
-    /// 上限为 `max`。适用于"等待 UI 稳定"。
+    /// Wait for stable output: no new bytes for `quiet_for` consecutive
+    /// pump ticks, bounded by `max`. Useful for "let the UI settle".
     pub fn wait_for_idle(&mut self, quiet_for: Duration, max: Duration) -> Result<()> {
         let max_deadline = Instant::now() + max;
         let mut quiet_since = Instant::now();
@@ -209,11 +209,11 @@ impl Harness {
         }
     }
 
-    /// 通过 Cargo 二进制名称解析二进制文件路径（使用 `CARGO_BIN_EXE_<name>`）。
-    /// 测试应调用此方法，而不是硬编码路径。
+    /// Resolve a binary by Cargo bin-name (uses `CARGO_BIN_EXE_<name>`).
+    /// Tests should call this rather than hard-coding paths.
     pub fn cargo_bin(name: &str) -> PathBuf {
-        // 较新版本的 Cargo 在运行时暴露 CARGO_BIN_EXE_*；旧版支持的
-        // Cargo 版本在编译时将其暴露给集成测试。
+        // Newer Cargo exposes CARGO_BIN_EXE_* at runtime; older supported
+        // Cargo versions expose it to the integration test at compile time.
         let key = format!("CARGO_BIN_EXE_{name}");
         if let Some(path) = std::env::var_os(&key) {
             return PathBuf::from(path);
@@ -226,12 +226,12 @@ impl Harness {
         panic!("env {key} not set; is the binary declared in this crate?")
     }
 
-    /// 尽最大努力的协作式关闭。
+    /// Best-effort cooperative shutdown.
     pub fn shutdown(self) -> Option<i32> {
         self.pty.shutdown(Duration::from_secs(2))
     }
 
-    /// 等待子进程退出，而不向其发送信号。
+    /// Wait for the child process to exit without sending it a signal.
     pub fn wait_for_exit(&mut self, timeout: Duration) -> Option<i32> {
         self.pty.wait_until(Instant::now() + timeout)
     }
@@ -242,8 +242,8 @@ impl Harness {
     }
 }
 
-/// 在 `tempfile::TempDir` 下构造一个封闭的 `HOME` 工作区，使得
-/// 场景永远无法读取或修改开发者的真实配置/技能。
+/// Construct a sealed-`HOME` workspace under a `tempfile::TempDir` so the
+/// scenario can never read or mutate the developer's real config / skills.
 pub fn make_sealed_workspace() -> Result<SealedWorkspace> {
     let tmp = tempfile::TempDir::new().context("tempdir")?;
     let workspace = tmp.path().join("workspace");

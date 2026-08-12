@@ -1,4 +1,4 @@
-//! 已保存会话历史中过大工具输出的紧凑收据。
+//! Compact receipts for oversized tool outputs in saved session history.
 
 use serde_json::Value;
 
@@ -7,7 +7,8 @@ use crate::fast_hash::FastHashMap;
 use crate::models::{ContentBlock, Message};
 use crate::tools::truncate;
 
-/// 匹配提供商线路预算，以便持久化/恢复的历史不会保留比模型在新请求中收到的更大的原始正文。
+/// Match the provider-wire budget so persisted/resumed history does not keep a
+/// larger raw body than the model would receive on a fresh request.
 pub const RAW_TOOL_OUTPUT_RECEIPT_THRESHOLD_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,9 +41,10 @@ enum DetailHandle {
     Sha { sha: String, persisted: bool },
 }
 
-/// 返回 `messages` 的副本，其中过大的原始工具结果正文被替换为紧凑收据。
-/// 完整输出在可用时保存在现有会话制品后面；
-/// 否则为 `retrieve_tool_result` 写入 SHA 寻址的溢出副本。
+/// Return a copy of `messages` with oversized raw tool-result bodies replaced
+/// by compact receipts. Full output is kept behind existing session artifacts
+/// when available; otherwise a SHA-addressed spillover copy is written for
+/// `retrieve_tool_result`.
 pub fn compact_messages_for_persistence(
     messages: &[Message],
     artifacts: &[ArtifactRecord],

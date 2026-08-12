@@ -1,4 +1,4 @@
-//! 新引导过程中的工作区信任提示。
+//! Workspace trust prompt for onboarding.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

@@ -1,4 +1,4 @@
-//! 计划更新转录单元格的渲染。
+//! Rendering for plan-update transcript cells.
 
 use ratatui::text::Line;
 
@@ -8,7 +8,7 @@ use super::{
     ToolStatus, render_compact_kv, render_tool_header, tool_status_label, tool_value_style,
 };
 
-/// 计划工具发出的计划更新单元格。
+/// Cell for plan updates emitted by the plan tool.
 #[derive(Debug, Clone)]
 pub struct PlanUpdateCell {
     pub snapshot: PlanSnapshot,
@@ -16,7 +16,7 @@ pub struct PlanUpdateCell {
 }
 
 impl PlanUpdateCell {
-    /// 将计划更新单元格渲染为行。
+    /// Render the plan update cell into lines.
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(

@@ -1,6 +1,7 @@
-//! Cargo 测试运行工具：`run_tests`。
+//! Cargo test runner tool: `run_tests`.
 //!
-//! `cargo test` 运行工作区代码，因此该工具遵循与其他代码执行工具相同的显式审批策略。
+//! `cargo test` runs workspace code, so this tool follows the same explicit
+//! approval policy as the other code-executing tools.
 
 use std::path::Path;
 
@@ -18,7 +19,7 @@ use crate::dependencies::ExternalTool;
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 
-/// 用于在工作区根目录运行 `cargo test` 的工具。
+/// Tool for running `cargo test` in the workspace root.
 pub struct RunTestsTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +63,8 @@ impl ToolSpec for RunTestsTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // `run_tests` 声明了 `ToolCapability::ExecutesCode`——匹配代码执行工具的默认审批策略。
+        // `run_tests` declares `ToolCapability::ExecutesCode` — match the
+        // default approval policy for code-executing tools.
         ApprovalRequirement::Required
     }
 
@@ -117,7 +119,7 @@ impl ToolSpec for RunTestsTool {
     }
 }
 
-// === 辅助函数 ===
+// === Helpers ===
 
 fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
     let Some(mut cmd) = crate::dependencies::Cargo::command() else {
@@ -210,7 +212,8 @@ mod tests {
         project_dir
     }
 
-    /// `run_tests` 是 `ToolCapability::ExecutesCode`，因此它必须遵循适用于其他代码执行工具的显式审批策略。
+    /// `run_tests` is `ToolCapability::ExecutesCode`, so it must follow the
+    /// explicit-approval policy that applies to other code-executing tools.
     #[test]
     fn run_tests_requires_user_approval() {
         let tool = RunTestsTool;

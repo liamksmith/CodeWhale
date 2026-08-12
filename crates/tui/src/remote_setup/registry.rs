@@ -1,21 +1,21 @@
-//! `codewhale remote-setup` 的表驱动注册表。
+//! Table-driven registries for `codewhale remote-setup`.
 //!
-//! 镜像 `crates/config/src/lib.rs` 中的 `ProviderKind`/`provider::Provider`
-//! 注册表模式：添加云或桥接是一条数据行，而不是一个新的控制流分支。
-//! [`super`] 中的向导迭代这些表而不是硬编码云/桥接，
-//! 因此矩阵通过数据增长。
+//! Mirrors the `ProviderKind`/`provider::Provider` registry pattern in
+//! `crates/config/src/lib.rs`: adding a cloud or a bridge is one row of data,
+//! not a new control-flow branch. The wizard in [`super`] iterates these tables
+//! rather than hard-coding clouds/bridges, so the matrix grows by data.
 //!
-//! - [`BridgeSpec`] — 聊天应用与本地运行时之间的纯传输。
-//! - [`CloudTarget`] — 代理的运行位置及其密钥的存储位置。
-//! - 提供商维度*不*在此处重复：它读取现有的
-//!   `codewhale_config::provider` 注册表（参见 [`super::bundle::ProviderInfo`]）。
+//! - [`BridgeSpec`] — pure transport between a chat app and the local runtime.
+//! - [`CloudTarget`] — where the agent runs and where its secrets live.
+//! - The provider dimension is *not* duplicated here: it reads the existing
+//!   `codewhale_config::provider` registry (see [`super::bundle::ProviderInfo`]).
 
-/// 云目标存储运行时/提供商密钥的位置。
+/// Where a cloud target stores the runtime/provider secrets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretStore {
-    /// 密钥存储在主机上的 `/etc/codewhale/*.env` 文件中。
+    /// Secrets live in `/etc/codewhale/*.env` files on the host.
     EnvFile,
-    /// 密钥存储在托管保险库（例如 Azure Key Vault）中，启动时读取。
+    /// Secrets live in a managed vault (e.g. Azure Key Vault), read at boot.
     KeyVault,
 }
 
@@ -29,12 +29,12 @@ impl SecretStore {
     }
 }
 
-/// 运行时 + 桥接在主机上的安装方式。
+/// How the runtime + bridge are installed on the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
-    /// 原生 `cargo install` + systemd 单元（镜像 deploy/tencent-lighthouse）。
+    /// Native `cargo install` + systemd units (mirrors deploy/tencent-lighthouse).
     NativeSystemd,
-    /// 拉取容器镜像并在 systemd/容器运行时下运行。
+    /// Container image pulled and run under systemd / a container runtime.
     Docker,
 }
 
@@ -48,23 +48,24 @@ impl InstallMethod {
     }
 }
 
-/// 以**数据**形式表达的单个配置步骤，绝不是 shell 字符串。
+/// A single provisioning step expressed as **data**, never a shell string.
 ///
-/// 命令返回为 `(program, args)`，以便确认门控可以在运行任何操作前
-/// 打印每个命令，密钥通过标准输入/临时文件传递（绝不通过 argv 或
-/// shell 历史——`secret_args` 列出打印时需要脱敏的 arg 索引），
-/// 而 `--apply` 仅执行已打印的计划。在只生成 MVP 中，
-/// 这些步骤仅*渲染到 RUNBOOK 中*；不会执行任何操作。
+/// Commands are returned as `(program, args)` so the confirmation gate can print
+/// every command before running anything, secrets are fed via stdin/temp files
+/// (never argv or shell history — `secret_args` lists arg indexes to redact when
+/// printing), and `--apply` simply executes the already-printed plan. In the
+/// generate-only MVP these steps are only *rendered into the RUNBOOK*; nothing
+/// is executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisionStep {
-    /// 计划/RUNBOOK 中显示的人类可读描述。
+    /// Human-readable description shown in the plan / RUNBOOK.
     pub description: String,
-    /// 要运行的程序（例如 `az`、`doctl`）。
+    /// Program to run (e.g. `az`, `doctl`).
     pub program: String,
-    /// 参数，按顺序。
+    /// Arguments, in order.
     pub args: Vec<String>,
-    /// `args` 中值保密且打印计划时必须脱敏的索引。
-    ///（对于此处仅数据的 RUNBOOK 行为空。）
+    /// Indexes into `args` whose values are secret and must be redacted when
+    /// the plan is printed. (Empty for the data-only RUNBOOK rows here.)
     pub secret_args: Vec<usize>,
 }
 
@@ -78,7 +79,7 @@ impl ProvisionStep {
         }
     }
 
-    /// 渲染命令用于显示，脱敏任何秘密 arg 位置。
+    /// Render the command for display, redacting any secret arg positions.
     #[must_use]
     pub fn display_command(&self) -> String {
         let mut parts = Vec::with_capacity(self.args.len() + 1);
@@ -94,23 +95,23 @@ impl ProvisionStep {
     }
 }
 
-/// 向导收集的输入，云的 `plan()` 读取这些输入。
+/// Inputs collected by the wizard that a cloud `plan()` reads.
 ///
-/// 有意保持最小且无副作用：`plan()` 将这些转换为有序的
-/// [`ProvisionStep`] 列表。密钥*值*从不放在这里；
-/// 计划引用它们将从哪里读取（env 文件/保险库），因此此结构体
-/// 保持安全，可打印并可在测试中构建。
+/// Deliberately minimal and side-effect-free: a `plan()` turns these into an
+/// ordered list of [`ProvisionStep`]s. Secret *values* are never placed here;
+/// the plan references where they will be read from (env file / vault), so this
+/// struct stays safe to print and to construct in tests.
 #[derive(Debug, Clone)]
 pub struct DeployInputs {
-    /// 桥接标识，例如 `"telegram"`。
+    /// Bridge slug, e.g. `"telegram"`.
     pub bridge_slug: String,
-    /// 提供商标识，例如 `"deepseek"`。
+    /// Provider slug, e.g. `"deepseek"`.
     pub provider_slug: String,
-    /// 云区域/位置（每个云的默认值）。
+    /// Cloud region / location (default per cloud).
     pub region: String,
-    /// 逻辑实例/资源名称。
+    /// Logical instance / resource name.
     pub instance_name: String,
-    /// Docker 安装使用的容器镜像。
+    /// Container image used by Docker installs.
     pub image: String,
 }
 
@@ -126,52 +127,52 @@ impl Default for DeployInputs {
     }
 }
 
-/// 聊天桥接：聊天应用与 `127.0.0.1:7878` 之间的纯传输。
+/// A chat bridge: pure transport between a chat app and `127.0.0.1:7878`.
 #[derive(Debug, Clone, Copy)]
 pub struct BridgeSpec {
-    /// CLI 和路径中使用的稳定标识，例如 `"telegram"`。
+    /// Stable slug used on the CLI and in paths, e.g. `"telegram"`.
     pub slug: &'static str,
-    /// 人类可读的标签。
+    /// Human-readable label.
     pub display: &'static str,
-    /// 包目录（相对于仓库根目录），例如 `"integrations/telegram-bridge"`。
+    /// Package directory (relative to repo root), e.g. `"integrations/telegram-bridge"`.
     pub package_dir: &'static str,
-    /// 桥接的 systemd 单元文件名。
+    /// Systemd unit filename for the bridge.
     pub service_unit: &'static str,
-    /// 仓库相对路径，指向 deploy/ 附带的环境模板参考文件。
+    /// Repo-relative path of the reference env template shipped with deploy/.
     pub env_template: &'static str,
-    /// 向导提示输入的桥接特定秘密环境键（令牌等）。
+    /// Bridge-specific secret env keys the wizard prompts for (token(s), etc.).
     pub secret_keys: &'static [&'static str],
-    /// 提示前显示的一行说明（在哪里获取桥接凭证）。
+    /// One-liner shown before prompting (where to get the bridge credentials).
     pub setup_hint: &'static str,
-    /// systemd `WorkingDirectory`，单元期望桥接安装在此处。
+    /// systemd `WorkingDirectory` the unit expects the bridge to be installed at.
     pub install_dir: &'static str,
 }
 
-/// 云目标：代理的运行位置和密钥的存储位置。
+/// A cloud target: where the agent runs and where secrets live.
 #[derive(Debug, Clone, Copy)]
 pub struct CloudTarget {
-    /// CLI 和路径中使用的稳定标识，例如 `"azure"`。
+    /// Stable slug used on the CLI and in paths, e.g. `"azure"`.
     pub slug: &'static str,
-    /// 人类可读的标签。
+    /// Human-readable label.
     pub display: &'static str,
-    /// 运行时/提供商密钥的存储位置。
+    /// Where runtime/provider secrets are stored.
     pub secret_store: SecretStore,
-    /// 运行时 + 桥接的安装方式。
+    /// How the runtime + bridge are installed.
     pub install: InstallMethod,
-    /// 此云的默认区域/位置。
+    /// Default region/location for this cloud.
     pub default_region: &'static str,
-    /// （存根的）自动配置路径使用的云 CLI，例如 `"az"`。
+    /// Cloud CLI used by the (stubbed) auto-provision path, e.g. `"az"`.
     pub cli_tool: &'static str,
-    /// 以数据形式构建有序的配置计划。在只生成 MVP 中，
-    /// 这仅在 RUNBOOK 中渲染；`--apply` 未实现。
+    /// Builds the ordered provisioning plan as data. In the generate-only MVP
+    /// this is only rendered into the RUNBOOK; `--apply` is not implemented.
     pub plan: fn(&DeployInputs) -> Vec<ProvisionStep>,
 }
 
 // ---------------------------------------------------------------------------
-// 桥接注册表
+// Bridge registry
 // ---------------------------------------------------------------------------
 
-/// Telegram 桥接——长轮询传输，密钥是 BotFather 令牌。
+/// Telegram bridge — long-poll transport, secret is the BotFather token.
 pub const TELEGRAM: BridgeSpec = BridgeSpec {
     slug: "telegram",
     display: "Telegram",
@@ -183,7 +184,7 @@ pub const TELEGRAM: BridgeSpec = BridgeSpec {
     install_dir: "/opt/codewhale/telegram-bridge",
 };
 
-/// 飞书/Lark 桥接——应用 ID + 密钥是桥接凭证。
+/// Feishu/Lark bridge — app id + secret are the bridge credentials.
 pub const FEISHU: BridgeSpec = BridgeSpec {
     slug: "feishu",
     display: "Feishu/Lark",
@@ -195,20 +196,20 @@ pub const FEISHU: BridgeSpec = BridgeSpec {
     install_dir: "/opt/codewhale/bridge",
 };
 
-/// 所有注册的桥接。添加一个桥接就是这里的一行数据。
+/// All registered bridges. Adding a bridge is one row here.
 pub const BRIDGES: &[BridgeSpec] = &[FEISHU, TELEGRAM];
 
-/// 按标识查找桥接。
+/// Look up a bridge by slug.
 #[must_use]
 pub fn bridge_by_slug(slug: &str) -> Option<&'static BridgeSpec> {
     BRIDGES.iter().find(|b| b.slug.eq_ignore_ascii_case(slug))
 }
 
 // ---------------------------------------------------------------------------
-// 云注册表
+// Cloud registry
 // ---------------------------------------------------------------------------
 
-/// 腾讯轻量服务器——原生 systemd，env 文件密钥，CNB 驱动的部署。
+/// Tencent Lighthouse — native systemd, env-file secrets, CNB-driven deploy.
 pub const LIGHTHOUSE: CloudTarget = CloudTarget {
     slug: "lighthouse",
     display: "Tencent Lighthouse",
@@ -219,7 +220,7 @@ pub const LIGHTHOUSE: CloudTarget = CloudTarget {
     plan: lighthouse_plan,
 };
 
-/// Azure VM——Docker 镜像 + 通过托管标识的 Key Vault 密钥。
+/// Azure VM — Docker image + Key Vault secrets via managed identity.
 pub const AZURE: CloudTarget = CloudTarget {
     slug: "azure",
     display: "Azure VM",
@@ -230,13 +231,13 @@ pub const AZURE: CloudTarget = CloudTarget {
     plan: azure_plan,
 };
 
-/// DigitalOcean Droplet——原生 systemd，env 文件密钥，cloud-init + doctl。
+/// DigitalOcean Droplet — native systemd, env-file secrets, cloud-init + doctl.
 ///
-/// Hunter 请求的目标。建模类似 Azure/Lighthouse：密钥在
-/// `/etc/codewhale/*.env` 中，原生+systemd 安装由 cloud-init
-/// 用户数据文件驱动，`doctl` 用于创建/销毁命令。`plan()`
-/// 返回 `doctl` `ProvisionStep` 数据，但由于在 MVP 中 `--apply`
-/// 是存根的，计划仅在生成的 RUNBOOK 中打印。
+/// Hunter-requested target. Modeled like Azure/Lighthouse: secrets in
+/// `/etc/codewhale/*.env`, native+systemd install driven by a cloud-init
+/// user-data file, and `doctl` for the create/destroy commands. The `plan()`
+/// returns `doctl` `ProvisionStep` data, but since `--apply` is stubbed in the
+/// MVP the plan is only printed inside the generated RUNBOOK.
 pub const DIGITALOCEAN: CloudTarget = CloudTarget {
     slug: "digitalocean",
     display: "DigitalOcean Droplet",
@@ -247,10 +248,10 @@ pub const DIGITALOCEAN: CloudTarget = CloudTarget {
     plan: digitalocean_plan,
 };
 
-/// 所有注册的云目标。添加一个云就是这里的一行。
+/// All registered cloud targets. Adding a cloud is one row here.
 pub const CLOUD_TARGETS: &[CloudTarget] = &[LIGHTHOUSE, AZURE, DIGITALOCEAN];
 
-/// 按标识查找云目标。
+/// Look up a cloud target by slug.
 #[must_use]
 pub fn cloud_by_slug(slug: &str) -> Option<&'static CloudTarget> {
     CLOUD_TARGETS
@@ -259,13 +260,13 @@ pub fn cloud_by_slug(slug: &str) -> Option<&'static CloudTarget> {
 }
 
 // ---------------------------------------------------------------------------
-// 云计划（仅数据——在 MVP 中从不执行）
+// Cloud plans (data only — never executed in the MVP)
 // ---------------------------------------------------------------------------
 
 fn lighthouse_plan(inputs: &DeployInputs) -> Vec<ProvisionStep> {
-    // 轻量服务器配置由现有的 CNB 管道驱动
-    //（deploy/tencent-lighthouse/cnb/*）。这里的"计划"是 CNB 触发器加上
-    // RUNBOOK 引导用户完成的主机端服务安装。
+    // Lighthouse provisioning is driven by the existing CNB pipeline
+    // (deploy/tencent-lighthouse/cnb/*). The "plan" here is the CNB trigger plus
+    // the host-side service install the RUNBOOK walks the user through.
     let restart_bridge = format!("codewhale-{}-bridge", inputs.bridge_slug);
     vec![
         ProvisionStep::new(
@@ -374,8 +375,8 @@ fn azure_plan(inputs: &DeployInputs) -> Vec<ProvisionStep> {
 }
 
 fn digitalocean_plan(inputs: &DeployInputs) -> Vec<ProvisionStep> {
-    // 从 cloud-init 用户数据文件创建的 Droplet，然后是主机端
-    // 服务安装。doctl 是云 CLI；命令在这里只是数据。
+    // A Droplet stood up from a cloud-init user-data file, then the host-side
+    // service install. doctl is the cloud CLI; commands are data only here.
     vec![
         ProvisionStep::new(
             "Create the Droplet from the generated cloud-init user-data (native + systemd)",
@@ -425,7 +426,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
-    /// 仓库根目录，从此 crate 的清单目录（`crates/tui`）解析。
+    /// Repo root, resolved from this crate's manifest dir (`crates/tui`).
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -438,7 +439,7 @@ mod tests {
     fn bridge_slugs_are_unique() {
         let mut seen = HashSet::new();
         for b in BRIDGES {
-            assert!(seen.insert(b.slug), "重复的桥接标识: {}", b.slug);
+            assert!(seen.insert(b.slug), "duplicate bridge slug: {}", b.slug);
         }
         assert_eq!(seen.len(), BRIDGES.len());
     }
@@ -447,17 +448,17 @@ mod tests {
     fn cloud_slugs_are_unique() {
         let mut seen = HashSet::new();
         for c in CLOUD_TARGETS {
-            assert!(seen.insert(c.slug), "重复的云标识: {}", c.slug);
+            assert!(seen.insert(c.slug), "duplicate cloud slug: {}", c.slug);
         }
         assert_eq!(seen.len(), CLOUD_TARGETS.len());
     }
 
     #[test]
     fn digitalocean_is_registered() {
-        // Hunter 明确要求在矩阵中包含 DigitalOcean。
+        // Hunter explicitly wants DigitalOcean in the matrix.
         assert!(
             cloud_by_slug("digitalocean").is_some(),
-            "DigitalOcean 必须是已注册的云目标"
+            "DigitalOcean must be a registered cloud target"
         );
         let r#do = cloud_by_slug("digitalocean").unwrap();
         assert_eq!(r#do.secret_store, SecretStore::EnvFile);
@@ -472,7 +473,7 @@ mod tests {
             let pkg = root.join(b.package_dir);
             assert!(
                 pkg.is_dir(),
-                "桥接 {} package_dir 缺失: {}",
+                "bridge {} package_dir missing: {}",
                 b.slug,
                 pkg.display()
             );
@@ -481,20 +482,20 @@ mod tests {
                 .join(b.service_unit);
             assert!(
                 unit.is_file(),
-                "桥接 {} service_unit 缺失: {}",
+                "bridge {} service_unit missing: {}",
                 b.slug,
                 unit.display()
             );
             let template = root.join(b.env_template);
             assert!(
                 template.is_file(),
-                "桥接 {} env_template 缺失: {}",
+                "bridge {} env_template missing: {}",
                 b.slug,
                 template.display()
             );
             assert!(
                 !b.secret_keys.is_empty(),
-                "桥接 {} 必须声明至少一个密钥键",
+                "bridge {} must declare at least one secret key",
                 b.slug
             );
         }
@@ -510,32 +511,32 @@ mod tests {
 
     #[test]
     fn cloud_plans_return_ordered_steps_without_executing() {
-        // 为每个云构建（从不运行）一个计划，并断言程序+参数。
+        // Build (never run) a plan for each cloud and assert on program+args.
         let inputs = DeployInputs::default();
         for c in CLOUD_TARGETS {
             let steps = (c.plan)(&inputs);
-            assert!(!steps.is_empty(), "云 {} 产生了空计划", c.slug);
-            // 第一步的程序是云自身的工具或主机脚本。
+            assert!(!steps.is_empty(), "cloud {} produced an empty plan", c.slug);
+            // First step's program is the cloud's own tooling or a host script.
             assert!(
                 steps
                     .iter()
                     .all(|s| !s.program.is_empty() && !s.description.is_empty()),
-                "云 {} 有一个格式错误的步骤",
+                "cloud {} has a malformed step",
                 c.slug
             );
         }
 
-        // DigitalOcean 特别使用 doctl。
+        // DigitalOcean specifically drives doctl.
         let do_steps = (DIGITALOCEAN.plan)(&inputs);
         assert!(
             do_steps.iter().any(|s| s.program == "doctl"),
-            "DigitalOcean 计划必须使用 doctl"
+            "DigitalOcean plan must use doctl"
         );
-        // Azure 特别使用 az。
+        // Azure specifically drives az.
         let az_steps = (AZURE.plan)(&inputs);
         assert!(
             az_steps.iter().any(|s| s.program == "az"),
-            "Azure 计划必须使用 az"
+            "Azure plan must use az"
         );
     }
 

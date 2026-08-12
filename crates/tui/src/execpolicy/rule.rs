@@ -8,7 +8,7 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-/// 匹配单个命令令牌，可以是固定字符串或几个允许的替代项之一。
+/// Matches a single command token, either a fixed string or one of several allowed alternatives.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PatternToken {
     Single(String),
@@ -31,8 +31,8 @@ impl PatternToken {
     }
 }
 
-/// 用于命令的前缀匹配器，支持替代匹配令牌。
-/// 第一个令牌是固定的，因为策略中按第一个令牌进行键索引。
+/// Prefix matcher for commands with support for alternative match tokens.
+/// First token is fixed since we key by the first token in policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrefixPattern {
     pub first: Arc<str>,
@@ -63,9 +63,10 @@ pub enum RuleMatch {
         #[serde(rename = "matchedPrefix")]
         matched_prefix: Vec<String>,
         decision: Decision,
-        /// 此规则存在的可选理由。
+        /// Optional rationale for why this rule exists.
         ///
-        /// 可为任何决策提供，并可能在不同上下文中展示（例如，提示原因或拒绝消息）。
+        /// This can be supplied for any decision and may be surfaced in different contexts
+        /// (e.g., prompt reasons or rejection messages).
         #[serde(skip_serializing_if = "Option::is_none")]
         justification: Option<String>,
     },
@@ -115,7 +116,7 @@ impl Rule for PrefixRule {
     }
 }
 
-/// 统计有多少条规则匹配每个提供的示例，如果有任何示例不匹配则报错。
+/// Count how many rules match each provided example and error if any example is unmatched.
 pub(crate) fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]) -> Result<()> {
     let mut unmatched_examples = Vec::new();
 
@@ -140,7 +141,7 @@ pub(crate) fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]
     }
 }
 
-/// 确保没有规则匹配任何提供的负面示例。
+/// Ensure that no rule matches any provided negative example.
 pub(crate) fn validate_not_match_examples(
     rules: &[RuleRef],
     not_matches: &[Vec<String>],

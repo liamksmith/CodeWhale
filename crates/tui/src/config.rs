@@ -1,4 +1,4 @@
-//! codewhale 的配置加载和默认值。
+//! Configuration loading and defaults for codewhale.
 
 use std::collections::HashMap;
 use std::fs;
@@ -18,15 +18,18 @@ use crate::audit::log_sensitive_event;
 use crate::features::{Feature, Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
 
-// 子代理并发/超时限制常量及其限制解析器位于 `subagent_limits` 叶子模块中。
-// 常量被重新导出（保持每个项目的可见性），因此 `crate::config::<CONST>` 路径的解析保持不变；
-// 私有解析器被拉回而不扩大外部接口（#3311）。
+// Sub-agent concurrency/timeout limit constants and their clamp resolvers live
+// in the `subagent_limits` leaf module. The constants are re-exported (keeping
+// each item's visibility) so `crate::config::<CONST>` paths resolve unchanged;
+// the private resolvers are pulled back in without widening external surface
+// (#3311).
 mod subagent_limits;
 pub use subagent_limits::*;
 use subagent_limits::{resolve_subagent_api_timeout_secs, resolve_subagent_heartbeat_timeout_secs};
 
-// 提供商模型名称和基础 URL 常量位于 `models` 叶子模块中
-// 并在下方重新导出，以便每个 `crate::config::<CONST>` 路径保持不变（#3311）。
+// Provider model-name and base-URL constants live in the `models` leaf module
+// and are re-exported below so every `crate::config::<CONST>` path is unchanged
+// (#3311).
 mod models;
 pub use models::*;
 
@@ -70,12 +73,13 @@ pub enum ApiProvider {
     LongCat,
     Meta,
     Xai,
-    /// 用户自定义的 OpenAI 兼容端点（#1519）。
+    /// User-defined OpenAI-compatible endpoint (#1519).
     ///
-    /// 当 `provider = "<name>"` 指定了一个 `[providers.<name>] kind="openai-compatible"` 表时选中。
-    /// 一个单一动态标识，映射到 [`codewhale_config::ProviderKind::Custom`]
-    /// 并通过 OpenAI Chat Completions 有线协议路由；具体的端点/模型/认证来自
-    /// 命名的配置表，而非此变体。
+    /// Selected when `provider = "<name>"` names a `[providers.<name>]
+    /// kind="openai-compatible"` table. A single dynamic identity that maps to
+    /// [`codewhale_config::ProviderKind::Custom`] and routes via the OpenAI Chat
+    /// Completions wire protocol; the concrete endpoint/model/auth come from the
+    /// named config table, not from this variant.
     Custom,
 }
 
@@ -97,8 +101,8 @@ impl ApiProvider {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         let trimmed = value.trim();
-        // ApiProvider 特定："deepseek-cn" 在此处是一个遗留变体，
-        // 而 ProviderKind 将其视为 Deepseek 别名。
+        // ApiProvider-specific: "deepseek-cn" is a legacy variant here,
+        // while ProviderKind treats it as a Deepseek alias.
         if trimmed.eq_ignore_ascii_case("deepseek-cn")
             || trimmed.eq_ignore_ascii_case("deepseek_china")
             || trimmed.eq_ignore_ascii_case("deepseekcn")
@@ -117,7 +121,7 @@ impl ApiProvider {
         }
     }
 
-    /// 用于选择器 UI / 状态标签的人工友好标签。
+    /// Human-friendly label for picker UIs / status chips.
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self.kind() {
@@ -126,16 +130,16 @@ impl ApiProvider {
         }
     }
 
-    /// 来自共享 config crate 的提供商元数据。
+    /// Provider metadata from the shared config crate.
     ///
-    /// 仅对 TUI 独有的遗留 `DeepseekCN` 变体返回 `None`，
-    /// 该变体有意保留自己的配置表，同时共享 DeepSeek 认证环境变量。
+    /// Returns `None` only for the TUI-only legacy `DeepseekCN` variant, which
+    /// intentionally keeps its own config table while sharing DeepSeek auth envs.
     #[must_use]
     pub fn metadata(self) -> Option<&'static dyn codewhale_config::provider::Provider> {
         self.kind().map(|kind| kind.provider())
     }
 
-    /// 此提供商 API 密钥的环境变量候选项。
+    /// Environment variable candidates for this provider's API key.
     #[must_use]
     pub fn env_vars(self) -> &'static [&'static str] {
         self.metadata().map_or(
@@ -146,13 +150,13 @@ impl ApiProvider {
         )
     }
 
-    /// 为 UI 复制而格式化的环境变量候选项。
+    /// Environment variable candidates formatted for UI copy.
     #[must_use]
     pub fn env_vars_label(self) -> String {
         self.env_vars().join(" / ")
     }
 
-    /// 为选择器/浏览界面排序的提供商列表。
+    /// Providers ordered for picker/browsing surfaces.
     #[must_use]
     pub fn sorted_for_display() -> Vec<Self> {
         codewhale_config::provider::providers_sorted_for_display()
@@ -161,7 +165,7 @@ impl ApiProvider {
             .collect()
     }
 
-    /// 此提供商的默认基础 URL。
+    /// Default base URL for this provider.
     #[must_use]
     pub fn default_base_url(self) -> &'static str {
         match self {
@@ -173,7 +177,7 @@ impl ApiProvider {
         }
     }
 
-    /// 用于创建或查找凭据的官方提供商页面。
+    /// Official provider page for creating or locating credentials.
     #[must_use]
     pub fn credential_url(self) -> Option<&'static str> {
         Some(match self {
@@ -206,19 +210,20 @@ impl ApiProvider {
             Self::Meta => "https://developer.meta.com/ai/",
             Self::Xai => "https://console.x.ai/",
             Self::OpenaiCodex | Self::Sglang | Self::Vllm | Self::Ollama => return None,
-            // 自定义端点没有规范的凭据页面；用户通过自己的 `api_key_env` 提供密钥。
+            // Custom endpoints have no canonical credential page; the user
+            // supplies the key via their own `api_key_env`.
             Self::Custom => return None,
         })
     }
 
-    /// 所有提供商，按稳定的 `ProviderKind::ALL` 顺序。
+    /// All providers in stable `ProviderKind::ALL` order.
     #[must_use]
     pub fn all() -> &'static [Self] {
         &Self::FROM_KIND_LOOKUP
     }
 
-    /// `ApiProvider` 判别式 → `ProviderKind` 查找表。
-    /// 索引 1 为遗留的 `DeepseekCN` 变体，值为 `None`。
+    /// `ApiProvider` discriminant → `ProviderKind` lookup.
+    /// Index 1 is `None` for the legacy `DeepseekCN` variant.
     const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 34] = [
         Some(codewhale_config::ProviderKind::Deepseek),
         None, // DeepseekCN
@@ -256,7 +261,7 @@ impl ApiProvider {
         Some(codewhale_config::ProviderKind::Custom),
     ];
 
-    /// `ProviderKind` 判别式 → `ApiProvider` 查找表。
+    /// `ProviderKind` discriminant → `ApiProvider` lookup.
     const FROM_KIND_LOOKUP: [Self; 33] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
@@ -293,26 +298,27 @@ impl ApiProvider {
         Self::Custom,
     ];
 
-    /// 映射到配置级别的 `ProviderKind`。
-    /// 对于遗留的 `DeepseekCN` 变体返回 `None`。
+    /// Map to the config-level `ProviderKind`.
+    /// Returns `None` for the legacy `DeepseekCN` variant.
     #[must_use]
     pub fn kind(self) -> Option<codewhale_config::ProviderKind> {
         Self::KIND_LOOKUP[self as usize]
     }
 
-    /// 从配置级别的 `ProviderKind` 构造。
+    /// Construct from a config-level `ProviderKind`.
     #[must_use]
     pub fn from_kind(kind: codewhale_config::ProviderKind) -> Self {
         Self::FROM_KIND_LOOKUP[kind as usize]
     }
 
-    /// 此提供商是否为自托管/本地运行时。
+    /// Whether this provider is a self-hosted / local runtime.
     ///
-    /// 这些提供商无需托管认证，流量保持在用户自己的基础设施上，
-    /// 因此具有本地/私有姿态。被回退链用于避免将本地/私有主提供商
-    /// 静默路由到云提供商（#2574），以及被 `/provider` 仪表盘的自托管
-    /// 提示使用（#3083）。添加运行时托管在用户自己基础设施上的提供商时，
-    /// 请更新此列表。
+    /// These run without hosted authentication and keep traffic on the user's
+    /// own infrastructure, so they carry a local/private posture. Used by the
+    /// fallback chain to avoid silently routing a local/private primary out to
+    /// a cloud provider (#2574) and by the `/provider` dashboard's self-hosted
+    /// hint (#3083). Update this list whenever adding a provider whose runtime
+    /// is hosted on the user's own infrastructure.
     #[must_use]
     pub fn is_self_hosted(self) -> bool {
         matches!(self, Self::Sglang | Self::Vllm | Self::Ollama)
@@ -392,34 +398,34 @@ fn subagent_provider_key_matches(key: &str, provider: ApiProvider) -> bool {
 }
 
 // ============================================================================
-// 提供商能力矩阵
+// Provider Capability Matrix
 // ============================================================================
 
-/// 提供商 + 已解析模型组合的已知能力。
+/// Known capabilities for a provider + resolved-model combination.
 ///
-/// 由 [`provider_capability`] 返回，描述给定提供商对
-/// 已解析模型字符串的支持情况。所有字段均来自静态知识
-///（发布文档、API 指南），而非实时 API 探测。
+/// Returned by [`provider_capability`] to describe what a given provider
+/// supports for the resolved model string.  All fields are derived from
+/// static knowledge (release docs, API guides) rather than live API probes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ProviderCapability {
-    /// 规范的提供商标识符。
+    /// Canonical provider identifier.
     pub provider: ApiProvider,
-    /// 将发送到 API 负载中的已解析模型标识符。
+    /// Resolved model identifier that will be sent in the API payload.
     pub resolved_model: String,
-    /// 上下文窗口（token 数，模型能接受的最大输入）。
+    /// Context window in tokens (the maximum input the model can accept).
     pub context_window: u32,
-    /// 此组合的官方最大输出 token 数。
+    /// Official maximum output tokens for this combo.
     ///
-    /// 这是用于诊断和 CI 策略的模型元数据。正常的轮次使用
-    /// 引擎中单独的、更保守的请求上限。
+    /// This is model metadata for diagnostics and CI policy. Normal turns use
+    /// a separate, more conservative request cap in the engine.
     pub max_output: u32,
-    /// 提供商+模型是否支持思考/推理模式。
+    /// Whether the provider+model supports thinking/reasoning mode.
     pub thinking_supported: bool,
-    /// 提供商是否返回提示缓存遥测字段。
+    /// Whether the provider returns prompt-cache telemetry fields.
     pub cache_telemetry_supported: bool,
-    /// 提供商使用哪种请求负载方言。
+    /// Which request-payload dialect the provider uses.
     pub request_payload_mode: RequestPayloadMode,
-    /// 仍被接受的兼容性别名的弃用元数据。
+    /// Deprecation metadata for compatibility aliases that are still accepted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias_deprecation: Option<ModelAliasDeprecation>,
 }
@@ -428,7 +434,7 @@ pub const DEEPSEEK_ALIAS_RETIREMENT_DATE: &str = "2026-07-24";
 pub const DEEPSEEK_ALIAS_RETIREMENT_UTC: &str = "2026-07-24T15:59:00Z";
 pub const DEEPSEEK_ALIAS_REPLACEMENT: &str = "deepseek-v4-flash";
 
-/// 仍保持兼容的模型别名的上游退役元数据。
+/// Upstream retirement metadata for a model alias that remains compatible.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ModelAliasDeprecation {
     pub alias: String,
@@ -438,21 +444,22 @@ pub struct ModelAliasDeprecation {
     pub notice: String,
 }
 
-/// 提供商使用哪种请求负载方言。
+/// Which request-payload dialect the provider speaks.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum RequestPayloadMode {
-    /// 标准 OpenAI 兼容的 `/v1/chat/completions` 负载。
+    /// Standard OpenAI-compatible `/v1/chat/completions` payload.
     ChatCompletions,
-    /// OpenAI Responses API 负载。
+    /// OpenAI Responses API payload.
     Responses,
-    /// 原生 Anthropic Messages API `/v1/messages` 负载（#3014）。
+    /// Native Anthropic Messages API `/v1/messages` payload (#3014).
     AnthropicMessages,
 }
 
-/// 解析给定 [`ApiProvider`] 和已解析模型字符串的提供商能力。
+/// Resolve the provider capability for a given [`ApiProvider`] and resolved
+/// model string.
 ///
-/// `resolved_model` 应是在 API 负载中出现的最终模型标识符
-///（经过规范化/提供商特定映射之后）。
+/// The `resolved_model` should be the final model identifier that will appear
+/// in the API payload (after normalization / provider-specific mapping).
 #[must_use]
 pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
     if matches!(provider, ApiProvider::Anthropic | ApiProvider::Openmodel) {
@@ -485,10 +492,11 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         };
     }
 
-    // #3023：删除 Openai/Atlascloud/Moonshot 的提前返回，以便这些
-    // 提供商使用下方通用的基于模型的路径，该路径从 models.rs 查找中
-    // 正确解析上下文窗口、输出限制和思考支持。Ollama 也会回退到
-    // 基于模型的查找，使用 8192 作为最后的回退值，而非硬编码的下限。
+    // #3023: Delete the Openai/Atlascloud/Moonshot early-return so these
+    // providers use the generic model-based path below, which correctly
+    // resolves context windows, output limits, and thinking support from
+    // models.rs lookups.  Ollama also falls through to model-based lookups
+    // with 8192 as the last-resort fallback instead of a hardcoded floor.
     if matches!(provider, ApiProvider::XiaomiMimo) {
         return ProviderCapability {
             provider,
@@ -534,9 +542,9 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     let is_reasoner = matches!(provider, ApiProvider::WanjieArk)
         && (model_lower.contains("reasoner") || model_lower.contains("r1"));
 
-    // 上下文窗口：V4 类模型获得 1M，其他所有模型回退到
-    // 模型自身的查找或默认值。Ollama 默认为 8192
-    //（对于小型本地模型较为保守），而非 128K。
+    // Context window: V4-class models get 1M, everything else falls through
+    // to the model's own lookup or a default.  Ollama defaults to 8192
+    // (conservative for small local models) instead of 128K.
     let context_window = if is_v4_pro || is_v4_flash {
         crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
     } else if let Some(window) = crate::models::context_window_for_model(resolved_model) {
@@ -547,22 +555,22 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
     };
 
-    // 最大输出 token 数：官方 DeepSeek V4 API 元数据列出 384K；
-    // 运行时请求上限保持独立且更为保守。
+    // Max output tokens: official DeepSeek V4 API metadata lists 384K;
+    // runtime request caps remain separate and more conservative.
     let max_output = if is_v4_pro || is_v4_flash {
         384_000
     } else {
         crate::models::max_output_tokens_for_model(resolved_model).unwrap_or(4096)
     };
 
-    // 思考支持：V4 模型在所有提供商上都支持思考，但
-    // 仅当模型名称匹配 V4 系列时。
+    // Thinking support: V4 models support thinking on all providers, but
+    // only when the model name matches the V4 family.
     let thinking_supported = is_v4_pro
         || is_v4_flash
         || is_reasoner
         || crate::models::model_supports_reasoning(resolved_model);
 
-    // 缓存遥测：仅由 DeepSeek 原生和 NVIDIA NIM 端点返回。
+    // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
     let cache_telemetry_supported = matches!(
         provider,
         ApiProvider::Deepseek
@@ -607,10 +615,10 @@ fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDeprecation
     }
 }
 
-/// 将紧凑的 DeepSeek 模型别名规范化为稳定的 ID。
+/// Canonicalize compact DeepSeek model aliases to stable IDs.
 ///
-/// 已有效的模型 ID 保持原样。只有紧凑的
-/// `v4pro`/`v4flash` 拼写会被重写为带连字符的形式。
+/// Already-valid model IDs pass through unchanged. Only the compact
+/// `v4pro`/`v4flash` spellings are rewritten to their hyphenated forms.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
@@ -620,12 +628,12 @@ pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     }
 }
 
-/// 规范化已配置/运行时的模型名称。
+/// Normalize a configured/runtime model name.
 ///
-/// 去除空白，对已有效的模型 ID 保留调用者提供的大小写，
-/// 仅规范化像 `deepseek-v4pro` 这样的紧凑别名。
-/// 非 DeepSeek 或格式错误的名称返回 `None`；DeepSeek 的 `/v1/models`
-/// 端点是有效模型 ID 的权威来源。
+/// Trims whitespace, preserves caller-provided case for already-valid model
+/// IDs, and only canonicalizes compact aliases like `deepseek-v4pro`.
+/// Non-DeepSeek or malformed names return `None`; DeepSeek's `/v1/models`
+/// endpoint is the authority on valid model IDs.
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -661,11 +669,11 @@ pub(crate) fn normalize_custom_model_id(model: &str) -> Option<String> {
     }
 }
 
-/// 根据活跃提供商验证用户请求的模型 ID（#3018）。
+/// Validate a user-requested model id against the active provider (#3018).
 ///
-/// DeepSeek 提供商使用严格的 `normalize_model_name` 门控（官方
-/// API 只接受 DeepSeek ID）。所有其他提供商允许任何非空、
-/// 非控制字符的字符串通过——提供商 API 是权威来源。
+/// DeepSeek providers use the strict `normalize_model_name` gate (official
+/// API only accepts DeepSeek IDs).  All other providers pass any non-empty,
+/// non-control-character string through — the provider API is the authority.
 #[must_use]
 pub fn requested_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
     match provider {
@@ -676,26 +684,28 @@ pub fn requested_model_for_provider(provider: ApiProvider, model: &str) -> Optio
     }
 }
 
-/// 拒绝我们确信无效的提供商/模型组合，*在*到达网络之前（#3227）。
+/// Reject a provider/model tuple that we can be confident is invalid *before*
+/// it reaches the network (#3227).
 ///
-/// 路由隔离错误会将在一个提供商下选择的模型与另一个
-/// 提供商的路由配对（模型芯片 `deepseek-v4-pro`，提供商徽章
-/// `Z.ai`），导致上游返回 `400 Unknown Model`。此守卫
-/// 在本地捕获该问题并命名不兼容的对。
+/// The route-isolation bug paired a model picked under one provider with a
+/// different provider's route (model chip `deepseek-v4-pro`, provider badge
+/// `Z.ai`), producing a `400 Unknown Model` from the upstream. This guard
+/// catches that locally and names the incompatible pair instead.
 ///
-/// 我们只拒绝*已知*错误的组合，因此合法的自定义
-/// 路由（自托管端点、代理 DeepSeek 权重的 OpenAI 兼容聚合器等）
-/// 保持正常工作：
+/// We only reject tuples that are *known* to be wrong so legitimate custom
+/// routing (self-hosted endpoints, OpenAI-compatible aggregators that proxy
+/// DeepSeek weights, etc.) keeps working:
 ///
-/// 1. DeepSeek 原生提供商（`deepseek` / `deepseek-cn`）仅接受
-///    DeepSeek 模型 ID 或 `auto`——与 [`normalize_model_name`] 相同的门控。
-/// 2. 非 DeepSeek *原生*提供商（例如提供 GLM 的 Z.ai）不能
-///    被赋予仅 DeepSeek 的模型 ID。这复用了模型解析器使用的
-///    “对直接提供商来说外来”分类，因此 DeepSeek 聚合器
-///    （NVIDIA NIM、OpenRouter、Fireworks 等）保持宽松。
+/// 1. A DeepSeek-native provider (`deepseek` / `deepseek-cn`) accepts only
+///    DeepSeek model IDs or `auto` — same gate as [`normalize_model_name`].
+/// 2. A non-DeepSeek *native* provider (e.g. Z.ai, which serves GLM) must not
+///    be handed a DeepSeek-only model ID. This reuses the same
+///    "foreign to a direct provider" classification the model resolver uses,
+///    so DeepSeek aggregators (NVIDIA NIM, OpenRouter, Fireworks, …) stay
+///    permissive.
 ///
-/// 对我们无法确信拒绝的任何组合返回 `Ok(())`（提供商
-/// API 仍然是对这些组合的最终权威）。
+/// Returns `Ok(())` for any tuple we cannot confidently reject (the provider
+/// API remains the final authority for those).
 pub fn validate_route(provider: ApiProvider, model: &str) -> Result<(), String> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
@@ -708,8 +718,8 @@ pub fn validate_route(provider: ApiProvider, model: &str) -> Result<(), String> 
         return Ok(());
     }
 
-    // 模型 ID 按原样传递的提供商（OpenAI 兼容、Ollama 标签、
-    // 自定义基础 URL 等）由上游服务验证。
+    // Providers whose model id is passed through verbatim (OpenAI-compatible,
+    // Ollama tags, custom base URLs, …) are validated by the upstream service.
     if provider_passes_model_through(provider) {
         return Ok(());
     }
@@ -726,8 +736,8 @@ pub fn validate_route(provider: ApiProvider, model: &str) -> Result<(), String> 
         ));
     }
 
-    // 非 DeepSeek 原生提供商被赋予了仅 DeepSeek 的模型 ID：这正是
-    // #3227 中的污染问题（Z.ai + deepseek-v4-pro）。
+    // A non-DeepSeek native provider was handed a DeepSeek-only model id: this
+    // is the exact contamination from #3227 (Z.ai + deepseek-v4-pro).
     if root_deepseek_model_is_foreign_to_direct_provider(provider, trimmed) {
         return Err(format!(
             "Model '{trimmed}' is a DeepSeek model and is not compatible with provider '{}'. \
@@ -978,23 +988,25 @@ fn canonical_minimax_model_id(model: &str) -> Option<&'static str> {
     }
 }
 
-/// 将用户输入的模型 ID 解析为提供商理解的规范系列 ID，
-/// 不进行任何有线 ID 转换。
+/// Resolve a user-entered model id to the canonical family id a provider
+/// understands, without any wire-id translation.
 ///
-/// 模型系列被平等对待：每个提供商拥有的系列（GLM 通过
-/// Z.ai/Zhipu、Kimi、Xiaomi MiMo、MiniMax、Arcee、OpenRouter 别名等）
-/// 都通过相同的“应用系列的规范映射，否则直接传递输入”路径解析。
-/// 没有任何东西仅因为不是 DeepSeek ID 而被拒绝——上游 API 仍然是
-/// 最终权威，反映了 models.dev 目录（路由解析器的真相来源）
-/// 如何为每个产品携带一个权威 ID，无论供应商如何。
+/// Model families are treated equally: every provider-owned family (GLM via
+/// Z.ai/Zhipu, Kimi, Xiaomi MiMo, MiniMax, Arcee, OpenRouter slugs, …)
+/// resolves through the same "apply the family's canonical map, else pass the
+/// input through" path. Nothing is rejected just because it is not a
+/// DeepSeek id — the upstream API remains the final authority, mirroring how
+/// the models.dev catalog (the route resolver's source of truth) carries one
+/// authoritative id per offering regardless of vendor.
 ///
-/// 这是 [`normalize_model_name_for_provider`] 曾经融合在一起的
-/// 规范化的那一半。有线 ID 转换（例如 `deepseek-v4-pro` →
-/// 聚合器的 `accounts/…/deepseek-v4-pro` 别名）属于请求时的路由解析器，
-/// 而不是输入到 `/provider` 的名称，因此被刻意排除在此之外。
+/// This is the canonicalization half of what [`normalize_model_name_for_provider`]
+/// used to fuse together. Wire-id translation (e.g. `deepseek-v4-pro` → an
+/// aggregator's `accounts/…/deepseek-v4-pro` slug) belongs to the route
+/// resolver at request time, not to a name typed into `/provider`, so it is
+/// deliberately kept out of here.
 ///
-/// 仅对空输入或控制字符输入返回 `None`；所有其他 ID
-/// 都通过，因此自定义/自托管端点永远不会被错误拒绝。
+/// Returns `None` only for empty or control-character input; every other id
+/// passes through so a custom/self-hosted endpoint is never wrongly rejected.
 #[must_use]
 pub fn canonical_model_id_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -1002,11 +1014,11 @@ pub fn canonical_model_id_for_provider(provider: ApiProvider, model: &str) -> Op
         return None;
     }
 
-    // 提供商拥有的模型系列通过它们自己的规范映射解析，
-    // 该映射定义了权威的大小写（`glm-5.1` → `GLM-5.1`，
-    // `minimax-m2.7` → `MiniMax-M2.7`）。每个映射只识别*自己的*
-    // 别名，因此未知 ID 会通过传递——没有系列充当
-    // 针对其他系列的门控。
+    // Provider-owned model families resolve through their own canonical map,
+    // which defines the authoritative casing (`glm-5.1` → `GLM-5.1`,
+    // `minimax-m2.7` → `MiniMax-M2.7`). Each map recognizes only *its own*
+    // aliases, so an unknown id falls through to passthrough — no family acts
+    // as a gate against any other.
     let family_canonical: Option<&'static str> = match provider {
         ApiProvider::Openrouter => canonical_openrouter_recent_model_id(trimmed),
         ApiProvider::XiaomiMimo => canonical_xiaomi_mimo_model_id(trimmed),
@@ -1020,12 +1032,12 @@ pub fn canonical_model_id_for_provider(provider: ApiProvider, model: &str) -> Op
         return Some(canonical.to_string());
     }
 
-    // 官方 DeepSeek API 是唯一合法的按系列门控：它只服务
-    // 自己的 ID（对其他任何内容返回 400），因此拒绝它不
-    // 识别的 ID。紧凑别名被重写（deepseek-v4pro → deepseek-v4-pro），
-    // 对已有效的 ID 保留调用者的大小写（`DeepSeek-V4-Flash`
-    // 保持原样）。自定义/自托管 DeepSeek 端点走
-    // 接受自定义模型 ID 的路径，因此它们永远不会到达此门控。
+    // The official DeepSeek API is the one legitimate per-family gate: it serves
+    // only its own ids (and 400s anything else), so reject an id it does not
+    // recognize. Compact aliases are rewritten (deepseek-v4pro → deepseek-v4-pro)
+    // and the caller's casing is kept for an already-valid id (`DeepSeek-V4-Flash`
+    // stays as-is). Custom/self-hosted DeepSeek endpoints take the
+    // accepts-custom-model-ids path, so they never reach this gate.
     if matches!(
         provider,
         ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
@@ -1042,10 +1054,10 @@ pub fn canonical_model_id_for_provider(provider: ApiProvider, model: &str) -> Op
         return Some(normalized);
     }
 
-    // 托管 DeepSeek 的聚合器（NIM、Novita、Fireworks、SiliconFlow、SGLang、
-    // vLLM、DeepInfra、Wanjie Ark、Volcengine）将识别的 DeepSeek ID 规范化，
-    // 但让其他所有内容通过——它们服务的不仅仅是 DeepSeek，因此
-    // 上游 API 仍然是权威。名称在此处永远不会被拒绝。
+    // Aggregators that host DeepSeek (NIM, Novita, Fireworks, SiliconFlow, SGLang,
+    // vLLM, DeepInfra, Wanjie Ark, Volcengine) canonicalize recognized DeepSeek
+    // ids but pass everything else through — they serve more than DeepSeek, so
+    // the upstream API stays the authority. A name is never rejected here.
     if matches!(
         provider,
         ApiProvider::NvidiaNim
@@ -1064,25 +1076,25 @@ pub fn canonical_model_id_for_provider(provider: ApiProvider, model: &str) -> Op
         return Some(canonical.to_string());
     }
 
-    // 其他所有内容（HuggingFace、OpenAI 兼容、Qianfan、StepFun、Codex、
-    // Anthropic）没有规范映射——用户输入的 ID 是权威的。
+    // Everything else (HuggingFace, OpenAI-compatible, Qianfan, StepFun, Codex,
+    // Anthropic) owns no canonical map — the id the user typed is authoritative.
     Some(trimmed.to_string())
 }
 
-/// 规范化为活跃提供商通过 TUI 选择的模型，在规范系列 ID 之上
-/// 应用提供商的有线别名转换。
+/// Normalize a model selected through the TUI for the active provider, applying
+/// the provider's wire-slug translation on top of the canonical family id.
 ///
-/// 这是拆分的有关线 ID 的一半（规范化位于
-/// [`canonical_model_id_for_provider`]）。用于配置文件规范化，
-/// 其中供应商前缀的 ID（例如 SiliconFlow 上的 `deepseek-ai/DeepSeek-V4-Pro`）
-/// 是存储形式。`/provider` 刻意使用规范的那一半。
+/// This is the wire-id half of the split (canonicalization lives in
+/// [`canonical_model_id_for_provider`]). Used by config-file normalization,
+/// where vendor-prefixed ids (e.g. `deepseek-ai/DeepSeek-V4-Pro` on SiliconFlow)
+/// are the stored form. `/provider` deliberately uses the canonical half instead.
 #[must_use]
 pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
     let canonical = canonical_model_id_for_provider(provider, model)?;
-    // 当提供商的 API 使用供应商前缀的 ID（Together、Siliconflow、NIM 等）时，
-    // 将规范系列 ID 转换为提供商的有线别名。
-    // 对于没有有线别名映射的提供商，`model_for_provider` 是无操作的，
-    // 因此这是在平等对待的规范解析器之上的一个统一层。
+    // Translate the canonical family id to the provider's wire slug when the
+    // provider's API uses vendor-prefixed ids (Together, Siliconflow, NIM, …).
+    // `model_for_provider` is a no-op for providers without a wire-slug map, so
+    // this is one uniform layer over the equal-treatment canonical resolver.
     Some(model_for_provider(provider, canonical))
 }
 
@@ -1102,12 +1114,14 @@ pub fn wire_model_for_provider(provider: ApiProvider, model: &str) -> String {
     normalize_model_name_for_provider(provider, trimmed).unwrap_or_else(|| trimmed.to_string())
 }
 
-/// 硬编码的按提供商模型 ID 列表，**仅作为兼容性回退**使用（#4188）。
+/// Hardcoded per-provider model id list used **only as a compatibility
+/// fallback** (#4188).
 ///
-/// 首选来源是实时 Models.dev 目录和通过 [`crate::provider_lake`] 的
-/// 离线捆绑快照。仅对 Models.dev 不代表的仅 CodeWhale/本地提供商，
-/// 或在测试中探测回退表时，直接调用此函数。
-/// 选择器、库存和子代理界面必须通过 provider lake。
+/// Preferred sources are the live Models.dev catalog and the offline bundled
+/// snapshot via [`crate::provider_lake`]. Call this directly only for
+/// CodeWhale-only / local providers Models.dev does not represent, or when
+/// probing the fallback table in tests. Picker, inventory, and subagent
+/// surfaces must go through the provider lake.
 #[must_use]
 pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'static str> {
     match provider {
@@ -1180,15 +1194,15 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
             XAI_GROK_4_20_0309_REASONING_MODEL,
             XAI_GROK_4_20_0309_NON_REASONING_MODEL,
         ],
-        // 自定义端点不暴露内置的完成名称；用户
-        // 提供自己的模型 ID（#1519）。
+        // Custom endpoints expose no built-in completion names; the user
+        // supplies their own model id (#1519).
         ApiProvider::Custom => Vec::new(),
     }
 }
 
-// === 类型 ===
+// === Types ===
 
-/// 从配置文件加载的原始重试配置。
+/// Raw retry configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetryConfig {
     pub enabled: Option<bool>,
@@ -1198,9 +1212,10 @@ pub struct RetryConfig {
     pub exponential_base: Option<f64>,
 }
 
-/// 宽容地反序列化 `status_items`：跳过此构建不认识的键，
-/// 而不是以"未知变体"报错。这让开发构建写入
-/// `"balance"`（或任何未来项目），而稳定构建仍然能成功解析配置文件。
+/// Deserialize `status_items` tolerantly: skip keys unknown to this build
+/// instead of erroring with "unknown variant".  This lets a dev build write
+/// `"balance"` (or any future item) while the stable build still parses the
+/// config file successfully.
 fn deser_status_items<'de, D>(deserializer: D) -> Result<Option<Vec<StatusItem>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1219,16 +1234,16 @@ where
     }))
 }
 
-/// 从配置文件加载的 UI 配置。
+/// UI configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
     pub mouse_capture: Option<bool>,
-    /// 启动终端模式/探测调用的超时时间（毫秒）。
-    /// 省略时默认为 500ms。
+    /// Timeout for startup terminal mode/probe calls in milliseconds.
+    /// Defaults to 500ms when omitted.
     pub terminal_probe_timeout_ms: Option<u64>,
-    /// 每个 SSE 块的空闲超时时间（秒）。省略时默认为 900 秒。
-    /// `0` 映射为默认值；值限制在 `1..=3600`。
+    /// Per-SSE-chunk idle timeout in seconds. Defaults to 900 seconds when
+    /// omitted. `0` maps to the default; values clamp to `1..=3600`.
     pub stream_chunk_timeout_secs: Option<u64>,
     /// Ordered list of footer items the user wants visible. `None` (the field
     /// missing from `config.toml`) means "use the built-in default order"; an
@@ -1238,60 +1253,61 @@ pub struct TuiConfig {
     /// in `~/.deepseek/config.toml`.
     #[serde(default, deserialize_with = "deser_status_items")]
     pub status_items: Option<Vec<StatusItem>>,
-    /// 在记录中的 URL 周围发出 OSC 8 超链接转义序列，以便
-    /// 支持的终端（iTerm2、Terminal.app 13+、Ghostty、Kitty、
-    /// WezTerm、Alacritty、最新的 gnome-terminal/konsole）使它们可以
-    /// Cmd+点击打开。不支持 OSC 8 的终端渲染纯文本
-    /// 标签并忽略转义。macOS/Linux 默认为开启，Windows 旧版控制台
-    /// 默认为关闭；设为 `false` 可在所有位置禁用（例如对于
-    /// 错误渲染该序列的终端）。OSC 8 转义是带外发出的，
-    /// 因此不用担心缓冲区列损坏。
+    /// Emit OSC 8 hyperlink escape sequences around URLs in the transcript so
+    /// supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty,
+    /// WezTerm, Alacritty, recent gnome-terminal/konsole) make them
+    /// Cmd+click-openable. Terminals without OSC 8 support render the plain
+    /// label and ignore the escape. Defaults to on for macOS/Linux and off for
+    /// Windows legacy consoles; set `false` to suppress everywhere (e.g. for a
+    /// terminal that misrenders the sequence). OSC 8 escapes are emitted
+    /// out-of-band, so buffer-column corruption is not a concern.
     pub osc8_links: Option<bool>,
-    /// 高级通知触发条件。设置后，覆盖较低级别的
-    /// `[notifications]` 块中的 `[notifications].threshold_secs` 门控：
+    /// High-level notification trigger condition. When set, overrides the
+    /// `[notifications].threshold_secs` gate from the lower-level
+    /// `[notifications]` block:
     ///
-    /// - `Always` — 每次成功的轮次都触发轮次完成通知，
-    ///   无论持续时间如何。仍尊重已配置的 `[notifications].method`
-    ///   和 `include_summary` 标志。
-    /// - `Never` — 抑制所有轮次完成通知。
-    /// - 未设置（默认）— 回退到 `[notifications]` 默认值。
+    /// - `Always` — fire a turn-completion notification on every successful
+    ///   turn regardless of duration. The configured `[notifications].method`
+    ///   and `include_summary` flag are still respected.
+    /// - `Never` — suppress all turn-completion notifications.
+    /// - Unset (default) — fall back to the `[notifications]` defaults.
     pub notification_condition: Option<NotificationCondition>,
-    /// 当为 `true` 时，空编辑器上的 Up/Down 滚动记录
-    /// 而非调出输入历史。对于将鼠标滚轮手势映射到
-    /// 方向键的终端很有用。默认：仅当鼠标捕获关闭时为 `true`；
-    /// 否则为 `false`。
+    /// When `true`, plain Up/Down on an empty composer scroll the
+    /// transcript instead of recalling input history. Useful for
+    /// terminals that map mouse-wheel gestures to arrow keys. Default:
+    /// `true` only when mouse capture is off; otherwise `false`.
     #[serde(default)]
     pub composer_arrows_scroll: Option<bool>,
 }
 
-/// 高级通知触发覆盖。参见
-/// [`TuiConfig::notification_condition`]。
+/// High-level notification trigger override. See
+/// [`TuiConfig::notification_condition`].
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationCondition {
-    /// 每次成功的轮次都通知（无持续时间阈值）。
+    /// Notify on every successful turn (no duration threshold).
     Always,
-    /// 完全抑制通知。
+    /// Suppress notifications entirely.
     Never,
 }
 
-/// 通知传递方法（镜像 `tui::notifications::Method`）。
+/// Notification delivery method (mirrors `tui::notifications::Method`).
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationMethod {
-    /// 自动检测：为当前终端选择最佳协议
-    ///（OSC 9、Kitty OSC 99、Ghostty OSC 777 或 Bel）。
+    /// Auto-detect: picks the best protocol for the current terminal
+    /// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or Bel).
     #[default]
     Auto,
-    /// OSC 9 转义。
+    /// OSC 9 escape.
     Osc9,
-    /// 纯 BEL 字符。
+    /// Plain BEL character.
     Bel,
-    /// Kitty 通知协议（OSC 99）。
+    /// Kitty notification protocol (OSC 99).
     Kitty,
-    /// Ghostty 通知协议（OSC 777）。
+    /// Ghostty notification protocol (OSC 777).
     Ghostty,
-    /// 禁用通知。
+    /// Disable notifications.
     Off,
 }
 
@@ -1299,69 +1315,70 @@ fn default_threshold_secs() -> u64 {
     30
 }
 
-/// 完成声音选项。
+/// Completion sound options.
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompletionSound {
-    /// 轮次完成时无声音。
+    /// No sound on turn completion.
     Off,
-    /// 系统通知蜂鸣声（默认）。在 Windows 上使用 `MessageBeep`。
+    /// System notification beep (default). On Windows uses `MessageBeep`.
     #[default]
     Beep,
-    /// 终端 BEL 字符（`\x07`）。
+    /// Terminal BEL character (`\x07`).
     Bell,
-    /// 播放已配置的 WAV 声音文件。
+    /// Play a configured WAV sound file.
     File,
 }
 
-/// 控制在 fleet/工作流运行期间每个子代理完成通知的触发时机。
-/// 轮次完成通知不受影响。
+/// Controls when per-subagent completion notifications fire during fleet /
+/// workflow runs. Turn-completion notifications are unaffected.
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubagentCompletionNotification {
-    /// 每个子代理完成时都通知。
+    /// Notify on every subagent completion.
     Always,
-    /// 仅当批次中最后一个子代理完成时通知——没有其他子代理
-    /// 在运行且没有工作流在进行中。默认：运行中保持安静，
-    /// 在 fleet 耗尽时触发一次。
+    /// Notify only when the last subagent in a batch finishes — no other
+    /// subagents running and no workflow run in progress. Default: stays quiet
+    /// mid-run and fires once when the fleet drains.
     #[default]
     FinalOnly,
-    /// 从不触发子代理完成通知。
+    /// Never fire a subagent-completion notification.
     Off,
 }
 
-/// 桌面通知配置（轮次完成时的 OSC 9 / BEL）。
+/// Desktop-notification configuration (OSC 9 / BEL on turn completion).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotificationsConfig {
-    /// 传递方法：`auto` | `osc9` | `bel` | `off`。默认：`auto`。
-    /// `auto` 为 iTerm.app / Ghostty / WezTerm / Cmux 解析为 OSC 9
-    ///（通过 `$TERM_PROGRAM` 然后是 `$LC_TERMINAL` 检测）；否则
-    /// 回退到 BEL。在 Windows 上，BEL 路径通过 `MessageBeep(MB_OK)` 路由。
-    /// 当您的终端支持 OSC-9 但未设置这两个环境变量时，
-    /// 显式使用 `method = "osc9"`（例如没有 `LC_TERMINAL` 的 Cmux）。
+    /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
+    /// `auto` resolves to OSC 9 for iTerm.app / Ghostty / WezTerm / Cmux
+    /// (detected via `$TERM_PROGRAM` then `$LC_TERMINAL`); otherwise it
+    /// falls back to BEL. On Windows the BEL path is routed through
+    /// `MessageBeep(MB_OK)`.
+    /// Use `method = "osc9"` explicitly when your terminal is OSC-9 capable
+    /// but sets neither env var (e.g. Cmux without `LC_TERMINAL`).
     #[serde(default)]
     pub method: NotificationMethod,
-    /// 仅当轮次至少花了这么多秒时才通知。默认：30。
+    /// Only notify when the turn took at least this many seconds. Default: 30.
     #[serde(default = "default_threshold_secs")]
     pub threshold_secs: u64,
-    /// 在通知正文中包含简短摘要（经过时间 + 成本）。
-    /// 默认：`false`。
+    /// Include a short summary (elapsed time + cost) in the notification body.
+    /// Default: `false`.
     #[serde(default)]
     pub include_summary: bool,
 
-    /// 在 fleet/工作流运行期间何时触发每个子代理完成通知：
-    /// `always` | `final-only` | `off`。默认：`final-only`
-    ///（运行中安静，批次耗尽时一个通知）。设为 `off` 可完全
-    /// 静音子代理通知。
+    /// When to fire per-subagent completion notifications during fleet /
+    /// workflow runs: `always` | `final-only` | `off`. Default: `final-only`
+    /// (quiet mid-run, one notification when the batch drains). Set `off` to
+    /// silence subagent notifications entirely.
     #[serde(default)]
     pub subagent_completion: SubagentCompletionNotification,
 
-    /// 完成声音：`"off"` | `"beep"` | `"bell"` | `"file"`。默认：`"beep"`。
-    /// 每次轮次完成时播放声音（与 ✅ 标记一起）。
+    /// Completion sound: `"off"` | `"beep"` | `"bell"` | `"file"`. Default: `"beep"`.
+    /// Plays a sound when every turn finishes (alongside the ✅ marker).
     #[serde(default)]
     pub completion_sound: CompletionSound,
 
-    /// `completion_sound = "file"` 时使用的 WAV 声音文件路径。
+    /// Path to the WAV sound file used when `completion_sound = "file"`.
     #[serde(default)]
     pub sound_file: Option<PathBuf>,
 }
@@ -1378,20 +1395,21 @@ fn default_snapshot_max_workspace_gb() -> u64 {
     crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT / (1024 * 1024 * 1024)
 }
 
-/// 工作区侧 git 快照配置（#137）。
+/// Workspace side-git snapshot configuration (#137).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SnapshotsConfig {
-    /// 在每个交互式代理轮次前后对工作区进行快照。
+    /// Snapshot the workspace before and after each interactive agent turn.
     #[serde(default = "default_snapshots_enabled")]
     pub enabled: bool,
-    /// 在会话启动时清理早于此天数的侧 git 快照。
+    /// Prune side-git snapshots older than this many days at session boot.
     #[serde(default = "default_snapshot_max_age_days")]
     pub max_age_days: u64,
-    /// 快照功能在首次使用前自动禁用的最大非排除工作区大小（GB）。
-    /// 设为 `0` 以禁用上限并不限大小进行快照（v0.8.31 行为）。
-    /// 遍历遵循 `.gitignore` 和快照模块的内置排除项
-    ///（`node_modules/`、`target/` 等），因此测量的大小反映
-    /// 实际会进入快照提交的内容。
+    /// Maximum non-excluded workspace size (in GB) before the snapshot
+    /// feature self-disables on first use. Set to `0` to disable the cap
+    /// and snapshot regardless of size (the v0.8.31 behavior). The walk
+    /// honors `.gitignore` and the snapshot module's built-in excludes
+    /// (`node_modules/`, `target/`, ...) so the measured size reflects
+    /// what would actually land in a snapshot commit.
     #[serde(default = "default_snapshot_max_workspace_gb")]
     pub max_workspace_gb: u64,
 }
@@ -1406,30 +1424,31 @@ impl Default for SnapshotsConfig {
     }
 }
 
-/// 用户级记忆配置（#489）。
+/// User-level memory configuration (#489).
 ///
-/// 默认是选择加入：当此表不存在或 `enabled = false` 时，
-/// 记忆文件既不被读取也不被写入，编辑器中的 `# foo` 快速添加
-/// 回退到正常的轮次提交路径。
+/// Default is opt-in: when this table is absent or `enabled = false`, the
+/// memory file is neither read nor written, and `# foo` quick-adds in the
+/// composer fall through to the normal turn-submission path.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MemoryConfig {
-    /// 当为 `true` 时，将 `Config::memory_path()` 处的用户记忆文件
-    /// 作为 `<user_memory>` 块加载到系统提示中，并拦截
-    /// 编辑器中输入的 `# foo` 以追加到该文件。默认 `false`。
+    /// When `true`, load the user memory file at `Config::memory_path()`
+    /// into the system prompt as a `<user_memory>` block, and intercept
+    /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// 当为 `true` 时，弃用仓库内 `memory.rs` 的推送/注入路径
-    ///（`<user_memory>` 块 + `remember` 工具 + `# foo` 快速添加），
-    /// 转而使用 Moraine 通过其 MCP 工具的拉取/召回。即使
-    /// `enabled = true`，旧路径也会被跳过。默认 `false`。
+    /// When `true`, deprecate the in-repo `memory.rs` push/inject path
+    /// (`<user_memory>` block + `remember` tool + `# foo` quick-add) in
+    /// favor of Moraine pull/recall via its MCP tools. The old path is
+    /// skipped even when `enabled = true`. Default `false`.
     #[serde(default)]
     pub moraine_fallback: Option<bool>,
 }
 
-/// 小米 MiMo 语音/TTS 输出配置。
+/// Xiaomi MiMo speech/TTS output configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SpeechConfig {
-    /// 未提供明确输出路径时生成的语音/TTS 文件的默认目录。
+    /// Default directory for generated speech/TTS files when no explicit
+    /// output path is provided.
     #[serde(default)]
     pub output_dir: Option<String>,
 }
@@ -1441,84 +1460,87 @@ impl SnapshotsConfig {
     }
 }
 
-// 网络搜索 `[search]` 表类型位于 `search` 叶子模块中，并在下方
-// 重新导出，以便 `crate::config::SearchProvider`（及其同类）
-// 解析保持不变（#3311）。
+// Web-search `[search]` table types live in the `search` leaf module and are
+// re-exported below so `crate::config::SearchProvider` (and siblings) resolve
+// unchanged (#3311).
 mod search;
 pub use search::*;
 
-/// 模型可见的工具目录控制（config.toml 中的 `[tools]` 表）。
+/// Model-visible tool catalog controls (`[tools]` table in config.toml).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ToolsConfig {
-    /// 即使在小默认核心目录之外也保持加载的原生工具名称。
-    /// 未知名称无害，只是永远不会匹配。
+    /// Native tool names to keep loaded even when they are outside the small
+    /// default core catalog. Unknown names are harmless and simply never match.
     #[serde(default)]
     pub always_load: Vec<String>,
 
-    /// 可选目录，用于扫描插件工具脚本。带有前置元数据头部
-    ///（`# name:`、`# description:`、`# schema:`）的脚本会被
-    /// 自动发现并注册为工具。
+    /// Optional directory to scan for plugin tool scripts. Scripts with a
+    /// frontmatter header (`# name:`, `# description:`, `# schema:`) are
+    /// auto-discovered and registered as tools.
     ///
-    /// 当为 `None` 时，默认为 `~/.codewhale/tools/`。
+    /// Defaults to `~/.codewhale/tools/` when `None`.
     #[serde(default)]
     pub plugin_dir: Option<String>,
 
-    /// 以内置工具名称为键的按工具覆盖。
-    /// 每个覆盖替换或禁用命名的工具。
+    /// Per-tool overrides keyed by built-in tool name.
+    /// Each override replaces or disables the named tool.
     #[serde(default)]
     pub overrides: Option<HashMap<String, ToolOverride>>,
 }
 
-/// 一个可配置的页脚项目。
+/// One configurable footer item.
 ///
-/// 用户在 `Vec<StatusItem>` 中的顺序被保留：左侧集群
-///（`Mode`、`Model`、`Cost`、`Status`）按给定顺序渲染；
-/// 右侧集群标签（`Agents`、`ReasoningReplay`、`PrefixStability`、
-/// `Cache`、`ContextPercent`、`GitBranch`、`LastToolElapsed`、`RateLimit`）
-/// 同样遵循其集群内的顺序。左右分割是刻意的——左侧持有稳定的
-/// 标识（模式/模型/成本），右侧持有瞬态信号——因此我们将每个变体
-/// 路由到正确的一侧，而不是让用户在间隔符之间重新排序。
+/// Order in the user's `Vec<StatusItem>` is preserved: items in the left
+/// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
+/// right-cluster chips (`Agents`, `ReasoningReplay`, `PrefixStability`,
+/// `Cache`, `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`)
+/// likewise honour ordering inside their cluster. The split between left and right is deliberate — left holds steady
+/// identity (mode/model/cost), right holds transient signals — so we route
+/// each variant to the correct side rather than letting users reorder across
+/// the spacer.
 ///
-/// 没有当前数据源的变体（`RateLimit`、`LastToolElapsed`）
-/// 今天被有意暴露，以便选择器向前兼容；它们在支持字段落地之前
-/// 渲染为空。空的跨度不占用页脚宽度，因此用户看不到视觉伪影。
+/// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
+/// are intentionally exposed today so the picker is forward-compatible; they
+/// render empty until the supporting fields land. Empty spans don't take
+/// up footer width, so the user sees no visual artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusItem {
-    /// "agent" / "yolo" / "plan" 标签。
+    /// "agent" / "yolo" / "plan" chip.
     Mode,
-    /// 模型标识符（例如 `deepseek-v4-pro`）。
+    /// Model identifier (e.g. `deepseek-v4-pro`).
     Model,
-    /// 会话成本，以配置的显示货币计。
+    /// Session cost in the configured display currency.
     Cost,
-    /// 活动标签："idle" / "busy" / "draft" / "working"。
+    /// Activity label: "idle" / "busy" / "draft" / "working".
     Status,
-    /// 子代理计数标签（"3 agents"）。
+    /// Sub-agent count chip ("3 agents").
     Agents,
-    /// 推理回放 token 数（"rsn 12.3k"）。
+    /// Reasoning-replay token count ("rsn 12.3k").
     ReasoningReplay,
-    /// 前缀稳定性（"cache prefix 100%"）。
+    /// Prefix stability ("cache prefix 100%").
     PrefixStability,
-    /// 缓存命中率（"cache 73%"）。
+    /// Cache hit rate ("cache 73%").
     Cache,
-    /// 上下文窗口使用百分比（"48%"）。
+    /// Context-window utilisation percent ("48%").
     ContextPercent,
-    /// 当前 git 分支名称。
+    /// Current git branch name.
     GitBranch,
-    /// 最近一次工具调用的经过时间（占位符，直到接入）。
+    /// Elapsed time of the most recent tool call (placeholder until wired).
     LastToolElapsed,
-    /// 剩余速率限制预算（占位符，直到接入）。
+    /// Remaining rate-limit budget (placeholder until wired).
     RateLimit,
-    /// 会话 token 用量：输入 / 缓存命中 / 输出。
+    /// Session token usage: input / cache-hit / output.
     Tokens,
-    /// DeepSeek 账户余额，每次轮次完成时刷新。
+    /// DeepSeek account balance, refreshed once per turn completion.
     Balance,
 }
 
 impl StatusItem {
-    /// 始终在线的状态行的默认页脚组合。当 `config.toml` 中缺少
-    /// `tui.status_items` 时使用，以便升级者默认看到简洁的页脚；
-    /// 诊断标签仍然可通过 `/statusline` 使用，而不会拥挤主 UI。
+    /// Default footer composition for the always-on status line. Used when
+    /// `tui.status_items` is missing from `config.toml` so upgraders see a
+    /// concise footer by default; diagnostic chips remain available via
+    /// `/statusline` without crowding the main UI.
     #[must_use]
     pub fn default_footer() -> Vec<StatusItem> {
         vec![
@@ -1534,7 +1556,7 @@ impl StatusItem {
         ]
     }
 
-    /// 在 TOML 和选择器标签中使用的稳定规范名称。
+    /// Stable canonical name used in TOML and the picker label.
     #[must_use]
     pub fn key(self) -> &'static str {
         match self {
@@ -1555,9 +1577,9 @@ impl StatusItem {
         }
     }
 
-    /// [`key`](Self::key) 的逆操作：将配置字符串解析回变体。
-    /// 对未知键返回 `None`，以便配置解析器可以静默跳过
-    /// 新版本添加的项目，而不是以"未知变体"崩溃。
+    /// Reverse of [`key`](Self::key): parse a config string back to a variant.
+    /// Returns `None` for unknown keys so the config parser can silently skip
+    /// items added by newer versions rather than crashing with "unknown variant".
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
@@ -1579,7 +1601,7 @@ impl StatusItem {
         }
     }
 
-    /// 选择器的人类可读标签。
+    /// Human-readable label for the picker.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -1600,8 +1622,8 @@ impl StatusItem {
         }
     }
 
-    /// 标签旁显示的单行提示，以便用户了解每个项目显示什么内容，
-    /// 而无需先打开它。
+    /// One-line hint shown beside the label so the user knows what each item
+    /// surfaces without having to toggle it on first.
     #[must_use]
     pub fn hint(self) -> &'static str {
         match self {
@@ -1622,7 +1644,7 @@ impl StatusItem {
         }
     }
 
-    /// 按显示顺序排列的每个变体——选择器用于枚举行。
+    /// Every variant in display order — used by the picker to enumerate rows.
     #[must_use]
     pub fn all() -> &'static [StatusItem] {
         &[
@@ -1643,7 +1665,7 @@ impl StatusItem {
         ]
     }
 
-    /// 属于页脚左侧集群（稳定标识）的项目。
+    /// Items that belong in the footer's left cluster (steady identity).
     #[must_use]
     pub fn is_left_cluster(self) -> bool {
         matches!(
@@ -1656,8 +1678,9 @@ impl StatusItem {
         )
     }
 
-    /// 此项目是否对 `provider` 相关。提供商特定的项目对不支持
-    /// 的提供商返回 `false`，以便选择器不提供永远无法显示有用数据的开关。
+    /// Whether this item is relevant for `provider`.  Provider-specific
+    /// items return `false` for unsupported providers so the picker doesn't
+    /// offer toggles that can never show useful data.
     #[must_use]
     pub fn is_available_for(self, provider: ApiProvider) -> bool {
         match self {
@@ -1669,7 +1692,7 @@ impl StatusItem {
     }
 }
 
-/// 已解析的重试策略，应用了默认值。
+/// Resolved retry policy with defaults applied.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub enabled: bool,
@@ -1680,52 +1703,53 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// 计算重试尝试的回退延迟。
+    /// Compute the backoff delay for a retry attempt.
     #[must_use]
     #[allow(dead_code)] // used by runtime_api; will be wired into client retry loop
     pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let delay = self.initial_delay * self.exponential_base.powi(exponent);
         let delay = delay.min(self.max_delay);
-        // 限制在合理范围内，防止错误配置值导致的 NaN/负数
+        // Clamp to a sane range to guard against NaN/negative from misconfigured values
         let delay = delay.clamp(0.0, 300.0);
         std::time::Duration::from_secs_f64(delay)
     }
 }
 
-/// 上下文管理配置（仅追加的分层上下文，带有 Flash 接缝）。
+/// Context management configuration (append-only layered context with Flash seams).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ContextConfig {
-    /// 分层上下文管理的主开关。默认：在 v0.7.5 审计 V4 前缀缓存行为期间为 false。
+    /// Master enable for layered context management. Default: false while
+    /// v0.7.5 audits V4 prefix-cache behavior.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// 在稳定提示前缀中包含确定性的项目上下文包。默认：true；
-    /// 设置 `[context] project_pack = false` 以禁用。
+    /// Include a deterministic project context pack in the stable prompt
+    /// prefix. Default: true; set `[context] project_pack = false` to disable.
     #[serde(default)]
     pub project_pack: Option<bool>,
-    /// 逐字窗口：最后 N 轮永远不会被总结。默认：16。
+    /// Verbatim window: last N turns never summarized. Default: 16.
     #[serde(default)]
     pub verbatim_window_turns: Option<usize>,
-    /// 基于活跃请求输入估计的软接缝阈值。
+    /// Soft seam thresholds based on the active request input estimate.
     #[serde(default)]
     pub l1_threshold: Option<usize>,
     #[serde(default)]
     pub l2_threshold: Option<usize>,
     #[serde(default)]
     pub l3_threshold: Option<usize>,
-    /// 用于接缝/简报工作的模型。默认："deepseek-v4-flash"。
+    /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
     #[serde(default)]
     pub seam_model: Option<String>,
 }
 
-/// 子代理模型覆盖。`models` 中的键可以是角色名称（`worker`、
-/// `explorer`、`awaiter`）或类型名称（`general`、`explore`、`plan`、
-/// `review`、`custom`）。每次调用显式选择的模型仍然优先。
+/// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
+/// `explorer`, `awaiter`) or type names (`general`, `explore`, `plan`,
+/// `review`, `custom`). Per-call explicit model choices still win.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentsConfig {
-    /// 面向模型的 `agent` 工具的顶级开关。`None` 保留
-    /// 特性标志默认值；`false` 隐藏/拒绝子代理生成，
-    /// 而不更改数值队列/深度旋钮。
+    /// Top-level switch for the model-facing `agent` tool. `None` preserves
+    /// the feature-flag default; `false` hides/refuses sub-agent spawning
+    /// without changing the numeric queue/depth knobs.
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -1742,63 +1766,64 @@ pub struct SubagentsConfig {
     pub custom_model: Option<String>,
     #[serde(default)]
     pub models: Option<HashMap<String, String>>,
-    /// 最大并发子代理数。覆盖顶级 max_subagents 设置。
-    /// 限制在 [1, MAX_SUBAGENTS]。
+    /// Maximum concurrent sub-agents. Overrides the top-level max_subagents
+    /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
-    /// 交互式 `agent` 工具可以生成的嵌套子代理的层数。
-    /// `0` 在此运行时深度阻止面向模型的 `agent` 工具；
-    /// 使用 `[subagents] enabled = false` 作为更清晰的持久关闭开关。
-    /// `1` 允许一层，`2` 两层，以此类推。未设置时，默认为
-    /// [`codewhale_config::DEFAULT_SPAWN_DEPTH`]；任何值都被限制在
-    /// [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`]。Fleet 工作者
-    /// 由 `[fleet.exec] max_spawn_depth` 分别管理；两者共享相同的
-    /// 默认值和上限，因此限制不会漂移。
+    /// How many levels of nested sub-agents the interactive `agent` tool may
+    /// spawn. `0` blocks the model-facing `agent` tool at this runtime depth;
+    /// use `[subagents] enabled = false` for the clearer durable off switch.
+    /// `1` allows one level, `2` two, and so on. When unset, defaults to
+    /// [`codewhale_config::DEFAULT_SPAWN_DEPTH`]; any value is clamped to
+    /// [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`]. Fleet workers are
+    /// governed separately by `[fleet.exec] max_spawn_depth`; both share the
+    /// same default and ceiling so the limit cannot drift.
     #[serde(default)]
     pub max_depth: Option<u32>,
-    /// 可同时执行的直接（深度 1）子代理数量，超过此数量后
-    /// 进一步的启动进入队列等待启动槽（#3095）。未设置时，
-    /// 默认为完整解析的 `max_subagents()`（无人工节流）；
-    /// 显式值限制在 [1, max_subagents]。
+    /// Number of direct (depth-1) sub-agents that may execute concurrently
+    /// before further launches queue for a launch slot (#3095). When unset,
+    /// defaults to the full resolved `max_subagents()` (no artificial
+    /// throttle); explicit values are clamped to [1, max_subagents].
     #[serde(default)]
     pub launch_concurrency: Option<usize>,
-    /// 一个会话中允许的最大排队 + 运行中的子代理数。
-    /// 默认为一个有界的大队列，同时 `launch_concurrency` 保持
-    /// 即时执行有界。
+    /// Maximum queued + running sub-agents admitted for one session. Defaults
+    /// to a large bounded queue while `launch_concurrency` keeps instantaneous
+    /// execution bounded.
     #[serde(default, alias = "max_total", alias = "admission_limit")]
     pub max_admitted: Option<usize>,
-    /// 可选的聚合 token 预算，由根 `agent` 运行及其后代共享。
-    /// 未设置或为 0 时，子代理保持遗留的无限消费行为，
-    /// 除非单个 `agent` 调用提供每次运行的覆盖。
+    /// Optional aggregate token budget shared by a root `agent` run and its
+    /// descendants. When unset or 0, sub-agents keep legacy unlimited spend
+    /// behavior unless an individual `agent` call supplies a per-run override.
     #[serde(default)]
     pub token_budget: Option<u64>,
-    /// 已弃用的 pre-v0.8.61 `launch_concurrency` 别名。
-    /// 仅在 `launch_concurrency` 未设置时生效，因此新键始终优先。
+    /// Deprecated pre-v0.8.61 alias for `launch_concurrency`. Honored only
+    /// when `launch_concurrency` is unset, so the new key always wins.
     #[serde(default, rename = "interactive_max_launch")]
     pub interactive_max_launch_legacy: Option<usize>,
-    /// 子代理请求的每步 DeepSeek API 超时时间（秒）。
-    /// 该超时包裹 `client.create_message`，因此卡住的单步不能
-    /// 无限期占用父级的父完成唤醒通道。
-    /// 默认为 `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120)，并限制在
-    /// `MIN_SUBAGENT_API_TIMEOUT_SECS..=MAX_SUBAGENT_API_TIMEOUT_SECS`
-    /// (1..=1800)。零或未设置使用遗留的 120 秒默认值（#1806, #1808）。
+    /// Per-step DeepSeek API timeout for sub-agent requests, in seconds. The
+    /// timeout wraps `client.create_message` so a stuck single step cannot
+    /// pin the parent's parent-completion wakeup channel indefinitely.
+    /// Defaults to `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120) and is clamped
+    /// to `MIN_SUBAGENT_API_TIMEOUT_SECS..=MAX_SUBAGENT_API_TIMEOUT_SECS`
+    /// (1..=1800). Zero or unset uses the legacy 120s default (#1806, #1808).
     #[serde(default)]
     pub api_timeout_secs: Option<u64>,
-    /// 运行中的子代理停止做出管理器可见进展的挂钟超时。
-    /// 默认为 5 分钟，并保持高于每步 API 超时，
-    /// 以便缓慢但合法的模型调用不会在其请求超时触发之前被取消（#2614）。
+    /// Wall-clock timeout for a running sub-agent that stops making
+    /// manager-visible progress. Defaults to 5 minutes and is kept above the
+    /// per-step API timeout so slow but legitimate model calls are not
+    /// cancelled before their request timeout can fire (#2614).
     #[serde(default)]
     pub heartbeat_timeout_secs: Option<u64>,
-    /// 子代理扇出和预算旋钮的按提供商覆盖。
-    /// 键是提供商名称，如 `deepseek`、`zai`、`openrouter` 或 `anthropic`。
+    /// Per-provider overrides for sub-agent fanout and budget knobs. Keys are
+    /// provider names such as `deepseek`, `zai`, `openrouter`, or `anthropic`.
     #[serde(default)]
     pub providers: Option<HashMap<String, SubagentProviderConfig>>,
 }
 
-/// 提供商特定的子代理限制覆盖。
+/// Provider-specific sub-agent limit overrides.
 ///
-/// 每个字段在未设置时从 `[subagents]` 继承，
-/// 因此提供商配置文件可以仅收紧对该 API 速率限制重要的旋钮。
+/// Every field inherits from `[subagents]` when unset, so a provider profile
+/// can tighten only the knobs that matter for that API's rate limits.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentProviderConfig {
     #[serde(default)]
@@ -1819,11 +1844,12 @@ pub struct SubagentProviderConfig {
     pub heartbeat_timeout_secs: Option<u64>,
 }
 
-/// `[auto]` 表——`--model auto` / `/model auto` 路由器的旋钮。
+/// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
 ///
-/// `cost_saving`（#1207）：当为 `true` 时，自动模式路由器对模糊请求
-/// 偏好 `deepseek-v4-flash`，仅在任务明显受益于更深推理时才升级到
-/// `deepseek-v4-pro`。默认为 `false`（平衡——匹配现有路由风格）。
+/// `cost_saving` (#1207): when `true`, the auto-mode router prefers
+/// `deepseek-v4-flash` for ambiguous requests, only escalating to
+/// `deepseek-v4-pro` when the task clearly benefits from deeper reasoning.
+/// Default is `false` (balanced — match the existing routing voice).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AutoConfig {
     #[serde(default)]
@@ -1834,13 +1860,13 @@ fn default_update_check_for_updates() -> bool {
     true
 }
 
-/// 启动更新检查配置（config.toml 中的 `[update]` 表）。
+/// Startup update-check configuration (`[update]` table in config.toml).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct UpdateConfig {
-    /// 当为 false 时，完全跳过 TUI 启动后台更新检查。
+    /// When false, skip the TUI startup background update check entirely.
     #[serde(default = "default_update_check_for_updates")]
     pub check_for_updates: bool,
-    /// 可选的 GitHub 兼容的最新版本 JSON 端点。
+    /// Optional GitHub-compatible latest-release JSON endpoint.
     #[serde(default)]
     pub update_uri: Option<String>,
 }
@@ -1864,7 +1890,7 @@ impl UpdateConfig {
     }
 }
 
-/// 已解析的 CLI 配置，包括默认值和环境覆盖。
+/// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     pub provider: Option<String>,
@@ -1872,17 +1898,18 @@ pub struct Config {
     pub api_key: Option<String>,
     #[serde(alias = "baseUrl")]
     pub base_url: Option<String>,
-    /// 发送到模型 API 请求的可选额外 HTTP 头。
+    /// Optional extra HTTP headers sent to model API requests.
     #[serde(alias = "httpHeaders")]
     pub http_headers: Option<HashMap<String, String>>,
     #[serde(alias = "defaultTextModel")]
     pub default_text_model: Option<String>,
     #[serde(alias = "authMode")]
     pub auth_mode: Option<String>,
-    /// DeepSeek 推理努力级别：`"off" | "low" | "medium" | "high" | "max"`。
-    /// 运行时未设置时默认为 `"max"`。
+    /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
+    /// Defaults to `"max"` at runtime if unset.
     pub reasoning_effort: Option<String>,
-    /// 原生工具目录控制。此表控制内置工具加载策略。
+    /// Native tool catalog controls. This table controls built-in
+    /// tool loading policy.
     #[serde(default)]
     pub tools: Option<ToolsConfig>,
     pub skills_dir: Option<String>,
@@ -1891,20 +1918,21 @@ pub struct Config {
     pub mcp_oauth_callback_url: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
-    /// 当为 true 时，设置 `tool_choice: "required"` 并将兼容的函数
-    /// 模式加入 DeepSeek beta 严格模式。带有根替代的模式保持非严格，
-    /// 以避免更改可选/one-of 工具语义。
+    /// When true, set `tool_choice: "required"` and opt compatible function
+    /// schemas into DeepSeek beta strict mode. Schemas with root alternatives
+    /// stay non-strict to avoid changing optional/one-of tool semantics.
     pub strict_tool_mode: Option<bool>,
-    /// 额外的用户拥有的系统提示源，按声明顺序连接（#454）。
-    /// 路径通过 `expand_path` 展开，因此 `~` 和环境变量有效。
-    /// 项目范围配置不允许设置此字段；TUI 项目覆盖忽略 `instructions`，
-    /// 因此克隆的仓库不能选择任意本地文件放入提示中。
-    /// 每个配置的文件被加载，上限为 100 KiB，在读取错误时跳过
-    ///（带警告），因此缺失的可选文件不会导致启动失败。
+    /// Additional user-owned system-prompt sources concatenated in declared
+    /// order (#454). Paths are expanded via `expand_path` so `~` and env vars
+    /// work. Project-scope config is not allowed to set this field; the TUI
+    /// project overlay ignores `instructions` so a cloned repo cannot choose
+    /// arbitrary local files to place into the prompt. Each configured file is
+    /// loaded, capped at 100 KiB, and skipped (with a warning) on read errors so
+    /// a missing optional file doesn't fail the launch.
     pub instructions: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
-    /// 每次完成的轮次后的选择加入幽灵文本后续提示建议。
-    /// 默认：false——用户必须显式将其设为 true 才能启用。
+    /// Opt-in ghost-text follow-up prompt suggestion after each completed turn.
+    /// Default: false — the user must explicitly set this to true to enable.
     pub prompt_suggestion: Option<bool>,
     #[serde(alias = "approvalPolicy")]
     pub approval_policy: Option<String>,
@@ -1914,21 +1942,21 @@ pub struct Config {
     pub fallback_providers: Vec<codewhale_config::ProviderKind>,
     pub yolo: Option<bool>,
     pub verbosity: Option<String>,
-    /// 外部沙箱后端：`"none"` 或 `"opensandbox"`。
-    /// 设置后，exec_shell 通过后端的 HTTP API 路由命令，
-    /// 而不是生成本地进程。
+    /// External sandbox backend: `"none"` or `"opensandbox"`.
+    /// When set, exec_shell routes commands through the backend's HTTP API
+    /// instead of spawning a local process.
     #[serde(alias = "sandboxBackend")]
     pub sandbox_backend: Option<String>,
-    /// 外部沙箱后端的基础 URL（默认：`"http://localhost:8080"`）。
+    /// Base URL for the external sandbox backend (default: `"http://localhost:8080"`).
     #[serde(alias = "sandboxUrl")]
     pub sandbox_url: Option<String>,
-    /// 外部沙箱后端（作为 Bearer token 发送）的可选 API 密钥。
+    /// Optional API key for the external sandbox backend (sent as Bearer token).
     #[serde(alias = "sandboxApiKey")]
     pub sandbox_api_key: Option<String>,
-    /// 当为 true 且 Linux 上存在 `/usr/bin/bwrap` 时，通过 bubblewrap
-    /// 路由 exec_shell，而不是仅依赖 Landlock（#2184）。
-    /// 默认为 false。需要单独安装 `bubblewrap` 包——
-    /// 我们不内嵌 bwrap。
+    /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
+    /// through bubblewrap instead of relying solely on Landlock (#2184).
+    /// Defaults to false. Requires the `bubblewrap` package to be installed
+    /// separately — we do NOT vendor bwrap.
     #[serde(alias = "preferBwrap")]
     pub prefer_bwrap: Option<bool>,
     #[serde(alias = "managedConfigPath")]
@@ -1940,126 +1968,130 @@ pub struct Config {
     pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
 
-    /// 工具调用的确定性用户级自动审查策略。引擎在内置安全底线之后
-    /// 应用这些规则，因此配置不能绕过发布/破坏性后台保留。
+    /// Deterministic user-level auto-review policy for tool calls. The engine
+    /// applies these rules after built-in safety floors, so config cannot
+    /// bypass publish/destructive-background holds.
     #[serde(default)]
     pub auto_review: Option<AutoReviewConfig>,
 
-    /// TUI 配置（备用屏幕等）
+    /// TUI configuration (alternate screen, etc.)
     pub tui: Option<TuiConfig>,
 
-    /// 生命周期钩子配置
+    /// Lifecycle hooks configuration
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
 
-    /// 提供商特定的凭据和与 `codewhale` 外观共享的默认值。
+    /// Provider-specific credentials and defaults shared with the `codewhale` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
 
-    /// 桌面通知设置（长轮次完成时的 OSC 9 / BEL）。
+    /// Desktop notification settings (OSC 9 / BEL on long turn completion).
     #[serde(default)]
     pub notifications: Option<NotificationsConfig>,
 
-    /// 按域网络策略（#135）。不存在时，网络工具回退到
-    /// 反映 pre-v0.7.0 行为的宽松默认值。
+    /// Per-domain network policy (#135). When absent, network tools fall back
+    /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
 
-    /// 验证器预览行为（#2093）。不存在时，自动验证器预览保持关闭，
-    /// 验证器裁决使用 hunt 策略。
+    /// Verifier-preview behavior (#2093). When absent, automatic verifier
+    /// preview stays off and verifier verdicts use the hunt policy.
     #[serde(default)]
     pub verifier: Option<codewhale_config::VerifierConfigToml>,
 
-    /// 社区技能安装器设置（#140）。不存在时，安装器命令
-    /// 回退到捆绑的默认值
-    ///（[`crate::skills::install::DEFAULT_REGISTRY_URL`] +
-    /// [`crate::skills::install::DEFAULT_MAX_SIZE_BYTES`]）。
+    /// Community skill installer settings (#140). When absent, installer
+    /// commands fall back to the bundled defaults
+    /// ([`crate::skills::install::DEFAULT_REGISTRY_URL`] +
+    /// [`crate::skills::install::DEFAULT_MAX_SIZE_BYTES`]).
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
 
-    /// 工作区侧 git 快照（#137）。表不存在时默认为启用，保留 7 天。
+    /// Workspace side-git snapshots (#137). Defaults to enabled with 7-day
+    /// retention when the table is absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
 
-    /// 网络搜索提供商配置。不存在时，默认为 DuckDuckGo。
-    /// 将 `provider` 设置为另一个支持的后端，如 `bing`、`tavily`、
-    /// `bocha`、`metaso`、`searxng`、`baidu`、`volcengine` 或 `sofya`。
-    /// API 支持的服务需要提供商特定的凭据；SearXNG 需要一个受信任的 `base_url`。
+    /// Web search provider configuration. When absent, defaults to DuckDuckGo.
+    /// Set `provider` to another supported backend such as `bing`, `tavily`,
+    /// `bocha`, `metaso`, `searxng`, `baidu`, `volcengine`, or `sofya`.
+    /// API-backed services require provider-specific credentials; SearXNG
+    /// requires a trusted `base_url`.
     #[serde(default)]
     pub search: Option<SearchConfig>,
 
-    /// 用户级记忆文件（#489）。默认行为是**选择加入**：
-    /// 仅当 `[memory] enabled = true` 或设置了 `DEEPSEEK_MEMORY=on` 时
-    /// 才进行加载和注入。
+    /// User-level memory file (#489). Default behaviour is **opt-in**:
+    /// loading + injection happens only when `[memory] enabled = true` or
+    /// `DEEPSEEK_MEMORY=on` is set.
     ///
-    /// v0.8.66 弃用了此功能，转而支持 Moraine MCP 召回。设置
-    /// `[memory] moraine_fallback = true` 以跳过遗留的推送/注入路径，
-    /// 同时保留 Moraine 的拉取/召回工具。
+    /// v0.8.66 deprecates this in favour of Moraine MCP recall. Set
+    /// `[memory] moraine_fallback = true` to skip the legacy push/inject
+    /// path while keeping Moraine's pull/recall tools.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
 
-    /// 小米 MiMo 语音/TTS 默认值。
+    /// Xiaomi MiMo speech/TTS defaults.
     #[serde(default)]
     pub speech: Option<SpeechConfig>,
 
-    /// `--model auto`（#1207）的可调参数。不存在时，自动路由器
-    /// 保持其现有的平衡行为。
+    /// Tunables for `--model auto` (#1207). When absent, the auto router
+    /// keeps its existing balanced behaviour.
     #[serde(default)]
     pub auto: Option<AutoConfig>,
 
-    /// 可选的 1-8 快捷键栏位绑定（#2064）。不存在时，快捷键栏 UI
-    /// 和分发层使用 `codewhale_config` 中的内置默认值。
+    /// Optional 1-8 hotbar slot bindings (#2064). When absent, hotbar UI and
+    /// dispatch layers use the built-in defaults from `codewhale_config`.
     #[serde(default)]
     pub hotbar: Option<Vec<codewhale_config::HotbarBindingToml>>,
 
-    /// 启动更新检查行为。不存在时，TUI 保持默认的
-    /// 即发即弃的最新版本检查。
+    /// Startup update-check behavior. When absent, the TUI keeps the default
+    /// fire-and-forget latest-release check.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
 
-    /// 编辑后 LSP 诊断注入（#136）。不存在时，引擎应用
-    /// [`LspConfigToml`] 中记录的默认值。
+    /// Post-edit LSP diagnostics injection (#136). When absent, the engine
+    /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
 
-    /// 仅追加的分层上下文管理，带有 Flash 接缝管理器（#159）。
+    /// Append-only layered context management with Flash seam manager (#159).
     #[serde(default)]
     pub context: ContextConfig,
 
-    /// Agent Fleet 信任/安全/角色/执行配置。
+    /// Agent Fleet trust/security/role/exec config.
     #[serde(default)]
     pub fleet: Option<codewhale_config::FleetConfigToml>,
 
-    /// 工作流自动启动、审批、隔离和活动持久化旋钮（#4128）。
-    /// 不存在时，消费者通过 [`Self::workflow_config`] 使用
-    /// [`codewhale_config::WorkflowConfigToml::default`]。
+    /// Workflow automatic-launch, approval, isolation, and activity
+    /// persistence knobs (#4128). When absent, consumers use
+    /// [`codewhale_config::WorkflowConfigToml::default`] via
+    /// [`Self::workflow_config`].
     #[serde(default)]
     pub workflow: Option<codewhale_config::WorkflowConfigToml>,
 
-    /// 子代理模型覆盖。
+    /// Sub-agent model overrides.
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
-    /// 运行时 API 服务器调优（`codewhale serve --http`）。目前仅
-    /// 承载 CORS 允许列表扩展（whalescale#255 / #561）。当表不存在时，
-    /// 守护进程以 localhost:3000 / localhost:1420 / tauri://localhost
-    /// 作为唯一允许的开发来源。
+    /// Runtime API server tuning (`codewhale serve --http`). Currently only
+    /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
+    /// table is absent, the daemon ships with localhost:3000 / localhost:1420
+    /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
 
-    /// Workshop / 大型工具输出路由（#548）。不存在时，
-    /// 全局默认阈值 4096 token 生效，路由处于活动状态。
+    /// Workshop / large-tool-output routing (#548). When absent, the global
+    /// default threshold of 4 096 tokens applies and routing is active.
     #[serde(default)]
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
 
-    /// `image_analyze` 工具的视觉模型配置。
+    /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
 
-    /// 用于运行时检查的兄弟 `permissions.toml` 询问规则。
+    /// Sibling `permissions.toml` ask-rules compiled for runtime checks.
     ///
-    /// 这刻意不是 `config.toml` 的一部分；它在配置文件/环境/托管配置
-    /// 解析后从配套的权限文件加载。
+    /// This is deliberately not part of `config.toml`; it is loaded from the
+    /// companion permissions file after profile/env/managed config resolution.
     #[serde(skip)]
     pub exec_policy_engine: ExecPolicyEngine,
 }
@@ -2239,81 +2271,81 @@ fn parse_auto_review_action_kind(raw: &str) -> Option<crate::tui::auto_review::T
     }
 }
 
-/// 用户如何替换或禁用内置工具。
+/// How a user wants to replace or disable a built-in tool.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolOverride {
-    /// 运行本地脚本文件。脚本从标准输入接收工具的 JSON 输入，
-    /// 并且必须在标准输出上返回 JSON `ToolResult`。
+    /// Run a local script file. The script receives the tool's JSON input
+    /// on stdin and must return a JSON `ToolResult` on stdout.
     Script {
-        /// 脚本路径（绝对路径，或相对于 `~/.codewhale/tools/` 的路径）。
+        /// Path to the script (absolute, or relative to `~/.codewhale/tools/`).
         path: String,
-        /// 在工具的 JSON 输入之前预置的可选静态参数。
+        /// Optional static arguments prepended before the tool's JSON input.
         #[serde(default)]
         args: Option<Vec<String>>,
     },
-    /// 运行外部命令。命令从标准输入接收工具的 JSON 输入，
-    /// 并且必须在标准输出上返回 JSON `ToolResult`。
+    /// Run an external command. The command receives the tool's JSON input
+    /// on stdin and must return a JSON `ToolResult` on stdout.
     Command {
-        /// 要运行的命令（二进制名称或绝对路径）。
+        /// The command to run (binary name or absolute path).
         command: String,
-        /// 在工具的 JSON 输入之前预置的可选静态参数。
+        /// Optional static arguments prepended before the tool's JSON input.
         #[serde(default)]
         args: Option<Vec<String>>,
     },
-    /// 完全禁用内置工具。该工具不会出现在模型可见的目录中，
-    /// 也无法被调用。
+    /// Completely disable a built-in tool. The tool will not appear in the
+    /// model-visible catalog and cannot be called.
     Disabled,
 }
 
-/// `image_analyze` 工具的视觉模型配置。
-/// 使用 OpenAI 兼容的视觉模型 API。
+/// Vision model configuration for the `image_analyze` tool.
+/// Uses an OpenAI-compatible vision model API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionModelConfig {
-    /// 模型标识符（例如 "gemini-3.1-flash-lite-preview"）。
+    /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
     pub model: String,
-    /// 视觉模型的 API 密钥。如果未指定，则从主配置继承。
+    /// API key for the vision model. Inherits from main config if not specified.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// 视觉模型 API 的基础 URL。默认为 OpenAI。
+    /// Base URL for the vision model API. Defaults to OpenAI.
     #[serde(default)]
     pub base_url: Option<String>,
 }
 
-/// `[runtime_api]` 表——本地 HTTP/SSE 守护进程的旋钮。
+/// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RuntimeApiConfig {
-    /// 在内置默认值之上允许的额外 CORS 来源
-    ///（`http://localhost:{3000,1420}`、`http://127.0.0.1:{3000,1420}`、
-    /// `tauri://localhost`）。在针对非默认开发服务器端口
-    ///（例如 Vite 的默认 `:5173`）开发 UI 时很有用。
+    /// Additional CORS origins to allow on top of the built-in defaults
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
+    /// `tauri://localhost`). Useful when developing a UI against a non-default
+    /// dev server port (e.g. Vite's default `:5173`).
     ///
-    /// 解析顺序（最高优先级优先）：`--cors-origin` CLI 标志、
-    /// `DEEPSEEK_CORS_ORIGINS` 环境变量（逗号分隔）、此字段。Whalescale#255 / #561。
+    /// Resolution order (highest priority first): `--cors-origin` CLI flag,
+    /// `DEEPSEEK_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
     #[serde(default)]
     pub cors_origins: Option<Vec<String>>,
 }
 
-/// `[skills]` 表——社区技能安装器的旋钮。
+/// `[skills]` table — knobs for the community-skill installer.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SkillsConfig {
-    /// 精选注册索引。`/skill install <name>` 在此查找规格。
-    /// 默认为 [`crate::skills::install::DEFAULT_REGISTRY_URL`]。
+    /// Curated registry index. `/skill install <name>` looks up the spec here.
+    /// Defaults to [`crate::skills::install::DEFAULT_REGISTRY_URL`].
     #[serde(default)]
     pub registry_url: Option<String>,
-    /// 每个技能的*未压缩*最大大小（字节）。超过此限制的
-    /// tarball 在验证期间被拒绝。默认为 5 MiB。
+    /// Per-skill maximum *uncompressed* size in bytes. Tarballs that exceed
+    /// this limit are rejected during validation. Defaults to 5 MiB.
     #[serde(default)]
     pub max_install_size_bytes: Option<u64>,
-    /// 当为 true 时，技能发现仅扫描 CodeWhale 拥有的技能根目录
-    ///（加上任何显式的 `skills_dir`），而不是从其他 AI 工具
-    ///（如 Claude、OpenCode 或 Cursor）导入兼容的目录。
+    /// When true, skill discovery scans only CodeWhale-owned skill roots
+    /// (plus any explicit `skills_dir`) instead of importing compatible
+    /// directories from other AI tools such as Claude, OpenCode, or Cursor.
     #[serde(default, alias = "scanCodewhaleOnly")]
     pub scan_codewhale_only: Option<bool>,
 }
 
 impl SkillsConfig {
-    /// 使用捆绑的默认值解析注册表 URL。
+    /// Resolve the registry URL with the bundled default.
     #[must_use]
     pub fn registry_url(&self) -> String {
         self.registry_url
@@ -2321,42 +2353,43 @@ impl SkillsConfig {
             .unwrap_or_else(|| crate::skills::install::DEFAULT_REGISTRY_URL.to_string())
     }
 
-    /// 使用捆绑的默认值解析最大安装大小。
+    /// Resolve the max install size with the bundled default.
     #[must_use]
     pub fn max_install_size_bytes(&self) -> u64 {
         self.max_install_size_bytes
             .unwrap_or(crate::skills::install::DEFAULT_MAX_SIZE_BYTES)
     }
 
-    /// 解析会话时发现是否应忽略跨工具技能目录。
-    /// 默认为保持兼容性的广泛扫描。
+    /// Resolve whether session-time discovery should ignore cross-tool skill
+    /// directories. Defaults to the compatibility-preserving broad scan.
     #[must_use]
     pub fn scan_codewhale_only(&self) -> bool {
         self.scan_codewhale_only.unwrap_or(false)
     }
 }
 
-/// `[network]` 表——镜像 `codewhale_config::NetworkPolicyToml`，
-/// 以便实时 TUI 运行时可以构造 [`crate::network_policy::NetworkPolicy`]，
-/// 而无需深入 workspace config crate。文档请参见 `config.example.toml`。
+/// `[network]` table — mirrors `codewhale_config::NetworkPolicyToml` so the live
+/// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
+/// without reaching into the workspace config crate. See `config.example.toml`
+/// for documentation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkPolicyToml {
-    /// 不在 `allow` 或 `deny` 中的主机的决策。
-    /// `"allow" | "deny" | "prompt"` 之一。默认为 `"prompt"`。
+    /// Decision for hosts that are not in `allow` or `deny`. One of
+    /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
     #[serde(default = "default_network_decision")]
     pub default: String,
-    /// 始终允许的主机。子域规则：前导点（`.example.com`）
-    /// 匹配子域但不匹配顶域。
+    /// Hosts that are always allowed. Subdomain rules: a leading dot
+    /// (`.example.com`) matches subdomains but not the apex.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// 始终拒绝的主机。拒绝条目优先于允许条目。
+    /// Hosts that are always denied. Deny entries win over allow entries.
     #[serde(default)]
     pub deny: Vec<String>,
-    /// 其 DNS 可能在显式受信任的代理设置中解析为假 IP/私有代理范围的
-    /// 主机名。文字 IP URL 仍然被阻止。
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
     #[serde(default)]
     pub proxy: Vec<String>,
-    /// 是否每个出站网络调用记录一条审计日志。
+    /// Whether to record one audit-log line per outbound network call.
     #[serde(default = "default_network_audit")]
     pub audit: bool,
 }
@@ -2382,7 +2415,8 @@ impl Default for NetworkPolicyToml {
 }
 
 impl NetworkPolicyToml {
-    /// 从磁盘上的模式构建运行时 [`crate::network_policy::NetworkPolicy`]。
+    /// Build a runtime [`crate::network_policy::NetworkPolicy`] from the
+    /// on-disk schema.
     #[must_use]
     pub fn into_runtime(self) -> crate::network_policy::NetworkPolicy {
         crate::network_policy::NetworkPolicy {
@@ -2395,37 +2429,37 @@ impl NetworkPolicyToml {
     }
 }
 
-/// `[lsp]` 表——镜像 [`crate::lsp::LspConfig`]。在 `config.example.toml`
-/// 中有文档说明。省略时，应用 `LspConfig::default()` 的默认值
-///（启用、5 秒轮询、20 条诊断/文件、仅错误、无覆盖）。
+/// `[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in
+/// `config.example.toml`. When omitted, defaults from `LspConfig::default()`
+/// apply (enabled, 5 s poll, 20 diagnostics/file, errors only, no overrides).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LspConfigToml {
-    /// 主开关。默认为 `true`。
+    /// Master switch. Defaults to `true`.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// 在 `didOpen`/`didChange` 后等待 LSP 服务器发布诊断的时间。
-    /// 默认为 5000 ms。
+    /// How long to wait for the LSP server to publish diagnostics after a
+    /// `didOpen`/`didChange`. Defaults to 5000 ms.
     #[serde(default)]
     pub poll_after_edit_ms: Option<u64>,
-    /// 每个文件暴露的诊断上限。默认为 20。
+    /// Cap on diagnostics surfaced per file. Defaults to 20.
     #[serde(default)]
     pub max_diagnostics_per_file: Option<usize>,
-    /// 是否在错误之外还暴露警告。默认为 `false`。
+    /// Whether to surface warnings in addition to errors. Defaults to `false`.
     #[serde(default)]
     pub include_warnings: Option<bool>,
-    /// `Language -> [cmd, ...args]` 表的可选覆盖。
-    /// 键是语言标识（`"rust"`、`"go"` 等）。
+    /// Optional override for the `Language -> [cmd, ...args]` table. Keys
+    /// are language slugs (`"rust"`, `"go"`, etc.).
     #[serde(default)]
     pub servers: Option<HashMap<String, Vec<String>>>,
-    /// 为不在内置注册表中的文件扩展名定义的用户自定义 LSP 服务器。
-    /// 按键是扩展名（例如 `"php"`、`"rb"`）。
+    /// User-defined LSP servers for file extensions not in the built-in
+    /// registry. Keyed by extension (e.g. `"php"`, `"rb"`).
     #[serde(default)]
     pub custom: Option<HashMap<String, crate::lsp::CustomLspDef>>,
 }
 
 impl LspConfigToml {
-    /// 从磁盘上的模式构建运行时 [`crate::lsp::LspConfig`]，
-    /// 对任何未设置的字段回退到默认值。
+    /// Build a runtime [`crate::lsp::LspConfig`] from the on-disk schema,
+    /// falling back to defaults for any unset fields.
     #[must_use]
     pub fn into_runtime(self) -> crate::lsp::LspConfig {
         let defaults = crate::lsp::LspConfig::default();
@@ -2479,26 +2513,26 @@ pub struct ProviderConfig {
     )]
     pub max_concurrency: Option<usize>,
     pub auth: Option<codewhale_config::ProviderAuthSourceToml>,
-    /// 自定义 `[providers.<name>]` 条目的有线协议选择器（#1519）。
+    /// Wire-protocol selector for a custom `[providers.<name>]` entry (#1519).
     ///
-    /// 目前只接受 `"openai-compatible"`；任何其他值在
-    /// 选择时被拒绝，因此不支持的线格式大声失败，
-    /// 而非静默地作为 OpenAI 路由。内置提供商保留此字段未设置。
+    /// Only `"openai-compatible"` is accepted for now; any other value is
+    /// rejected at selection time so unsupported wire formats fail loudly rather
+    /// than silently routing as OpenAI. Built-in providers leave this unset.
     #[serde(default)]
     pub kind: Option<String>,
-    /// 保存此自定义提供商的 API 密钥的环境变量名称（#1519），
-    /// 例如 `api_key_env = "EXAMPLE_API_KEY"`。密钥值本身
-    /// 永远不会存储在配置中；只有环境变量名称被存储。
+    /// Name of the environment variable holding this custom provider's API key
+    /// (#1519), e.g. `api_key_env = "EXAMPLE_API_KEY"`. The key value itself is
+    /// never stored in config; only the env var name is.
     #[serde(default, alias = "apiKeyEnv")]
     pub api_key_env: Option<String>,
 }
 
 impl ProviderConfig {
-    /// 当此条目选择 OpenAI 兼容的自定义有线协议时为 true。
+    /// True when this entry selects the OpenAI-compatible custom wire protocol.
     ///
-    /// `kind` 不区分大小写地与 `openai-compatible`（以及
-    /// `openai_compatible` 下划线拼写）匹配。当 `kind` 未设置
-    ///（内置提供商）或命名任何其他值时返回 `false`。
+    /// `kind` is matched case-insensitively against `openai-compatible` (and the
+    /// `openai_compatible` underscore spelling). Returns `false` when `kind` is
+    /// unset (built-in providers) or names any other value.
     #[must_use]
     pub fn is_openai_compatible_custom(&self) -> bool {
         self.kind.as_deref().is_some_and(|kind| {
@@ -2623,18 +2657,19 @@ pub struct ProvidersConfig {
     pub meta: ProviderConfig,
     #[serde(default, alias = "x-ai", alias = "x_ai", alias = "grok")]
     pub xai: ProviderConfig,
-    /// 任意用户命名的自定义提供商（#1519）。
+    /// Arbitrary user-named custom providers (#1519).
     ///
-    /// 捕获每个键不是上述内置提供商之一的 `[providers.<name>]` 表。
-    /// 每个条目是通过 `provider = "<name>"` 选择的 OpenAI 兼容自定义
-    /// 端点；路由通过 [`ApiProvider::Custom`] 读取其 `base_url` / `model` / `api_key_env`。
+    /// Captures every `[providers.<name>]` table whose key is not one of the
+    /// built-in providers above. Each entry is an OpenAI-compatible custom
+    /// endpoint selected via `provider = "<name>"`; routing reads its
+    /// `base_url` / `model` / `api_key_env` through [`ApiProvider::Custom`].
     #[serde(flatten, default)]
     pub custom: HashMap<String, ProviderConfig>,
 }
 
 impl ProvidersConfig {
-    /// 通过 `[providers.<name>]` 键查找用户定义的自定义提供商表（#1519）。
-    /// 当没有该确切名称的条目时返回 `None`。
+    /// Look up a user-defined custom provider table by its `[providers.<name>]`
+    /// key (#1519). Returns `None` when no entry with that exact name exists.
     #[must_use]
     pub fn custom_provider_config(&self, name: &str) -> Option<&ProviderConfig> {
         self.custom.get(name)
@@ -2707,7 +2742,7 @@ struct RequirementsFile {
     allowed_sandbox_modes: Vec<String>,
 }
 
-// === 配置加载 ===
+// === Config Loading ===
 
 impl Config {
     #[must_use]
@@ -2739,10 +2774,10 @@ impl Config {
         self.search_provider_resolution().provider
     }
 
-    /// 如果设置了 `[auto] cost_saving = true` 选择加入则返回 `true`（#1207）。
-    /// 当为 true 时，自动模式路由器对模糊请求偏向
-    /// `deepseek-v4-flash`，而不是升级到 `deepseek-v4-pro`。
-    /// 默认：`false`（平衡行为）。
+    /// Return `true` if the `[auto] cost_saving = true` opt-in is set
+    /// (#1207). When true, the auto-mode router biases toward
+    /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
+    /// `deepseek-v4-pro`. Default: `false` (balanced behaviour).
     #[must_use]
     pub fn auto_cost_saving(&self) -> bool {
         self.auto
@@ -2775,9 +2810,9 @@ impl Config {
             .unwrap_or_default()
     }
 
-    /// 从磁盘加载配置并与环境覆盖合并。
+    /// Load configuration from disk and merge with environment overrides.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```ignore
     /// # use crate::config::Config;
@@ -2835,9 +2870,9 @@ impl Config {
         {
             return;
         }
-        // 仅当按提供商的表没有显式的 `base_url` 时才警告，
-        // 因为如果有，按提供商的值优先，根字段只是死配置——
-        // 没有行为上的意外。
+        // Only warn if the per-provider table doesn't have an explicit
+        // `base_url`, because if it does, the per-provider one wins and the
+        // root field is just dead config — no behavior surprise.
         let has_provider_base = self
             .provider_config_for(provider)
             .and_then(|p| p.base_url.as_deref().map(str::trim))
@@ -2855,7 +2890,7 @@ impl Config {
         );
     }
 
-    /// 验证关键配置字段是否存在。
+    /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
         if let Some(provider) = self.provider.as_deref()
             && ApiProvider::parse(provider).is_none()
@@ -2944,10 +2979,10 @@ impl Config {
         if let Some(provider) = self.provider.as_deref().and_then(ApiProvider::parse) {
             return provider;
         }
-        // #1519 安全修复：当 `provider = "<name>"` 不是内置提供商
-        // 但命名了一个 `[providers.<name>]` 自定义表时，作为动态
-        // 自定义标识路由。这必须在下面的 DeepSeek 回退之前，
-        // 以便任意自定义名称永远不会静默错误路由到 DeepSeek。
+        // #1519 safety fix: when `provider = "<name>"` is not a built-in provider
+        // but names a `[providers.<name>]` custom table, route as the dynamic
+        // custom identity. This MUST precede the DeepSeek fallback below so an
+        // arbitrary custom name can never silently misroute to DeepSeek.
         if let Some(name) = self.provider.as_deref()
             && self
                 .providers
@@ -2972,10 +3007,10 @@ impl Config {
 
     pub(crate) fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
         let providers = self.providers.as_ref()?;
-        // 自定义提供商的配置存在于扁平映射中，键是选定的
-        // `provider = "<name>"` 值，而不是在固定字段中（#1519）。
-        // 按名称解析它，以便每个现有读取器（auth、headers、base_url）
-        // 透明地看到命名的表。
+        // The custom provider's config lives in the flatten map, keyed by the
+        // selected `provider = "<name>"` value, not in a fixed field (#1519).
+        // Resolve it by name so every existing reader (auth, headers, base_url)
+        // transparently sees the named table.
         if provider == ApiProvider::Custom {
             return self
                 .provider
@@ -3016,7 +3051,7 @@ impl Config {
             ApiProvider::LongCat => &providers.longcat,
             ApiProvider::Meta => &providers.meta,
             ApiProvider::Xai => &providers.xai,
-            // 由上面按名称键的提前返回处理（#1519）。
+            // Handled by the name-keyed early return above (#1519).
             ApiProvider::Custom => unreachable!("custom provider resolved by name above"),
         })
     }
@@ -3032,9 +3067,10 @@ impl Config {
     }
 
     pub(crate) fn provider_config_for_mut(&mut self, provider: ApiProvider) -> &mut ProviderConfig {
-        // 自定义提供商的可变槽位键是扁平映射中选定的
-        // `provider = "<name>"` 值（#1519）。在可变借用 `providers` 之前
-        // 捕获名称；回退到私有哨兵键，以便在未设置名称时访问器保持完整。
+        // The custom provider's mutable slot is keyed by the selected
+        // `provider = "<name>"` value in the flatten map (#1519). Capture the
+        // name before borrowing `providers` mutably; fall back to a private
+        // sentinel key so the accessor stays total when no name is set.
         let custom_key = (provider == ApiProvider::Custom).then(|| {
             self.provider
                 .clone()
@@ -3078,18 +3114,19 @@ impl Config {
             ApiProvider::LongCat => &mut providers.longcat,
             ApiProvider::Meta => &mut providers.meta,
             ApiProvider::Xai => &mut providers.xai,
-            // 由上面按名称键的提前返回处理（#1519）。
+            // Handled by the name-keyed early return above (#1519).
             ApiProvider::Custom => unreachable!("custom provider resolved by name above"),
         }
     }
 
-    /// 返回已配置的提供商请求并发上限。
+    /// Return the configured provider request concurrency cap.
     ///
-    /// `None` 意味着客户端不应用额外的进行中请求信号量。
-    /// Z.ai/GLM 获得保守的默认值，因为其 SSE 端点在持续并行流打开时
-    /// 超时，远低于宣传的服务并发数（#3496）。操作员可以通过
-    /// `[providers.zai] max_concurrency = N` 提高它；`0` 显式禁用
-    /// 该提供商的客户端上限。
+    /// `None` means the client does not apply an extra in-flight request
+    /// semaphore. Z.ai/GLM gets a conservative default because its SSE endpoint
+    /// times out under sustained parallel stream opens well below the advertised
+    /// service concurrency (#3496). Operators can raise it with
+    /// `[providers.zai] max_concurrency = N`; `0` explicitly disables the
+    /// client-side cap for that provider.
     #[must_use]
     pub fn provider_max_concurrency(&self, provider: ApiProvider) -> Option<usize> {
         let configured = self
@@ -3179,21 +3216,23 @@ impl Config {
             if let Some(normalized) = normalize_model_for_provider(provider, model) {
                 return normalized;
             }
-            // 一个显式的提供商范围的模型，不是已识别的 DeepSeek 别名，
-            // 是针对非 DeepSeek 提供商（例如 OpenAI 兼容端点上的
-            // `MiniMax-M2.7`）的刻意自定义选择。
-            // 它必须按原样传递，而不是回退到 DeepSeek/提供商默认值（问题 #1714）。
+            // An explicit provider-scoped model that is not a recognized
+            // DeepSeek alias is a deliberate custom choice for a non-DeepSeek
+            // provider (e.g. `MiniMax-M2.7` on an OpenAI-compatible endpoint).
+            // It must pass through verbatim rather than fall back to a
+            // DeepSeek/provider default (issue #1714).
             if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
                 && !model.is_empty()
             {
                 return model.to_string();
             }
         }
-        // Codex Responses 后端仅服务自己的模型系列，全局的
-        // `default_text_model` 被验证限制为 DeepSeek ID 或 "auto"——
-        // 因此它永远不能命名 Codex 兼容的模型。在此回退到 Codex 默认值，
-        // 而不是让 DeepSeek 默认值泄露并被后端拒绝。显式的
-        // `[providers.openai_codex] model` 由上面的块处理。
+        // The Codex Responses backend only serves its own model family, and a
+        // global `default_text_model` is constrained to DeepSeek IDs or "auto"
+        // by validation — so it can never name a Codex-compatible model. Fall
+        // back to the Codex default here instead of letting a DeepSeek default
+        // leak through and be rejected by the backend. An explicit
+        // `[providers.openai_codex] model` is honored by the block above.
         if provider == ApiProvider::OpenaiCodex {
             return DEFAULT_OPENAI_CODEX_MODEL.to_string();
         }
@@ -3279,16 +3318,16 @@ impl Config {
         .to_string()
     }
 
-    /// 返回已配置的 API 基础 URL（已规范化）。
+    /// Return the configured API base URL (normalized).
     #[must_use]
     pub fn deepseek_base_url(&self) -> String {
         let provider = self.api_provider();
         let provider_base = self
             .provider_config_string_with_runtime_fallback(provider, |entry| entry.base_url.clone());
-        // 根 `base_url` 是遗留的 DeepSeek 字段；只有 NvidiaNim 有一个
-        // 向后兼容检测（integrate.api.nvidia.com）。OpenRouter / Novita
-        // 在 v0.6.7 中添加，需要显式的 `[providers.<name>]` 条目或
-        // 相应的 `*_BASE_URL` 环境变量。
+        // Root `base_url` is the legacy DeepSeek field; only NvidiaNim has a
+        // back-compat sniff (integrate.api.nvidia.com). OpenRouter / Novita
+        // were added in v0.6.7 and require explicit `[providers.<name>]`
+        // entries or the corresponding `*_BASE_URL` env var.
         let root_base = match provider {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => self.base_url.clone(),
             ApiProvider::DeepseekAnthropic => None,
@@ -3326,8 +3365,8 @@ impl Config {
             | ApiProvider::LongCat
             | ApiProvider::Meta
             | ApiProvider::Xai
-            // Custom 从命名的 `[providers.<name>]` 表（通过 provider_base）
-            // 读取其 base_url，绝不从遗留的根字段读取。
+            // Custom reads its base_url from the named `[providers.<name>]`
+            // table (via provider_base), never from the legacy root field.
             | ApiProvider::Custom => None,
         };
         let configured_base_url = provider_base.or(root_base);
@@ -3413,22 +3452,26 @@ impl Config {
             || self.active_provider_preserves_custom_base_url_model()
     }
 
-    /// 读取 API 密钥。
+    /// Read the API key.
     ///
-    /// 优先级：**显式内存覆盖 → 提供商/根配置 → 环境**。
+    /// Precedence: **explicit in-memory override → provider/root config
+    /// → environment**.
     ///
-    /// 仅当用户显式设置了该字段时，内存中的 `self.api_key` 覆盖才被
-    /// 遵守（不是遗留的 `API_KEYRING_SENTINEL` 占位符，不是空白）。
+    /// The in-memory `self.api_key` override is only honored when the user
+    /// explicitly set the field (not the legacy `API_KEYRING_SENTINEL`
+    /// placeholder, not empty whitespace).
     pub fn deepseek_api_key(&self) -> Result<String> {
         let provider = self.api_provider();
 
-        // 0. DeepSeek 兼容性槽位。遗留的顶级 `api_key`
-        // 仅属于 DeepSeek；下面的提供商特定密钥必须对 NIM/OpenRouter 等
-        // 优先，以便过时的 DeepSeek 密钥不会被发送到其他地方。
+        // 0. DeepSeek compatibility slot. The legacy top-level `api_key`
+        // belongs to DeepSeek only; provider-specific keys below must win for
+        // NIM/OpenRouter/etc. so a stale DeepSeek key is not sent elsewhere.
         //
-        // 然而，当 CLI 分发器通过 `DEEPSEEK_API_KEY` 和分发器源标记
-        // 转发显式的 `--api-key` 时，该有意的覆盖必须优先于保存的根密钥。
-        // 这对于 DeepSeek 兼容的订阅端点至关重要，用户运行类似：
+        // However, when the CLI dispatcher forwards an explicit `--api-key`
+        // through `DEEPSEEK_API_KEY` with the dispatcher source marker, that
+        // intentional override must win over the saved root key. This is
+        // essential for DeepSeek-compatible subscription endpoints where the
+        // user runs something like:
         //   codewhale --provider deepseek --api-key ark-... --base-url ... --model auto
         if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
             && std::env::var("DEEPSEEK_API_KEY_SOURCE").as_deref() == Ok("cli")
@@ -3453,9 +3496,9 @@ impl Config {
             return kimi_cli_oauth_access_token();
         }
 
-        // xAI / Grok OAuth 复用 ~/.grok/auth.json（Grok CLI）或
-        // 以相同格式编写的设备码登录。由
-        // [providers.xai] auth_mode = "oauth" 激活（#4257 残留）。
+        // xAI / Grok OAuth reuses ~/.grok/auth.json (Grok CLI) or a device-code
+        // login written in the same shape. Activated by
+        // [providers.xai] auth_mode = "oauth" (#4257 residual).
         if provider == ApiProvider::Xai
             && self
                 .provider_config_for(provider)
@@ -3464,16 +3507,17 @@ impl Config {
             return crate::xai_oauth::get_access_token();
         }
 
-        // OpenAI Codex (ChatGPT) 复用现有的 Codex CLI OAuth 登录。
-        // 访问令牌存在于 ~/.codex/auth.json 中（按需刷新），
-        // 而不是存储的 API 密钥，因此在配置文件和环境槽位之前
-        // 解析它。显式环境覆盖在 `get_credentials` 内部处理。
+        // OpenAI Codex (ChatGPT) reuses the existing Codex CLI OAuth login.
+        // The access token lives in ~/.codex/auth.json (refreshed on demand)
+        // rather than a stored API key, so resolve it before the config-file
+        // and env slots. Explicit env overrides are handled inside
+        // `get_credentials`.
         if provider == ApiProvider::OpenaiCodex {
             return Ok(crate::oauth::get_credentials()?.access_token);
         }
 
-        // 1. 配置文件（提供商范围的槽位）。这有意优先于
-        // 环境变量，以便 `codewhale auth set` 修复过时的 shell 导出。
+        // 1. Config file (provider-scoped slot). This intentionally wins
+        // over ambient env so `codewhale auth set` fixes stale shell exports.
         if let Some(configured) = self
             .provider_config_string_with_runtime_fallback(provider, |entry| entry.api_key.clone())
             && !configured.trim().is_empty()
@@ -3481,10 +3525,11 @@ impl Config {
             return Ok(configured);
         }
 
-        // 1b. 自定义提供商（#1519）通过 `[providers.<name>] api_key_env = "..."`
-        // 为每个条目命名其认证环境变量。在通用环境步骤之前解析它，
-        // 因为自定义标识声明了没有内置环境变量。
-        // 环境变量名称从配置中读取；密钥值从进程环境中读取，永不持久化。
+        // 1b. Custom providers (#1519) name their auth env var per-entry via
+        // `[providers.<name>] api_key_env = "..."`. Resolve it before the
+        // generic env step, since the custom identity declares no built-in env
+        // var. The env var NAME is read from config; the secret value is read
+        // from the process environment and never persisted.
         if provider == ApiProvider::Custom
             && let Some(env_name) = self
                 .provider_config_for(provider)
@@ -3497,8 +3542,8 @@ impl Config {
             return Ok(value);
         }
 
-        // 2. 环境变量。不要在此查询平台凭据存储；
-        // 常规启动和医生检查必须保持无提示。
+        // 2. Environment variables. Do not query platform credential stores
+        // here; routine startup and doctor checks must stay prompt-free.
         if provider == ApiProvider::XiaomiMimo {
             let mode = self
                 .provider_config_for(provider)
@@ -3578,9 +3623,9 @@ impl Config {
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
             ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama => Ok(String::new()),
-            // 自定义 OpenAI 兼容端点（#1519）：密钥来自
-            // `[providers.<name>] api_key_env` 命名的环境变量。
-            // 如果我们到达这里，它未设置/为空（且端点不是回环）。
+            // Custom OpenAI-compatible endpoints (#1519): the key comes from the
+            // env var named by `[providers.<name>] api_key_env`. If we reached
+            // here it is unset/empty (and the endpoint is not loopback).
             ApiProvider::Custom => {
                 let provider_name = self.provider.as_deref().unwrap_or("<name>");
                 match self
@@ -3605,7 +3650,7 @@ impl Config {
         }
     }
 
-    /// 解析技能目录路径。
+    /// Resolve the skills directory path.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
         self.skills_dir
@@ -3615,7 +3660,7 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./skills"))
     }
 
-    /// 解析 MCP 配置路径。
+    /// Resolve the MCP config path.
     #[must_use]
     pub fn mcp_config_path(&self) -> PathBuf {
         self.mcp_config_path
@@ -3625,7 +3670,7 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./mcp.json"))
     }
 
-    /// 解析笔记文件路径。
+    /// Resolve the notes file path.
     #[must_use]
     pub fn notes_path(&self) -> PathBuf {
         self.notes_path
@@ -3635,7 +3680,7 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./notes.txt"))
     }
 
-    /// 解析记忆文件路径。
+    /// Resolve the memory file path.
     #[must_use]
     pub fn memory_path(&self) -> PathBuf {
         self.memory_path
@@ -3645,7 +3690,7 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./memory.md"))
     }
 
-    /// 解析默认语音/TTS 输出目录（如果已配置）。
+    /// Resolve the default speech/TTS output directory, if configured.
     #[must_use]
     pub fn speech_output_dir(&self) -> Option<PathBuf> {
         std::env::var("XIAOMI_MIMO_SPEECH_OUTPUT_DIR")
@@ -3665,10 +3710,10 @@ impl Config {
             })
     }
 
-    /// 解析已配置的 `instructions = [...]` 数组（#454）
-    /// 到绝对路径，按声明顺序。当未设置或所有条目在修剪后
-    /// 为空时为空。每个条目通过 `expand_path` 运行，
-    /// 因此 `~` 和环境变量被遵守。
+    /// Resolve the configured `instructions = [...]` array (#454)
+    /// to absolute paths, in declared order. Empty when unset or
+    /// when every entry is empty after trimming. Each entry runs
+    /// through `expand_path` so `~` and env vars are honoured.
     #[must_use]
     pub fn instructions_paths(&self) -> Vec<PathBuf> {
         self.instructions
@@ -3682,10 +3727,10 @@ impl Config {
             .collect()
     }
 
-    /// 用户记忆功能是否启用。默认是**关闭**，
-    /// 以保持未选择加入用户的零开销行为。
-    /// 当 `config.toml` 中的 `[memory] enabled = true` 或
-    /// 环境中设置了 `DEEPSEEK_MEMORY=on` 时翻转为 `true`。
+    /// Whether the user-memory feature is enabled. The default is **off**
+    /// to preserve zero-overhead behavior for users who haven't opted in.
+    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
+    /// `DEEPSEEK_MEMORY=on` is set in the environment.
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
         self.memory
@@ -3694,10 +3739,11 @@ impl Config {
             .unwrap_or(false)
     }
 
-    /// 遗留的 `memory.rs` 推送/注入路径是否已被弃用，转而支持
-    /// Moraine MCP 召回。当为 `true` 时，`<user_memory>` 块被跳过，
-    /// `remember` 工具不被注册，`# foo` 快速添加回退到正常轮次提交，
-    /// 即使 `memory_enabled()` 返回 `true`。默认 `false`。
+    /// Whether the legacy `memory.rs` push/inject path is deprecated in
+    /// favor of Moraine MCP recall. When `true`, the `<user_memory>`
+    /// block is skipped, the `remember` tool is not registered, and
+    /// `# foo` quick-add falls through to normal turn submission, even
+    /// when `memory_enabled()` returns `true`. Default `false`.
     #[must_use]
     pub fn moraine_fallback(&self) -> bool {
         self.memory
@@ -3706,7 +3752,7 @@ impl Config {
             .unwrap_or(false)
     }
 
-    /// 返回已配置的视觉模型配置，从主配置继承 api_key。
+    /// Return the configured vision model config, inheriting api_key from main config.
     #[must_use]
     pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
         let mut config = self.vision_model.clone()?;
@@ -3721,50 +3767,53 @@ impl Config {
         self.context.project_pack.unwrap_or(true)
     }
 
-    /// 返回是否允许非交互式和持久任务配置文件的 shell 执行。
-    /// 默认为 `false`：在无头、应用服务器和后台任务上下文中没有人类
-    /// 来批准命令，因此 shell 访问必须显式选择加入（GHSA-72w5-pf8h-xfp4）。
+    /// Return whether shell execution is allowed for noninteractive and
+    /// durable-task profiles. Defaults to `false`: in headless, app-server, and
+    /// background-task contexts there is no human to approve commands, so shell
+    /// access must be opted into explicitly (GHSA-72w5-pf8h-xfp4).
     #[must_use]
     pub fn allow_shell(&self) -> bool {
         self.allow_shell.unwrap_or(false)
     }
 
-    /// 返回是否允许*交互式* TUI Agent 会话的 shell 执行。
-    /// 默认为 `true`：交互式编辑器始终在每个 shell 命令后设置审批提示，
-    /// 因此目录可以默认暴露 shell，同时仍保留同意（GHSA-72w5-pf8h-xfp4）。
-    /// 显式的 `allow_shell = false` 仍然隐藏 shell 工具。
-    /// 这是交互式默认值的唯一真相来源；启动（`run_interactive`）和
-    /// 持久 Agent 权限基线都读取它，因此默认值不会在它们之间漂移。
+    /// Return whether shell execution is allowed for an *interactive* TUI Agent
+    /// session. Defaults to `true`: the interactive composer always gates each
+    /// shell command behind an approval prompt, so the catalog can expose shell
+    /// by default while still preserving consent (GHSA-72w5-pf8h-xfp4). An
+    /// explicit `allow_shell = false` still hides shell tools. This is the
+    /// single source of truth for the interactive default; both startup
+    /// (`run_interactive`) and the durable Agent permission baseline read it so
+    /// the default cannot drift between them.
     #[must_use]
     pub fn interactive_allow_shell(&self) -> bool {
         self.allow_shell.unwrap_or(true)
     }
 
-    /// 是否启用幽灵文本提示建议（选择加入，默认关闭）。
+    /// Whether ghost-text prompt suggestion is enabled (opt-in, default off).
     pub fn prompt_suggestion_enabled(&self) -> bool {
         self.prompt_suggestion.unwrap_or(false)
     }
 
-    /// 返回最大并发子代理数。
-    /// 先检查 `[subagents] max_concurrent`，然后是顶级 `max_subagents`，
-    /// 然后回退到 `DEFAULT_MAX_SUBAGENTS`。
+    /// Return the maximum number of concurrent sub-agents.
+    /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
+    /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
     #[must_use]
     pub fn max_subagents(&self) -> usize {
-        // 先检查 [subagents] max_concurrent
+        // Check [subagents] max_concurrent first
         if let Some(subagents_cfg) = self.subagents.as_ref()
             && let Some(max) = subagents_cfg.max_concurrent
         {
             return max.clamp(1, MAX_SUBAGENTS);
         }
-        // 回退到顶级 max_subagents
+        // Fall back to top-level max_subagents
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
     }
 
-    /// 返回提供商特定的最大并发子代理数。
-    /// `[subagents.providers.<provider>] max_concurrent` 在未设置时
-    /// 从全局 `[subagents]` 值继承。
+    /// Return the provider-specific maximum number of concurrent sub-agents.
+    /// `[subagents.providers.<provider>] max_concurrent` inherits from the
+    /// global `[subagents]` value when unset.
     #[must_use]
     pub fn max_subagents_for_provider(&self, provider: ApiProvider) -> usize {
         self.subagent_provider_config(provider)
@@ -3773,15 +3822,16 @@ impl Config {
             .unwrap_or_else(|| self.max_subagents())
     }
 
-    /// 在应用特性标志、显式的 `[subagents] enabled` 开关和遗留的
-    /// 零值选择退出后，面向模型的 `agent` 工具是否可用。
+    /// Whether the model-facing `agent` tool is available after applying the
+    /// feature flag, explicit `[subagents] enabled` switch, and legacy
+    /// zero-valued opt-outs.
     #[must_use]
     pub fn subagents_enabled(&self) -> bool {
         self.subagents_disabled_reason().is_none()
     }
 
-    /// 在应用全局和提供商特定的子代理控制后，面向模型的 `agent` 工具
-    /// 对此提供商是否可用。
+    /// Whether the model-facing `agent` tool is available for this provider
+    /// after applying global and provider-specific sub-agent controls.
     #[must_use]
     pub fn subagents_enabled_for_provider(&self, provider: ApiProvider) -> bool {
         if !self.subagents_enabled() {
@@ -3795,7 +3845,7 @@ impl Config {
             && provider_cfg.max_depth != Some(0)
     }
 
-    /// 子代理被禁用的机器可读原因，按优先级顺序。
+    /// Machine-readable reason sub-agents are disabled, in precedence order.
     #[must_use]
     pub fn subagents_disabled_reason(&self) -> Option<&'static str> {
         if !self.features().enabled(Feature::Subagents) {
@@ -3814,12 +3864,12 @@ impl Config {
         None
     }
 
-    /// 交互式 `agent` 工具可以生成的嵌套子代理层数。
-    /// 读取 `[subagents] max_depth`；未设置时默认为
-    /// [`codewhale_config::DEFAULT_SPAWN_DEPTH`]。`0` 是一个有效值，
-    /// 在此运行时深度阻止 `agent` 工具。任何值都被限制在
-    /// [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`]，
-    /// 因此操作员的选择永远不会超过硬递归上限。
+    /// How many levels of nested sub-agents the interactive `agent` tool may
+    /// spawn. Reads `[subagents] max_depth`; when unset it defaults to
+    /// [`codewhale_config::DEFAULT_SPAWN_DEPTH`]. `0` is a valid value that
+    /// blocks the `agent` tool at this runtime depth. Any value is clamped to
+    /// [`codewhale_config::MAX_SPAWN_DEPTH_CEILING`] so the operator's choice
+    /// can never exceed the hard recursion ceiling.
     #[must_use]
     pub fn subagent_max_spawn_depth(&self) -> u32 {
         self.subagents
@@ -3829,7 +3879,7 @@ impl Config {
             .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING)
     }
 
-    /// 返回提供商特定的最大子代理递归深度。
+    /// Return the provider-specific maximum sub-agent recursion depth.
     #[must_use]
     pub fn subagent_max_spawn_depth_for_provider(&self, provider: ApiProvider) -> u32 {
         self.subagent_provider_config(provider)
@@ -3838,11 +3888,12 @@ impl Config {
             .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING)
     }
 
-    /// 在进一步启动排队等待启动槽之前可同时执行的直接（深度-1）
-    /// 子代理数（#3095）。读取 `[subagents] launch_concurrency`
-    ///（或已弃用的 `interactive_max_launch` 别名）；未设置时默认为
-    /// 完整解析的 `max_subagents()`（无人工节流），任何显式值
-    /// 被限制在 `[1, max_subagents]`。
+    /// Number of direct (depth-1) sub-agents that may execute concurrently
+    /// before further launches queue for a launch slot (#3095). Reads
+    /// `[subagents] launch_concurrency` (or the deprecated
+    /// `interactive_max_launch` alias); when unset it defaults to the full
+    /// resolved `max_subagents()` (no artificial throttle), and any explicit
+    /// value is clamped to `[1, max_subagents]`.
     #[must_use]
     pub fn launch_concurrency(&self) -> usize {
         let max = self.max_subagents();
@@ -3853,8 +3904,8 @@ impl Config {
             .clamp(1, max)
     }
 
-    /// 返回提供商特定的直接启动节流。超过此限制的子项
-    /// 排队等待启动槽，而不是立即启动。
+    /// Return the provider-specific direct launch throttle. Children above
+    /// this limit queue for a launch slot instead of starting immediately.
     #[must_use]
     pub fn launch_concurrency_for_provider(&self, provider: ApiProvider) -> usize {
         let max = self.max_subagents_for_provider(provider);
@@ -3869,11 +3920,12 @@ impl Config {
             .clamp(1, max)
     }
 
-    /// 会话允许的最大排队 + 运行中的子代理数。
+    /// Maximum queued + running sub-agents admitted for the session.
     ///
-    /// 默认为 [`MAX_SUBAGENT_ADMISSION`]，以便不同的 `agent` 调用可以
-    /// 通过 `launch_concurrency` 排队和耗尽，而不是在瞬时并发上限处被拒绝。
-    /// 显式值被限制在 `[max_subagents, MAX_SUBAGENT_ADMISSION]`。
+    /// Defaults to [`MAX_SUBAGENT_ADMISSION`] so distinct `agent` calls can
+    /// queue and drain through `launch_concurrency` instead of being rejected
+    /// at the instantaneous concurrency cap. Explicit values are clamped to
+    /// `[max_subagents, MAX_SUBAGENT_ADMISSION]`.
     #[must_use]
     pub fn max_admitted_subagents(&self) -> usize {
         let max_concurrent = self.max_subagents();
@@ -3884,7 +3936,7 @@ impl Config {
             .clamp(max_concurrent, MAX_SUBAGENT_ADMISSION)
     }
 
-    /// 返回提供商特定的排队 + 运行允许上限。
+    /// Return the provider-specific queued + running admission cap.
     #[must_use]
     pub fn max_admitted_subagents_for_provider(&self, provider: ApiProvider) -> usize {
         let max_concurrent = self.max_subagents_for_provider(provider);
@@ -3895,10 +3947,10 @@ impl Config {
             .clamp(max_concurrent, MAX_SUBAGENT_ADMISSION)
     }
 
-    /// 每个根 `agent` 运行的可选聚合 token 预算。
+    /// Optional aggregate token budget for each root `agent` run.
     ///
-    /// 读取 `[subagents] token_budget`。`None` 和 `0` 都表示无限制，
-    /// 保持遗留行为，直到显式配置了预算。
+    /// Reads `[subagents] token_budget`. `None` and `0` both mean unlimited,
+    /// preserving legacy behavior until a budget is explicitly configured.
     #[must_use]
     pub fn subagent_token_budget(&self) -> Option<u64> {
         self.subagents
@@ -3907,7 +3959,8 @@ impl Config {
             .filter(|budget| *budget > 0)
     }
 
-    /// 返回每个根 `agent` 运行的提供商特定聚合 token 预算。
+    /// Return the provider-specific aggregate token budget for each root
+    /// `agent` run.
     #[must_use]
     pub fn subagent_token_budget_for_provider(&self, provider: ApiProvider) -> Option<u64> {
         self.subagent_provider_config(provider)
@@ -3916,14 +3969,14 @@ impl Config {
             .filter(|budget| *budget > 0)
     }
 
-    /// 已解析的子代理每步 DeepSeek API 超时时间（秒）。
+    /// Resolved per-step DeepSeek API timeout for sub-agents, in seconds.
     ///
-    /// 读取 `[subagents] api_timeout_secs` 并限制在
+    /// Reads `[subagents] api_timeout_secs` and clamps to
     /// `[MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS]`
-    /// (1..=1800)。`None` 或 `0` 解析为遗留的
-    /// `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120)，以便现有配置保持
-    /// 其旧行为；显式的 `1` 被遵守，仅在快速失败测试中有用，
-    /// 不用于生产环境（#1806, #1808）。
+    /// (1..=1800). `None` or `0` resolve to the legacy
+    /// `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120) so existing configs keep
+    /// their old behavior; explicit `1` is honored, useful only in fast
+    /// fail-fast tests, not production (#1806, #1808).
     #[must_use]
     pub fn subagent_api_timeout_secs(&self) -> u64 {
         resolve_subagent_api_timeout_secs(
@@ -3931,7 +3984,7 @@ impl Config {
         )
     }
 
-    /// 返回提供商特定的子代理每步 API 超时时间。
+    /// Return the provider-specific per-step API timeout for sub-agents.
     #[must_use]
     pub fn subagent_api_timeout_secs_for_provider(&self, provider: ApiProvider) -> u64 {
         resolve_subagent_api_timeout_secs(
@@ -3941,13 +3994,13 @@ impl Config {
         )
     }
 
-    /// 已解析的运行中子代理的无进展心跳超时时间。
+    /// Resolved no-progress heartbeat timeout for running sub-agents.
     ///
-    /// 读取 `[subagents] heartbeat_timeout_secs` 并限制在
-    /// `[MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS]`。
-    /// `None` 或 `0` 解析为默认 300 秒。最终值也保持在
-    /// `subagent_api_timeout_secs()` 之上至少 30 秒，
-    /// 以便已配置的长模型请求不会被心跳清理抢占。
+    /// Reads `[subagents] heartbeat_timeout_secs` and clamps to
+    /// `[MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS]`.
+    /// `None` or `0` resolve to the default 300 seconds. The final value is
+    /// also kept at least 30 seconds above `subagent_api_timeout_secs()` so a
+    /// configured long model request is not pre-empted by heartbeat cleanup.
     #[must_use]
     pub fn subagent_heartbeat_timeout_secs(&self) -> u64 {
         resolve_subagent_heartbeat_timeout_secs(
@@ -3958,7 +4011,7 @@ impl Config {
         )
     }
 
-    /// 返回提供商特定的无进展心跳超时时间。
+    /// Return the provider-specific no-progress heartbeat timeout.
     #[must_use]
     pub fn subagent_heartbeat_timeout_secs_for_provider(&self, provider: ApiProvider) -> u64 {
         let api_timeout = self.subagent_api_timeout_secs_for_provider(provider);
@@ -3974,11 +4027,12 @@ impl Config {
         )
     }
 
-    /// 已解析的每个 SSE 块空闲超时时间（秒）。
+    /// Resolved per-SSE-chunk idle timeout in seconds.
     ///
-    /// 读取 `[tui].stream_chunk_timeout_secs`，当配置键省略时回退到
-    /// 遗留的 `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` 环境变量。
-    /// `None` 或 `0` 解析为默认 900 秒；显式值限制在 `1..=3600`。
+    /// Reads `[tui].stream_chunk_timeout_secs`, falling back to the legacy
+    /// `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var when the config key is
+    /// omitted. `None` or `0` resolve to the default 900 seconds; explicit
+    /// values are clamped to `1..=3600`.
     #[must_use]
     pub fn stream_chunk_timeout_secs(&self) -> u64 {
         let raw = self
@@ -3997,8 +4051,8 @@ impl Config {
         raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
     }
 
-    /// 原始子代理模型覆盖映射。值在生成时验证，
-    /// 因此无效的角色/类型模型在任何部分代理生成之前就失败。
+    /// Raw sub-agent model override map. Values are validated at spawn time
+    /// so an invalid role/type model fails before any partial agent spawn.
     #[must_use]
     pub fn subagent_model_overrides(&self) -> HashMap<String, String> {
         let mut overrides = HashMap::new();
@@ -4034,57 +4088,58 @@ impl Config {
         overrides
     }
 
-    /// 已解析的 `[fleet]` 表，或表不存在时的默认值
-    ///（#fleet-roster cutover (v0.8.67)）。
+    /// Parsed `[fleet]` table, or defaults when the table is absent
+    /// (#fleet-roster cutover (v0.8.67)).
     #[must_use]
     pub fn fleet_config(&self) -> codewhale_config::FleetConfigToml {
         self.fleet.clone().unwrap_or_default()
     }
 
-    /// 已解析的 `[workflow]` 表，或表不存在时的产品默认值
-    ///（#4128 / Section 2.11）。自动启动、审批、隔离和活动持久化
-    /// 消费者应通过此访问器读取，以便省略的键共享一个模型。
+    /// Parsed `[workflow]` table, or product defaults when the table is absent
+    /// (#4128 / Section 2.11). Automatic launch, approval, isolation, and
+    /// activity-persistence consumers should read through this accessor so
+    /// omitted keys share one model.
     #[must_use]
     pub fn workflow_config(&self) -> codewhale_config::WorkflowConfigToml {
         self.workflow.clone().unwrap_or_default()
     }
 
-    /// 返回已配置的 DeepSeek 推理努力级别（如果有）。
+    /// Return the configured DeepSeek reasoning-effort tier, if any.
     #[must_use]
     pub fn reasoning_effort(&self) -> Option<&str> {
         self.reasoning_effort.as_deref()
     }
 
-    /// 获取钩子配置，如果未配置则返回默认值。
+    /// Get hooks configuration, returning default if not configured.
     pub fn hooks_config(&self) -> HooksConfig {
         self.hooks.clone().unwrap_or_default()
     }
 
-    /// 解析应用了默认值的通知配置。
+    /// Resolve the notifications configuration with defaults applied.
     #[must_use]
     pub fn notifications_config(&self) -> NotificationsConfig {
         self.notifications.clone().unwrap_or_default()
     }
 
-    /// 解析应用了默认值的工作区侧 git 快照设置。
+    /// Resolve workspace side-git snapshot settings with defaults applied.
     #[must_use]
     pub fn snapshots_config(&self) -> SnapshotsConfig {
         self.snapshots.clone().unwrap_or_default()
     }
 
-    /// 解析应用了默认值的社区技能设置。
+    /// Resolve community skill settings with defaults applied.
     #[must_use]
     pub fn skills_config(&self) -> SkillsConfig {
         self.skills.clone().unwrap_or_default()
     }
 
-    /// 解析应用了默认值的启动更新检查设置。
+    /// Resolve startup update-check settings with defaults applied.
     #[must_use]
     pub fn update_config(&self) -> UpdateConfig {
         self.update.clone().unwrap_or_default()
     }
 
-    /// 解析渲染/分发层的持久快捷键栏绑定。
+    /// Resolve durable hotbar bindings for render/dispatch layers.
     #[must_use]
     pub fn resolve_hotbar_bindings(
         &self,
@@ -4093,7 +4148,7 @@ impl Config {
         codewhale_config::resolve_hotbar_bindings(self.hotbar.as_deref(), known_action_ids)
     }
 
-    /// 从默认值和配置条目解析已启用的特性。
+    /// Resolve enabled features from defaults and config entries.
     #[must_use]
     pub fn features(&self) -> Features {
         let mut features = Features::with_defaults();
@@ -4103,7 +4158,7 @@ impl Config {
         features
     }
 
-    /// 在内存中覆盖特性标志（由 CLI 覆盖使用）。
+    /// Override a feature flag in memory (used by CLI overrides).
     pub fn set_feature(&mut self, key: &str, enabled: bool) -> Result<()> {
         if !is_known_feature_key(key) {
             anyhow::bail!("Unknown feature flag: {key}");
@@ -4113,7 +4168,7 @@ impl Config {
         Ok(())
     }
 
-    /// 解析应用了默认值的有效重试策略。
+    /// Resolve the effective retry policy with defaults applied.
     #[must_use]
     pub fn retry_policy(&self) -> RetryPolicy {
         let defaults = RetryPolicy {
@@ -4165,12 +4220,12 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
     normalize_model_name(model).is_some()
 }
 
-// === 默认值 ===
+// === Defaults ===
 
-// 纯文件系统路径辅助函数位于 `paths` 叶子模块中。两个
-// `pub(crate)` 入口点被重新导出，以便外部 `crate::config::` 调用者
-// 解析不变；其余辅助函数被私有导入，用于保留在此文件中的
-// 工作区信任/配置加载逻辑（#3311）。
+// Pure filesystem path helpers live in the `paths` leaf module. The two
+// `pub(crate)` entry points are re-exported so external `crate::config::`
+// callers resolve unchanged; the remaining helpers are imported privately for
+// the workspace-trust/config-load logic that stays in this file (#3311).
 mod paths;
 use paths::{
     canonicalize_or_keep, codewhale_home_dir, default_config_path, default_managed_config_path,
@@ -4266,10 +4321,10 @@ pub(crate) fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf>
     home_config_path()
 }
 
-/// 在首次交互式启动时创建可检查的配置文件。
+/// Create an inspectable config file on first interactive launch.
 ///
-/// 该文件有意省略 `api_key`；入职流程或 `codewhale auth set`
-/// 在用户提供密钥后写入该字段。
+/// The file intentionally omits `api_key`; onboarding or `codewhale auth set`
+/// writes that field after the user supplies a key.
 pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let config_path = path
         .map(expand_pathbuf)
@@ -4308,20 +4363,20 @@ check_for_updates = true
     Ok(Some(config_path))
 }
 
-// === 环境覆盖 ===
+// === Environment Overrides ===
 
-/// 读取 CLI 分发器从 `--base-url` 转发的 `DEEPSEEK_BASE_URL` /
-/// `CODEWHALE_BASE_URL` 环境变量。当变量不存在或为空时返回 `None`，
-/// 以便提供商特定的默认值仍然适用。
+/// Read the `DEEPSEEK_BASE_URL` / `CODEWHALE_BASE_URL` env var that the CLI
+/// dispatcher forwards from `--base-url`.  Returns `None` when the var is
+/// absent or empty so that provider-specific defaults still apply.
 fn env_base_url_override() -> Option<String> {
     codewhale_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL")
         .ok()
         .filter(|v| !v.trim().is_empty())
 }
 
-/// 解析环境变量，优先使用 `CODEWHALE_*` 形式而不是遗留的
-/// `DEEPSEEK_*` 形式。忽略空值，以便空白的 shell 导出
-/// 不会擦除已配置的提供商设置。
+/// Resolve an env var, preferring the `CODEWHALE_*` form over the
+/// legacy `DEEPSEEK_*` form. Empty values are ignored so a blank shell export
+/// does not erase configured provider settings.
 fn codewhale_env_var(
     codewhale_name: &str,
     legacy_name: &str,
@@ -4563,8 +4618,8 @@ fn apply_env_overrides(config: &mut Config) {
                     .xai
                     .base_url = Some(value);
             }
-            // Custom 解析到命名的 `[providers.<name>]` 表；通过名称键的
-            // 可变访问器路由覆盖（#1519）。
+            // Custom resolves to the named `[providers.<name>]` table; route the
+            // override through the name-keyed mutable accessor (#1519).
             ApiProvider::Custom => {
                 config.provider_config_for_mut(ApiProvider::Custom).base_url = Some(value);
             }
@@ -4770,8 +4825,8 @@ fn apply_env_overrides(config: &mut Config) {
         config.http_headers = Some(root_headers);
 
         let provider = config.api_provider();
-        // 在下面可变借用 `providers` 之前捕获自定义条目键
-        //（选定的提供商名称）（#1519）。
+        // Capture the custom entry key (the selected provider name) before the
+        // mutable borrow of `providers` below (#1519).
         let custom_key = (provider == ApiProvider::Custom).then(|| {
             config
                 .provider
@@ -5005,7 +5060,7 @@ fn apply_env_overrides(config: &mut Config) {
         // (issue #1714). Mirror the OPENAI_MODEL branch above for every
         // non-DeepSeek provider.
         let provider = config.api_provider();
-        // 在下面的可变借用之前捕获自定义条目键（#1519）。
+        // Capture the custom entry key before the mutable borrow below (#1519).
         let custom_key = (provider == ApiProvider::Custom).then(|| {
             config
                 .provider
@@ -6023,8 +6078,8 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 以限制性权限（仅所有者读/写）将内容写入配置文件。
-/// 在 Unix 上，写入前设置模式 0o600。
+/// Write content to a config file with restrictive permissions (owner-only read/write).
+/// On Unix this sets mode 0o600 before writing.
 fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
     #[cfg(unix)]
     {
@@ -6061,30 +6116,34 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// 保存的凭据的去向。由 [`save_api_key`] 返回，
-/// 以便调用者可以显示确认消息而不泄露密钥。
+/// Where a saved credential ended up. Returned by [`save_api_key`] so
+/// the caller can show a confirmation message without leaking the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedCredential {
-    /// 存储在**OS 密钥环**和 codewhale 配置文件中。
-    /// 这是具有可用密钥环后端的平台上的默认结果：
-    /// 写入两层都打破了 `keyring → env → config-file` 的解析顺序阴影，
-    /// 否则来自先前安装的过时 OS 密钥环条目会隐藏新输入的密钥（#593）。
-    /// `backend` 标签是写入时的 [`codewhale_secrets::Secrets::backend_name`] 值，
-    /// 以便提示文本可以命名实际的后端
-    ///（`"system keyring"`、`"file-based (~/.codewhale/secrets/)"`）。
+    /// Stored in **both** the OS keyring and the codewhale config file.
+    /// This is the default outcome on platforms with a working keyring
+    /// backend: writing both layers defeats the
+    /// `keyring → env → config-file` resolution-order shadow that
+    /// would otherwise let a stale OS-keyring entry from a previous
+    /// install hide the freshly-entered key (#593). The `backend`
+    /// label is the value of [`codewhale_secrets::Secrets::backend_name`]
+    /// at write time so the toast text can name the actual backend
+    /// (`"system keyring"`, `"file-based (~/.codewhale/secrets/)"`).
     KeyringAndConfigFile {
-        /// 写入时的 `Secrets::backend_name()`。
+        /// `Secrets::backend_name()` at write time.
         backend: String,
-        /// 也被更新的配置文件的绝对路径。
+        /// Absolute path to the config file that was also updated.
         path: PathBuf,
     },
-    /// 仅存储在 codewhale 配置文件中。当没有密钥环后端可用时，
-    /// 或在 `cfg(test)` 下以便单元测试不污染主机密钥环时的回退。
+    /// Stored in the codewhale config file only. Fallback when no
+    /// keyring backend is reachable, or under `cfg(test)` so unit
+    /// tests don't pollute the host keyring.
     ConfigFile(PathBuf),
 }
 
 impl SavedCredential {
-    /// 状态/日志输出的人类可读描述。决不包含密钥值。
+    /// Human-readable description for status / log output. Never
+    /// includes the key value.
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
@@ -6096,22 +6155,28 @@ impl SavedCredential {
     }
 }
 
-/// 保存活跃提供商的 API 密钥。
+/// Save the active provider's API key.
 ///
-/// **双写策略（#593）：** 写入 `~/.codewhale/config.toml`（总是）
-/// 并通过 [`codewhale_secrets::Secrets`] 写入 OS 密钥环（当后端可用时）。
-/// 运行时按照 `keyring → env → config-file` 的顺序解析凭据；
-/// 仅写入配置文件（如 v0.8.8 到 v0.8.10 所做的）会让先前安装中的
-/// 过时密钥环条目静默遮盖用户在 TUI 入职期间刚刚输入的新值，
-/// 产生 #593 中报告的"无响应"症状。
+/// **Dual-write strategy (#593):** writes to `~/.codewhale/config.toml`
+/// (always) and to the OS keyring via [`codewhale_secrets::Secrets`]
+/// (when a backend is reachable). The runtime resolves credentials in
+/// `keyring → env → config-file` order; writing to the config file
+/// alone — as v0.8.8 through v0.8.10 did — let a stale keyring entry
+/// from a prior install silently shadow the fresh value the user just
+/// typed during in-TUI onboarding, producing the "no response" symptom
+/// reported in #593.
 ///
-/// 配置文件仍然是可检查的持久记录（在 npm 安装、IDE 终端和无头机器上
-/// 都能工作），而密钥环作为分层覆盖，在解析路径上击败过时阴影。
-/// 当密钥环写入失败时（无后端、OS 权限拒绝等），配置文件写入仍然有效，
-/// 函数报告 [`SavedCredential::ConfigFile`] 结果——调用者不应将其视为失败。
+/// The config file remains the inspectable durable record (works in
+/// npm installs, IDE terminals, and headless boxes alike), and the
+/// keyring acts as the layered override that defeats stale-shadow on
+/// the resolution path. When the keyring write fails (no backend, OS
+/// permission denied, etc.) the config-file write still stands and
+/// the function reports a [`SavedCredential::ConfigFile`] outcome —
+/// callers should not treat that as a failure.
 ///
-/// 在 `cfg(test)` 下跳过，以便测试套件从不接触主机密钥环。
-/// `secrets` crate 有自己的密钥环设置/获取的测试覆盖。
+/// Skipped under `cfg(test)` so the suite never touches the host
+/// keyring. The `secrets` crate has its own test coverage for
+/// keyring set/get.
 pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {

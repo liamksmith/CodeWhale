@@ -1,7 +1,9 @@
-//! 锚点命令：在压缩过程中保留关键事实。
+//! Anchor command: keep critical facts across compaction.
 //!
-//! 与 `/note`（主动查找）不同，锚点是被动的。它们会在每次压缩周期后自动重新注入到上下文中。
-//! 使用锚点来保留不变量，例如"此 API 的状态字段不可靠"或".ssh/ 绝对不能被触碰"。
+//! Unlike `/note` (active lookup), anchors are passive. They are automatically
+//! re-injected into context after every compaction cycle. Use anchors to
+//! preserve invariants like "This API's status field is unreliable" or
+//! ".ssh/ must never be touched".
 
 use std::fs;
 use std::io::Write;
@@ -33,10 +35,10 @@ impl RegisterCommand for AnchorCmd {
     }
 }
 
-/// 处理 `/anchor` 命令及其子命令：
-/// - `/anchor <text>` — 添加新锚点
-/// - `/anchor list` — 列出所有锚点
-/// - `/anchor remove <n>` — 按从 1 开始的索引移除锚点
+/// Handle the `/anchor` command with subcommands:
+/// - `/anchor <text>` — add a new anchor
+/// - `/anchor list` — list all anchors
+/// - `/anchor remove <n>` — remove anchor by 1-based index
 pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
     let input = match content {
         Some(c) => c.trim(),
@@ -49,7 +51,7 @@ pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
         return CommandResult::error(format!("Usage: {USAGE}"));
     }
 
-    // 解析子命令。
+    // Parse subcommands.
     if input.eq_ignore_ascii_case("list") {
         return list_anchors(app);
     }
@@ -62,7 +64,7 @@ pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
         return remove_anchor(app, rest.trim());
     }
 
-    // 默认：添加新锚点。
+    // Default: add a new anchor.
     add_anchor(app, input)
 }
 
@@ -74,7 +76,7 @@ fn anchors_path(app: &App) -> std::path::PathBuf {
     app.workspace.join(".deepseek").join("anchors.md")
 }
 
-/// 从文件中读取并拆分锚点。每个锚点由 "\n---\n" 分隔。
+/// Read and split anchors from the file. Each anchor is separated by "\n---\n".
 fn read_anchors(app: &App) -> Vec<String> {
     let path = anchors_path(app);
     let content = match fs::read_to_string(&path) {
@@ -89,7 +91,7 @@ fn read_anchors(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// 将锚点写回文件，由 "\n---\n" 连接。
+/// Write anchors back to the file, joined by "\n---\n".
 fn write_anchors(app: &App, anchors: &[String]) -> Result<(), String> {
     let path = anchors_path(app);
 
@@ -105,14 +107,14 @@ fn write_anchors(app: &App, anchors: &[String]) -> Result<(), String> {
 fn add_anchor(app: &mut App, text: &str) -> CommandResult {
     let path = anchors_path(app);
 
-    // 确保父目录存在。
+    // Ensure parent directory exists.
     if let Some(parent) = path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
         return CommandResult::error(format!("Failed to create anchors directory: {e}"));
     }
 
-    // 追加到锚点文件。
+    // Append to anchors file.
     let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -120,7 +122,7 @@ fn add_anchor(app: &mut App, text: &str) -> CommandResult {
         }
     };
 
-    // 写入分隔符和锚点内容。
+    // Write separator and anchor content.
     if let Err(e) = writeln!(file, "\n---\n{text}") {
         return CommandResult::error(format!("Failed to write anchor: {e}"));
     }

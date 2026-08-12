@@ -1,4 +1,4 @@
-//! 待办列表工具及支持数据结构。
+//! Todo list tool and supporting data structures.
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -11,9 +11,9 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-// === 类型 ===
+// === Types ===
 
-/// 待办事项的状态。
+/// Status for a todo item.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
@@ -32,7 +32,7 @@ impl TodoStatus {
         }
     }
 
-    /// 将字符串解析为待办状态。
+    /// Parse a string into a todo status.
     #[must_use]
     pub fn from_str(value: &str) -> Option<Self> {
         match value.trim().to_lowercase().as_str() {
@@ -44,7 +44,7 @@ impl TodoStatus {
     }
 }
 
-/// 单个待办事项。
+/// A single todo item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub id: u32,
@@ -52,7 +52,7 @@ pub struct TodoItem {
     pub status: TodoStatus,
 }
 
-/// 用于显示或序列化的待办列表快照。
+/// Snapshot of a todo list for display or serialization.
 #[derive(Debug, Clone, Serialize)]
 pub struct TodoListSnapshot {
     pub items: Vec<TodoItem>,
@@ -60,7 +60,7 @@ pub struct TodoListSnapshot {
     pub in_progress_id: Option<u32>,
 }
 
-/// 带有辅助操作的可变待办事项列表。
+/// Mutable list of todo items with helper operations.
 #[derive(Debug, Clone, Default)]
 pub struct TodoList {
     items: Vec<TodoItem>,
@@ -68,7 +68,7 @@ pub struct TodoList {
 }
 
 impl TodoList {
-    /// 创建一个空的待办列表。
+    /// Create an empty todo list.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -77,7 +77,7 @@ impl TodoList {
         }
     }
 
-    /// 返回带有计算指标的快照。
+    /// Return a snapshot of the list with computed metrics.
     #[must_use]
     pub fn snapshot(&self) -> TodoListSnapshot {
         TodoListSnapshot {
@@ -87,7 +87,7 @@ impl TodoList {
         }
     }
 
-    /// 添加一个新的待办事项。
+    /// Add a new todo item.
     pub fn add(&mut self, content: String, status: TodoStatus) -> TodoItem {
         let status = match status {
             TodoStatus::InProgress => {
@@ -107,7 +107,7 @@ impl TodoList {
         item
     }
 
-    /// 按 ID 更新事项的状态。
+    /// Update an item's status by id.
     pub fn update_status(&mut self, id: u32, status: TodoStatus) -> Option<TodoItem> {
         let mut updated: Option<TodoItem> = None;
         if status == TodoStatus::InProgress {
@@ -123,7 +123,7 @@ impl TodoList {
         updated
     }
 
-    /// 计算列表的完成百分比。
+    /// Compute completion percentage for the list.
     #[must_use]
     pub fn completion_percentage(&self) -> u8 {
         if self.items.is_empty() {
@@ -140,7 +140,7 @@ impl TodoList {
         u8::try_from(percent).unwrap_or(u8::MAX)
     }
 
-    /// 返回进行中事项的 ID（如果有）。
+    /// Return the id of the in-progress item, if any.
     #[must_use]
     pub fn in_progress_id(&self) -> Option<u32> {
         self.items
@@ -149,7 +149,7 @@ impl TodoList {
             .map(|item| item.id)
     }
 
-    /// 清除所有待办事项。
+    /// Clear all todo items.
     pub fn clear(&mut self) {
         self.items.clear();
         self.next_id = 1;
@@ -164,12 +164,12 @@ impl TodoList {
     }
 }
 
-// === TodoWriteTool——ToolSpec 实现 ===
+// === TodoWriteTool - ToolSpec implementation ===
 
-/// 跨工具使用的 `TodoList` 共享引用
+/// Shared reference to a `TodoList` for use across tools
 pub type SharedTodoList = Arc<Mutex<TodoList>>;
 
-/// 创建一个新的共享 `TodoList`
+/// Create a new shared `TodoList`
 pub fn new_shared_todo_list() -> SharedTodoList {
     Arc::new(Mutex::new(TodoList::new()))
 }
@@ -178,14 +178,14 @@ const CANONICAL_WORK_SURFACE: &str = "work";
 const CANONICAL_PROGRESS_TOOL: &str = "work_update";
 const DURABLE_WORK_OWNER: &str = "fleet_workflow_ledger";
 
-/// 用于写入和更新待办列表的工具
+/// Tool for writing and updating the todo list
 pub struct TodoWriteTool {
     todo_list: SharedTodoList,
     tool_name: &'static str,
 }
 
 impl TodoWriteTool {
-    /// 面向模型的规范进度接口（#4132）。
+    /// Canonical model-facing progress surface (#4132).
     pub fn work_update(todo_list: SharedTodoList) -> Self {
         Self {
             todo_list,
@@ -193,7 +193,7 @@ impl TodoWriteTool {
         }
     }
 
-    /// 为回放记录和旧提示保留的旧拼写。
+    /// Legacy spelling kept for transcript replay and older prompts.
     pub fn checklist(todo_list: SharedTodoList) -> Self {
         Self {
             todo_list,
@@ -201,7 +201,7 @@ impl TodoWriteTool {
         }
     }
 
-    /// 为回放记录保留的 `todo_*` 旧拼写（checklist 之前）。
+    /// Pre-checklist `todo_*` spelling kept for transcript replay.
     pub fn todo(todo_list: SharedTodoList) -> Self {
         Self {
             todo_list,
@@ -210,7 +210,7 @@ impl TodoWriteTool {
     }
 }
 
-/// 用于添加单个待办事项的工具（旧版兼容）。
+/// Tool for adding a single todo item (legacy compatibility).
 pub struct TodoAddTool {
     todo_list: SharedTodoList,
     tool_name: &'static str,
@@ -307,7 +307,7 @@ impl ToolSpec for TodoAddTool {
     }
 }
 
-/// 用于更新待办事项状态的工具（旧版兼容）。
+/// Tool for updating a todo item's status (legacy compatibility).
 pub struct TodoUpdateTool {
     todo_list: SharedTodoList,
     tool_name: &'static str,
@@ -407,7 +407,7 @@ impl ToolSpec for TodoUpdateTool {
     }
 }
 
-/// 用于列出当前待办事项的工具（旧版兼容）。
+/// Tool for listing current todos (legacy compatibility).
 pub struct TodoListTool {
     todo_list: SharedTodoList,
     tool_name: &'static str,
@@ -537,7 +537,7 @@ impl ToolSpec for TodoWriteTool {
     }
 
     fn model_visible(&self) -> bool {
-        // 只有规范的 work_update 拼写才对模型可见。
+        // Only the canonical work_update spelling is advertised to models.
         self.tool_name == CANONICAL_PROGRESS_TOOL
     }
 
@@ -553,7 +553,7 @@ impl ToolSpec for TodoWriteTool {
 
         let mut list = self.todo_list.lock().await;
 
-        // 清空并重建列表
+        // Clear and rebuild the list
         list.clear();
 
         for item in todos {

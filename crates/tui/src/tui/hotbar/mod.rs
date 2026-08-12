@@ -1,6 +1,7 @@
-//! Hotbar 动作注册基础。
+//! Hotbar action registry foundation.
 //!
-//! 配置、侧边栏渲染和键分发使用此动作表面以及在此定义的内置动作。
+//! Config, sidebar rendering, and key dispatch consume this action surface and
+//! the built-in actions defined here.
 
 pub mod actions;
 pub mod setup;

@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-//! codewhale 的功能标志和元数据。
+//! Feature flags and metadata for codewhale.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-/// 功能标志的生命周期阶段。
+/// Lifecycle stage for a feature flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Experimental,
@@ -32,19 +32,19 @@ impl Stage {
 /// Unique features toggled via configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// 启用默认的 shell 工具。
+    /// Enable the default shell tool.
     ShellTool,
-    /// 启用后台子代理工具。
+    /// Enable background sub-agent tooling.
     Subagents,
-    /// 启用网络搜索工具。
+    /// Enable web search tool.
     WebSearch,
-    /// 启用 apply_patch 工具。
+    /// Enable apply_patch tool.
     ApplyPatch,
-    /// 启用 MCP 工具。
+    /// Enable MCP tools.
     Mcp,
-    /// 启用 execpolicy 集成/工具。
+    /// Enable execpolicy integration/tooling.
     ExecPolicy,
-    /// 启用用于图像分析的视觉模型。
+    /// Enable vision model for image analysis.
     VisionModel,
 }
 
@@ -75,14 +75,14 @@ impl Feature {
     }
 }
 
-/// 保存已启用功能的有效集合。
+/// Holds the effective set of enabled features.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Features {
     enabled: BTreeSet<Feature>,
 }
 
 impl Features {
-    /// 从内置默认值开始。
+    /// Starts with built-in defaults.
     pub fn with_defaults() -> Self {
         let mut set = BTreeSet::new();
         for spec in FEATURES {
@@ -126,7 +126,7 @@ impl Features {
     }
 }
 
-/// `[features]` 表中接受的键。
+/// Keys accepted in `[features]` tables.
 pub fn is_known_feature_key(key: &str) -> bool {
     FEATURES.iter().any(|spec| spec.key == key)
 }
@@ -156,7 +156,7 @@ pub fn render_feature_table(features: &Features) -> String {
     output
 }
 
-/// 用于 TOML 的可反序列化功能表。
+/// Deserializable features table for TOML.
 #[derive(Serialize, Debug, Clone, Default, PartialEq)]
 pub struct FeaturesToml {
     #[serde(flatten)]
@@ -203,7 +203,7 @@ impl<'de> Deserialize<'de> for FeaturesToml {
     }
 }
 
-/// 所有功能定义的单一注册表。
+/// Single registry of all feature definitions.
 #[derive(Debug, Clone, Copy)]
 pub struct FeatureSpec {
     pub id: Feature,

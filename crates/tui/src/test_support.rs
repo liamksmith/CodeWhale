@@ -1,4 +1,4 @@
-//! 共享的仅测试辅助函数。
+//! Shared test-only helpers.
 
 use std::ffi::{OsStr, OsString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -8,9 +8,10 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// 获取进程级的环境变量互斥锁。
+/// Acquire the process-wide env-var mutex.
 ///
-/// 如果之前的测试在持有锁时发生 panic，则恢复守卫而不是让级联失败波及不相关的测试。
+/// If a prior test panicked while holding the lock, recover the guard instead
+/// of cascading failures across unrelated tests.
 pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
     match env_lock().lock() {
         Ok(guard) => guard,
@@ -18,9 +19,10 @@ pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
     }
 }
 
-/// 在丢弃时恢复一个环境变量。
+/// Restore one environment variable when dropped.
 ///
-/// 修改进程级环境变量的调用者必须持有 [`lock_test_env`] 直到此守卫被丢弃。
+/// Callers that mutate process-global environment variables must hold
+/// [`lock_test_env`] until after this guard is dropped.
 pub(crate) struct EnvVarGuard {
     key: &'static str,
     previous: Option<OsString>,
@@ -29,7 +31,7 @@ pub(crate) struct EnvVarGuard {
 impl EnvVarGuard {
     pub(crate) fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY：调用者持有进程级测试环境互斥锁。
+        // SAFETY: callers hold the process-wide test env mutex.
         unsafe { std::env::set_var(key, value) };
         Self { key, previous }
     }

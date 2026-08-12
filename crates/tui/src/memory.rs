@@ -1,42 +1,46 @@
-//! 用户级记忆文件（已弃用——请参见 Moraine）。
+//! User-level memory file (deprecated — see Moraine).
 //!
-//! ## 弃用
+//! ## Deprecation
 //!
-//! 已弃用 (v0.8.66–v0.8.71)：已被 Moraine MCP 召回取代。
-//! 旧的推送/注入路径由 `MemoryConfig.moraine_fallback` 控制。
-//! 当 Moraine 落地后（v0.8.66/67），此模块可完全删除。
+//! DEPRECATED(v0.8.66–v0.8.71): Superseded by Moraine MCP recall.
+//! The legacy push/inject path is gated behind `MemoryConfig.moraine_fallback`.
+//! When Moraine lands (v0.8.66/67), this module can be deleted entirely.
 //!
-//! 迁移指南：使用 Moraine MCP 工具（`search_sessions`、`open`、
-//! `list_sessions`、`file_attention`）代替 `<user_memory>` 注入。
+//! Migration guide: use Moraine MCP tools (`search_sessions`, `open`,
+//! `list_sessions`, `file_attention`) instead of `<user_memory>` injection.
 //!
-//! 参考：https://github.com/Hmbown/CodeWhale/issues/3495 (Moraine 采用)
-//! 参考：https://github.com/Hmbown/CodeWhale/issues/3490 (v0.8.71 死代码盘点)
+//! Ref: https://github.com/Hmbown/CodeWhale/issues/3495 (Moraine adoption)
+//! Ref: https://github.com/Hmbown/CodeWhale/issues/3490 (v0.8.71 dead-code inventory)
 //!
-//! ### 迁移步骤
+//! ### Migration
 //!
-//! 1. 安装 Moraine：`uv tool install moraine-cli && moraine setup && moraine up`
-//! 2. 在 `~/.codewhale/mcp.json` 中启用 `moraine-mcp`（将 `disabled` 设为 `false`）
-//! 3. 在 `config.toml` 中设置 `[memory] moraine_fallback = true` 以跳过旧的
-//!    `<user_memory>` 块、`remember` 工具和 `# foo` 快速添加。
+//! 1. Install Moraine: `uv tool install moraine-cli && moraine setup && moraine up`
+//! 2. Enable `moraine-mcp` in `~/.codewhale/mcp.json` (set `disabled` to `false`)
+//! 3. Set `[memory] moraine_fallback = true` in `config.toml` to skip the legacy
+//!    `<user_memory>` block, `remember` tool, and `# foo` quick-add.
 //!
-//! ## 旧版文档（Moraine 之前）
+//! ## Legacy docs (pre-Moraine)
 //!
-//! v0.8.8 发布了一个 MVP，允许用户保留一个持久的个人
-//! 笔记文件，模型在每轮对话中都会看到它：
+//! v0.8.8 shipped an MVP that let the user keep a persistent personal
+//! note file the model sees on every turn:
 //!
-//! - **加载** `~/.codewhale/memory.md`（路径可通过
-//!   `config.toml` 中的 `memory_path` 和 `DEEPSEEK_MEMORY_PATH` 环境变量配置），
-//!   将其包装在 `<user_memory>` 块中，并将其预先添加到系统提示词中，
-//!   与现有的 `<project_instructions>` 块并列。
-//! - **`# foo`** 在 composer 中键入会将 `foo` 作为带时间戳的项目符号追加到记忆文件中
-//!   ——无需离开 TUI 即可快速捕获。
-//! - **`/memory`** 显示解析后的文件路径和当前内容，**`/memory edit`** 打印一个可复制粘贴的
-//!   `$VISUAL` / `$EDITOR` 命令，用于自行打开文件。
-//! - **`remember` 工具**允许模型在注意到值得跨会话保留的持久偏好或约定时自行追加项目符号。
+//! - **Load** `~/.codewhale/memory.md` (path is configurable via
+//!   `memory_path` in `config.toml` and `DEEPSEEK_MEMORY_PATH` env),
+//!   wrap it in a `<user_memory>` block, and prepend it to the system
+//!   prompt alongside the existing `<project_instructions>` block.
+//! - **`# foo`** typed in the composer appends `foo` to the memory
+//!   file as a timestamped bullet — fast capture without leaving the TUI.
+//! - **`/memory`** shows the resolved file path and current contents, and
+//!   **`/memory edit`** prints a copy-pasteable `$VISUAL` / `$EDITOR`
+//!   command for opening the file yourself.
+//! - **`remember` tool** lets the model itself append a bullet when it
+//!   notices a durable preference or convention worth keeping across
+//!   sessions.
 //!
-//! 默认行为是 **选择加入**：仅在 `config.toml` 中设置 `[memory] enabled = true`
-//! 或设置 `DEEPSEEK_MEMORY=on` 时加载和使用记忆文件。
-//! 这使现有用户保持零开销行为，并使功能明确。
+//! Default behavior is **opt-in**: load + use the memory file only when
+//! `[memory] enabled = true` in `config.toml` or `DEEPSEEK_MEMORY=on`.
+//! That keeps existing users on zero-overhead behavior and makes the
+//! feature explicit.
 
 use std::fs;
 use std::io::{self, Write};
@@ -44,12 +48,14 @@ use std::path::Path;
 
 use chrono::Utc;
 
-/// 用户记忆文件的最大大小。较大的文件仍会加载，但
-/// `<user_memory>` 块会带有 `<truncated bytes=N source="...">` 标记，
-/// 以便用户知道模型只看到了一部分。与 `project_context::MAX_CONTEXT_SIZE` 一致。
+/// Maximum size of the user memory file. Larger files are loaded but the
+/// `<user_memory>` block carries a `<truncated bytes=N source="...">`
+/// marker so the user knows the model only saw a slice. Mirrors
+/// `project_context::MAX_CONTEXT_SIZE`.
 const MAX_MEMORY_SIZE: usize = 100 * 1024;
 
-/// 读取 `path` 处的用户记忆文件，当文件不存在或修剪后为空时返回 `None`。
+/// Read the user memory file at `path`, returning `None` when the file
+/// doesn't exist or is empty after trimming.
 #[must_use]
 pub fn load(path: &Path) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
@@ -59,9 +65,10 @@ pub fn load(path: &Path) -> Option<String> {
     Some(content)
 }
 
-/// 将记忆内容包装在 `<user_memory>` 块中，准备预先添加到系统提示词。
-/// `source` 值原样渲染到 `source="…"` 属性中——传入路径以便模型知道记忆的来源。
-/// 内容为空时返回 `None`。
+/// Wrap memory content in a `<user_memory>` block ready to prepend to the
+/// system prompt. The `source` value is rendered verbatim into a
+/// `source="…"` attribute — pass the path so the model can see where the
+/// memory came from. Returns `None` for empty content.
 #[must_use]
 pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     let trimmed = content.trim();
@@ -110,14 +117,16 @@ fn previous_char_boundary(value: &str, mut index: usize) -> usize {
     index
 }
 
-/// 为系统提示词组合 `<user_memory>` 块，遵循选择加入开关。
-/// 当功能被禁用、`moraine_fallback` 激活或文件缺失/为空时返回 `None`，
-/// 这样调用者无需检查两个条件。
+/// Compose the `<user_memory>` block for the system prompt, honouring the
+/// opt-in toggle. Returns `None` when the feature is disabled, when
+/// `moraine_fallback` is active, or when the file is missing / empty so
+/// the caller doesn't have to check both conditions.
 ///
-/// 持有 `&Config` 的调用者应直接传递 `config.memory_enabled() &&
-/// !config.moraine_fallback()` 和 `config.memory_path()`。
-/// 这种拆分使此模块与 `Config` 无关，从而可以在高级 `Config` 不可用的
-/// 子代理/引擎边界处重用。
+/// Callers that hold a `&Config` should pass `config.memory_enabled() &&
+/// !config.moraine_fallback()` and `config.memory_path()` directly.
+/// The split keeps this module `Config`-free so it can be reused from
+/// sub-agent / engine boundaries where the high-level `Config` isn't
+/// available.
 #[must_use]
 pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     if !enabled {
@@ -127,9 +136,10 @@ pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     as_system_block(&content, path)
 }
 
-/// 将 `entry` 追加到 `path` 处的记忆文件，如有需要则创建文件（及其父目录）。
-/// 条目带有时间戳，以便用户以后查看每条笔记的添加时间。
-/// 从 `# foo` 快速添加中去除前导 `#`，使文件保持为可读的 Markdown。
+/// Append `entry` to the memory file at `path`, creating it (and its
+/// parent directory) if needed. The entry is timestamped so the user can
+/// later see when each note was added. The leading `#` from a `# foo`
+/// quick-add is stripped so the file stays as readable Markdown.
 pub fn append_entry(path: &Path, entry: &str) -> io::Result<()> {
     let trimmed = entry.trim_start_matches('#').trim();
     if trimmed.is_empty() {

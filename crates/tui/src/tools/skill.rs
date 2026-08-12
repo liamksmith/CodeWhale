@@ -1,24 +1,28 @@
-//! `load_skill` 工具 —— 将 `SKILL.md` 主体及其伴生文件列表
-//! 获取到模型的上下文中（#434）。
+//! `load_skill` tool — fetch a `SKILL.md` body and its companion-file
+//! list into the model's context (#434).
 //!
-//! ## 技能已经在系统提示词中显示时为什么还需要工具？
+//! ## Why a tool when skills already surface in the system prompt?
 //!
-//! `prompts.rs::system_prompt_for_mode_with_context_and_skills` 在每轮
-//! 开始时注入每个可用技能的一行列表示（名称 + 描述 +
-//! 文件路径），以便模型知道目录中有什么。每个技能的
-//! 完整主体 *不会* 被加载 —— 那样一旦用户安装了
-//! 五六个技能就会炸掉提示词预算。
+//! `prompts.rs::system_prompt_for_mode_with_context_and_skills` injects
+//! a one-line listing of every available skill (name + description +
+//! file path) so the model knows what's in the catalogue at the start
+//! of every turn. The full body of each skill is *not* loaded — that
+//! would blow the prompt budget the moment a user has half a dozen
+//! skills installed.
 //!
-//! 模型实际读取技能存在两条路径：
+//! Two paths exist for the model to actually read a skill:
 //!
-//! 1. 现有的渐进式披露模式：模型在目录中发现一个
-//!    技能，从列表中调用 `read_file <path>`。
-//! 2. （此工具）`load_skill name=<id>` —— 单次调用、基于名称
-//!    的查找，还枚举技能目录中的同级文件，
-//!    以便模型无需单独的 `list_dir` 就能看到伴生资源。
+//! 1. The existing progressive-disclosure pattern: model spots a
+//!    skill in the catalogue, calls `read_file <path>` from the
+//!    listing.
+//! 2. (this tool) `load_skill name=<id>` — single call, name-based
+//!    lookup, also enumerates the sibling files in the skill's
+//!    directory so the model sees the companion resources without
+//!    a separate `list_dir`.
 //!
-//! 两者都有效；该工具是更高级别的便利，
-//! 避免了对于携带多个资源文件的技能的两次调用舞蹈。
+//! Both are valid; the tool is the higher-level affordance and
+//! avoids the two-call dance for skills that ship with multiple
+//! resource files.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -84,12 +88,13 @@ impl ToolSpec for LoadSkillTool {
             ));
         }
 
-        // #432：遍历每个候选技能目录（工作区
-        // .agents/skills、skills、.opencode/skills、.claude/skills、
-        // .cursor/skills、~/.agents/skills、全局默认），以
-        // 先胜出优先级合并。该
-        // 工具的查找镜像了系统提示词技能块已经列出的内容，
-        // 因此模型从不会请求它找不到的名称。
+        // #432: walk every candidate skill directory (workspace
+        // .agents/skills, skills, .opencode/skills, .claude/skills,
+        // .cursor/skills, ~/.agents/skills, global default), merging with
+        // first-wins precedence. The
+        // tool's lookup mirrors what the system-prompt skills block
+        // already lists, so the model never asks for a name it
+        // can't find.
         let discovery_mode =
             SkillDiscoveryMode::from_codewhale_only(context.skills_scan_codewhale_only);
         let registry = if let Some(skills_dir) = context.skills_dir.as_deref() {
@@ -148,10 +153,11 @@ impl ToolSpec for LoadSkillTool {
     }
 }
 
-/// 渲染模型将看到的技能主体。在顶部包含描述，
-/// 以便单个工具结果自包含 —— 无需交叉引用系统提示词目录。
-/// 伴生文件路径位于底部一个清晰命名的标题下，以便模型
-/// 可以在它们与任务相关时使用 `read_file` 打开它们。
+/// Render the skill body the model will see. Includes the description
+/// up top so a single tool result is self-contained — no need to
+/// cross-reference the system-prompt catalogue. Companion-file paths
+/// land at the bottom under a clearly-named heading so the model can
+/// open them with `read_file` if they're relevant to the task.
 fn format_skill_body(skill: &Skill) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
@@ -176,10 +182,10 @@ fn format_skill_body(skill: &Skill) -> String {
     out
 }
 
-/// 列出技能自身目录中 `SKILL.md` 的同级文件。
-/// 跳过 `SKILL.md` 本身和任何嵌套目录，以便
-/// 列表保持专注于手头的资源。按字典序排序以保持
-/// 确定性输出（对测试中的记录差异比较很重要）。
+/// List sibling files of `SKILL.md` in the skill's own directory.
+/// Skips the `SKILL.md` itself and any nested directories so the
+/// listing stays focused on at-hand resources. Sorted lexically for
+/// deterministic output (matters for transcript diffing in tests).
 fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
     let Some(dir) = skill.path.parent() else {
         return Vec::new();
@@ -253,7 +259,7 @@ mod tests {
         .unwrap();
         fs::write(skill_dir.join("script.py"), "print('hi')").unwrap();
         fs::write(skill_dir.join("data.json"), "{}").unwrap();
-        // 嵌套目录 —— 被 collect_companion_files 跳过。
+        // Nested directory — skipped by collect_companion_files.
         fs::create_dir_all(skill_dir.join("subdir")).unwrap();
 
         let registry = SkillRegistry::discover(tmp.path());
@@ -314,19 +320,20 @@ mod tests {
     async fn execute_finds_skills_in_opencode_dir_via_workspace_discovery() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().to_path_buf();
-        // 安装在工作区 `.opencode/skills` 下的技能（#432）。
+        // Skill installed under workspace `.opencode/skills` (#432).
         let opencode_dir = workspace.join(".opencode").join("skills");
         std::fs::create_dir_all(&opencode_dir).unwrap();
         write_skill(
             &opencode_dir,
             "from-opencode",
-            "安装于 .opencode/skills 下的技能",
-            "正文内容标记。",
+            "Skill installed under .opencode/skills",
+            "Body content marker.",
         );
 
         let mut context = ToolContext::new(workspace);
-        // 技能工具读取 $HOME 以获取全局默认值；将其固定到
-        // tempdir，以便测试与主机的 ~/.deepseek/skills 隔离。
+        // The skill tool reads $HOME for the global default; pin it to a
+        // tempdir so the test is hermetic regardless of the host's
+        // ~/.deepseek/skills.
         context.workspace = tmp.path().to_path_buf();
 
         let tool = LoadSkillTool;
@@ -359,18 +366,66 @@ mod tests {
         );
     }
 
-    // Wait - I accidentally translated string literals here too. Let me fix the test strings I modified. But actually, these are user-facing test descriptions that are used in assertions checking content. Let me leave them as English since they're string literals for test data, not comments.
+    #[tokio::test]
+    async fn execute_respects_codewhale_only_skill_discovery() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "claude-only",
+            "Claude skill",
+            "Body content marker.",
+        );
+        let codewhale_dir = workspace.join(".codewhale").join("skills");
+        write_skill(
+            &codewhale_dir,
+            "codewhale-only",
+            "CodeWhale skill",
+            "Body content marker.",
+        );
 
-Actually wait, looking at lines 327-331 I translated:
-```rust
-            "from-opencode",
-            "安装于 .opencode/skills 下的技能",
-            "正文内容标记。",
-```
-These are the input data for `write_skill` - the description and body text. These ARE string literals, not comments. I need to restore them.
+        let context = ToolContext::new(workspace).with_skills_config(codewhale_dir, true);
+        let tool = LoadSkillTool;
 
-Let me fix this file for the string literals I incorrectly translated.<｜end▁of▁thinking｜>I need to fix translated string literals in file 23.
+        let result = tool
+            .execute(json!({"name": "codewhale-only"}), &context)
+            .await
+            .expect("CodeWhale skill should load");
+        assert!(result.success);
 
-<｜｜DSML｜｜tool_calls>
-<｜｜DSML｜｜invoke name="edit">
-<｜｜DSML｜｜parameter name="filePath" string="true">/data/src/github/CodeWhale/crates/tui/src/tools/skill.rs
+        let err = tool
+            .execute(json!({"name": "claude-only"}), &context)
+            .await
+            .expect_err("Claude skill should be hidden in CodeWhale-only mode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("claude-only") && msg.contains("codewhale-only"),
+            "error should name the missing skill and available strict catalog: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_returns_helpful_error_for_unknown_skill() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        // One real skill so the available list is non-empty.
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "real-one",
+            "x",
+            "body",
+        );
+
+        let context = ToolContext::new(workspace);
+        let tool = LoadSkillTool;
+        let err = tool
+            .execute(json!({"name": "imaginary"}), &context)
+            .await
+            .expect_err("unknown skill should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("imaginary") && msg.contains("real-one"),
+            "error must name the missing skill and list available ones: {msg}"
+        );
+    }
+}

@@ -1,8 +1,9 @@
-//! 隐私优先的回话失败诊断（#2022）。
+//! Privacy-first session failure diagnostics (#2022).
 //!
-//! 此模块有意消费松散的 JSONL 事件形状，而不是一个精确的持久化会话模式。
-//! 运行时日志、工具审计和未来的错误导出都可以发出略有不同的记录；
-//! 分类器只需要脱敏的句柄、聚合计数和宽泛的失败类别。
+//! This module intentionally consumes loose JSONL event shapes instead of one
+//! exact persisted-session schema. Runtime logs, tool audits, and future bug
+//! exports can all emit slightly different records; the classifier only needs
+//! redacted handles, aggregate counts, and broad failure classes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -149,10 +150,10 @@ pub(crate) fn analyze_session_failure_jsonl(jsonl: &str) -> SessionFailureSummar
 #[must_use]
 pub(crate) fn format_redacted_failure_summary(summary: &SessionFailureSummary) -> String {
     if summary.counts.is_empty() {
-        return "未检测到会话失败信号。".to_string();
+        return "No session failure signals detected.".to_string();
     }
     let mut lines = vec![format!(
-        "会话失败诊断：已检查 {} 行 JSONL，{} 行格式错误已跳过。",
+        "Session failure diagnostics: {} JSONL lines inspected, {} malformed skipped.",
         summary.total_lines, summary.malformed_lines
     )];
     for (class, count) in &summary.counts {
@@ -161,8 +162,8 @@ pub(crate) fn format_redacted_failure_summary(summary: &SessionFailureSummary) -
             .get(class)
             .and_then(|sources| sources.first())
             .map(format_source)
-            .unwrap_or_else(|| "无来源".to_string());
-        lines.push(format!("- {class}: {count}（示例：{sample}）"));
+            .unwrap_or_else(|| "no source".to_string());
+        lines.push(format!("- {class}: {count} (sample: {sample})"));
     }
     lines.join("\n")
 }
@@ -185,18 +186,18 @@ fn source_handle(
 }
 
 fn format_source(source: &SessionFailureSource) -> String {
-    let mut parts = vec![format!("第 {} 行", source.line)];
+    let mut parts = vec![format!("line {}", source.line)];
     if let Some(event) = source.event.as_deref() {
-        parts.push(format!("事件={event}"));
+        parts.push(format!("event={event}"));
     }
     if let Some(turn_ref) = source.turn_ref.as_deref() {
-        parts.push(format!("轮次={turn_ref}"));
+        parts.push(format!("turn={turn_ref}"));
     }
     if let Some(tool_name) = source.tool_name.as_deref() {
-        parts.push(format!("工具={tool_name}"));
+        parts.push(format!("tool={tool_name}"));
     }
     if let Some(timestamp) = source.timestamp.as_deref() {
-        parts.push(format!("时间戳={timestamp}"));
+        parts.push(format!("ts={timestamp}"));
     }
     parts.join(" ")
 }
@@ -302,7 +303,6 @@ fn diagnostic_message(value: &Value) -> Option<String> {
     (!deduped.is_empty()).then(|| deduped.join(" "))
 }
 
-/// 递归收集字段值，最大深度为 4。
 fn collect_string_fields(value: &Value, out: &mut Vec<String>, keys: &[&str], depth: usize) {
     if depth > 4 {
         return;
@@ -329,12 +329,10 @@ fn collect_string_fields(value: &Value, out: &mut Vec<String>, keys: &[&str], de
     }
 }
 
-/// 从事件字段中提取规范的事件名称。
 fn event_name(value: &Value) -> Option<String> {
     string_field_any(value, &["event", "type", "kind"]).map(|event| normalize_event(&event))
 }
 
-/// 规范化事件名称：去空格、去引号、将连字符/空格/点替换为下划线并转小写。
 fn normalize_event(event: &str) -> String {
     event
         .trim()
@@ -343,12 +341,10 @@ fn normalize_event(event: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// 检查事件名称是否与给定的别名列表匹配。
 fn event_matches(event: Option<&str>, aliases: &[&str]) -> bool {
     event.is_some_and(|event| aliases.contains(&event))
 }
 
-/// 提取失败状态值（如 "failed"、"error"、"timeout" 等）。
 fn failure_status(value: &Value) -> Option<String> {
     string_field_any(value, &["status", "state", "outcome"]).filter(|status| {
         let normalized = normalize_event(status);
@@ -367,7 +363,6 @@ fn failure_status(value: &Value) -> Option<String> {
     })
 }
 
-/// 从 JSON 值中按不区分大小写的方式查找字符串字段。
 fn string_field_any(value: &Value, keys: &[&str]) -> Option<String> {
     string_field_any_at(value, keys, 0)
 }
@@ -400,7 +395,6 @@ fn string_field_any_at(value: &Value, keys: &[&str], depth: usize) -> Option<Str
     }
 }
 
-/// 从 JSON 值中按不区分大小写的方式查找数值字段。
 fn numeric_field_any(value: &Value, keys: &[&str]) -> Option<i64> {
     numeric_field_any_at(value, keys, 0)
 }
@@ -433,7 +427,6 @@ fn numeric_field_any_at(value: &Value, keys: &[&str], depth: usize) -> Option<i6
     }
 }
 
-/// 从 JSON 值中按不区分大小写的方式查找布尔字段。
 fn bool_field_any(value: &Value, keys: &[&str]) -> Option<bool> {
     bool_field_any_at(value, keys, 0)
 }
@@ -501,14 +494,14 @@ not json at all
         let sources = summary
             .sources
             .get(&SessionFailureClass::MissingDependency)
-            .expect("缺少依赖来源");
+            .expect("missing-dependency source");
         assert_eq!(sources[0].tool_name.as_deref(), Some("exec_shell"));
         assert!(
             sources[0]
                 .turn_ref
                 .as_deref()
                 .is_some_and(|turn| turn.starts_with("<redacted:")),
-            "轮次 ID 必须脱敏: {sources:?}"
+            "turn ids must be redacted: {sources:?}"
         );
     }
 
@@ -523,9 +516,9 @@ not json at all
         let rendered = format_redacted_failure_summary(&summary);
 
         assert!(rendered.contains("missing_dependency"));
-        assert!(rendered.contains("第 3 行"));
-        assert!(rendered.contains("工具=read_file"));
-        assert!(rendered.contains("时间戳=2026-06-25T12:34:56Z"));
+        assert!(rendered.contains("line 3"));
+        assert!(rendered.contains("tool=read_file"));
+        assert!(rendered.contains("ts=2026-06-25T12:34:56Z"));
         assert!(!rendered.contains("alice"));
         assert!(!rendered.contains(".env"));
         assert!(!rendered.contains("turn-secret-1"));
@@ -546,7 +539,7 @@ not json at all
         assert_eq!(summary.count(SessionFailureClass::UnclosedTurn), 0);
         assert!(
             summary.counts.is_empty(),
-            "摘要应为空: {summary:?}"
+            "summary should be empty: {summary:?}"
         );
     }
 
@@ -560,7 +553,7 @@ not json at all
 
         assert!(
             summary.counts.is_empty(),
-            "空的 error/stderr 不应表示失败信号: {summary:?}"
+            "empty error/stderr sentinels should not signal failure: {summary:?}"
         );
     }
 
@@ -576,7 +569,7 @@ not json at all
             .values()
             .flat_map(|sources| sources.iter())
             .next()
-            .expect("失败来源");
+            .expect("failure source");
 
         assert_eq!(source.tool_name.as_deref(), Some("exec_shell"));
         assert!(
@@ -584,7 +577,7 @@ not json at all
                 .turn_ref
                 .as_deref()
                 .is_some_and(|turn| turn.starts_with("<redacted:")),
-            "顶层轮次 ID 应被脱敏并正确使用: {source:?}"
+            "top-level turn id should be redacted and used: {source:?}"
         );
     }
 
@@ -598,7 +591,7 @@ not json at all
 
         assert!(
             summary.counts.is_empty(),
-            "深度嵌套的错误字段不应表示失败信号: {summary:?}"
+            "deeply nested error fields should not signal failure: {summary:?}"
         );
     }
 

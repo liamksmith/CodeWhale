@@ -1,21 +1,22 @@
-//! `自动` 模式的适应性推理力度等级选择（#663）。
+//! Adaptive reasoning-effort tier selection for `Auto` mode (#663).
 //!
-//! 当用户设置 `reasoning_effort = "auto"` 时，引擎会在每次
-//! 回合级别的请求之前调用 [`select`] 根据当前消息选择实际的等级。
+//! When the user sets `reasoning_effort = "auto"`, the engine calls
+//! [`select`] before each turn-level request to pick the actual tier
+//! based on the current message.
 
 use crate::tui::app::ReasoningEffort;
 
-/// 为下一次 API 请求选择一个具体的 `ReasoningEffort` 等级。
+/// Choose a concrete `ReasoningEffort` tier for the next API request.
 ///
-/// 规则：
-/// - 子代理上下文（`is_subagent == true`）→ `Low`
-/// - 用户最后一条消息包含高推理力度关键词
-///   （英文：`debug`, `error`；中文：调试 / 错误 / 报错 / 出错 /
-///   崩溃 / 調試 / 錯誤；日文：デバッグ / エラー / バグ）→ `Max`
-/// - 用户最后一条消息包含低推理力度关键词
-///   （英文：`search`, `lookup`；中文：搜索 / 查找 / 查询；
-///   日文：検索）→ `Low`
-/// - 其他所有情况 → `High`
+/// Rules:
+/// - Sub-agent contexts (`is_subagent == true`) → `Low`
+/// - Last user message contains a high-effort keyword
+///   (English: `debug`, `error`; Chinese: 调试 / 错误 / 报错 / 出错 /
+///   崩溃 / 調試 / 錯誤; Japanese: デバッグ / エラー / バグ) → `Max`
+/// - Last user message contains a low-effort keyword
+///   (English: `search`, `lookup`; Chinese: 搜索 / 查找 / 查询;
+///   Japanese: 検索) → `Low`
+/// - Everything else → `High`
 #[must_use]
 pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
     if is_subagent {
@@ -35,16 +36,19 @@ pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
     ReasoningEffort::High
 }
 
-/// 将 `reasoning_effort` 提升至 `Max` 的关键词。拉丁语词汇已小写，
-/// 因为调用方会将消息转为小写；中日韩文字没有大小写，因此原样匹配。
-/// 涵盖了非英语用户在报告问题时使用的中文和日文词汇——原始规则中的
-/// `"debug" | "error"` 旨在捕捉此类问题，但没有这些词汇的中文用户
-/// 即使在处理困难的调试任务时，使用自动模式也只能默默获得 `High` 等级。
+/// Keywords that bump `reasoning_effort` to `Max`. Latin terms are
+/// lowercase because the caller lowercases the message; CJK has no
+/// case so the literal form matches as-is. Covers the Chinese and
+/// Japanese vocabulary a non-English user reaches for when reporting
+/// the same kind of problem the original `"debug" | "error"` rule was
+/// trying to catch — without those terms a Chinese-speaking user
+/// paying for Auto mode silently got `High` even on hard debugging
+/// tasks.
 const HIGH_EFFORT_KEYWORDS: &[&str] = &[
-    // 英文（与原始关键词集保持一致）。
+    // English (unchanged from the original keyword set).
     "debug",
     "error",
-    // 简体 / 繁体中文。
+    // Simplified / Traditional Chinese.
     "\u{8c03}\u{8bd5}", // 调试
     "\u{9519}\u{8bef}", // 错误
     "\u{62a5}\u{9519}", // 报错
@@ -52,14 +56,14 @@ const HIGH_EFFORT_KEYWORDS: &[&str] = &[
     "\u{5d29}\u{6e83}", // 崩溃
     "\u{8abf}\u{8a66}", // 調試
     "\u{932f}\u{8aa4}", // 錯誤
-    // 日文。
+    // Japanese.
     "\u{30c7}\u{30d0}\u{30c3}\u{30b0}", // デバッグ
     "\u{30a8}\u{30e9}\u{30fc}",         // エラー
     "\u{30d0}\u{30b0}",                 // バグ
 ];
 
-/// 将 `reasoning_effort` 降至 `Low` 的关键词。语言覆盖范围与
-/// [`HIGH_EFFORT_KEYWORDS`] 相同。
+/// Keywords that drop `reasoning_effort` to `Low`. Same locale coverage
+/// as [`HIGH_EFFORT_KEYWORDS`].
 const LOW_EFFORT_KEYWORDS: &[&str] = &[
     "search",
     "lookup",
@@ -107,7 +111,8 @@ mod tests {
 
     #[test]
     fn chinese_debug_keywords_return_max() {
-        // 原始关键词集仅包含英文；讲中文的自动模式用户即使在真正的调试任务中也只能得到 `High`。
+        // The original keyword set was English-only; Chinese-speaking
+        // Auto-mode users paid for `High` even on real debugging tasks.
         for msg in [
             "\u{5e2e}\u{6211}\u{8c03}\u{8bd5}\u{4ee3}\u{7801}", // 帮我调试代码
             "\u{8fd9}\u{91cc}\u{6709}\u{4e2a}\u{9519}\u{8bef}", // 这里有个错误
@@ -169,7 +174,8 @@ mod tests {
 
     #[test]
     fn cjk_default_still_returns_high() {
-        // 没有关键词命中——普通的中文/日文文本与英文一样使用 `High` 默认值。
+        // No keyword hits — ordinary Chinese/Japanese prose stays on
+        // the `High` default like English does.
         for msg in [
             "\u{5e2e}\u{6211}\u{5199}\u{4e2a}\u{6d4b}\u{8bd5}", // 帮我写个测试
             "\u{91cd}\u{6784}\u{8fd9}\u{4e2a}\u{6a21}\u{5757}", // 重构这个模块

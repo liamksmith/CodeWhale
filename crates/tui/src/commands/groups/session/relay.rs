@@ -1,4 +1,4 @@
-//! `/relay` 命令。
+//! `/relay` command.
 
 use std::fmt::Write as _;
 
@@ -27,16 +27,16 @@ impl RegisterCommand for RelayCmd {
     }
 }
 
-/// 要求当前模型为下一个线程编写紧凑的接力文档。
+/// Ask the active model to write a compact relay artifact for the next thread.
 ///
-/// 可见命令为 `/relay`（中文用户可使用 `/接力`），
-/// 但持久文件路径保持为 `.deepseek/handoff.md` 以兼容
-/// 现有会话和启动提示词加载。
+/// The visible command is `/relay` (with `/接力` for Chinese users), but the
+/// durable file path remains `.deepseek/handoff.md` for compatibility with
+/// existing sessions and startup prompt loading.
 pub fn relay(app: &mut App, arg: Option<&str>) -> CommandResult {
     let focus = arg.map(str::trim).filter(|value| !value.is_empty());
     let message = build_relay_instruction(app, focus);
     CommandResult::with_message_and_action(
-        "正在准备会话接力文档（.deepseek/handoff.md）...",
+        "Preparing session relay at .deepseek/handoff.md...",
         AppAction::SendMessage(message),
     )
 }
@@ -45,34 +45,34 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "为未来的 CodeWhale 线程创建一个紧凑的会话接力文档。"
+        "Create a compact session relay (接力) for a future CodeWhale thread."
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "编写或更新 `.deepseek/handoff.md`。");
+    let _ = writeln!(out, "Write or update `.deepseek/handoff.md`.");
     let _ = writeln!(
         out,
-        "保持现有文件路径以兼容，但将文档标题命名为 `# Session relay`。"
+        "Keep the existing file path for compatibility, but title the artifact `# Session relay`."
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "当前会话快照：");
-    let _ = writeln!(out, "- 工作区：{}", app.workspace.display());
-    let _ = writeln!(out, "- 模式：{}", app.mode.label());
-    let _ = writeln!(out, "- 模型：{}", app.model_display_label());
+    let _ = writeln!(out, "Current session snapshot:");
+    let _ = writeln!(out, "- Workspace: {}", app.workspace.display());
+    let _ = writeln!(out, "- Mode: {}", app.mode.label());
+    let _ = writeln!(out, "- Model: {}", app.model_display_label());
     if let Some(focus) = focus {
-        let _ = writeln!(out, "- 请求的接力焦点：{focus}");
+        let _ = writeln!(out, "- Requested relay focus: {focus}");
     }
     if let Some(quarry) = app.hunt.quarry.as_deref() {
-        let _ = writeln!(out, "- 目标：{quarry}");
+        let _ = writeln!(out, "- Goal objective: {quarry}");
     }
     if let Some(budget) = app.hunt.token_budget {
-        let _ = writeln!(out, "- 目标 token 预算：{budget}");
+        let _ = writeln!(out, "- Goal token budget: {budget}");
     }
     if let Ok(todos) = app.todos.try_lock() {
         let snapshot = todos.snapshot();
         if !snapshot.items.is_empty() {
             let _ = writeln!(
                 out,
-                "\n待办事项（主要进度表面，已完成 {}%）：",
+                "\nTo-do (primary progress surface, {}% complete):",
                 snapshot.completion_pct
             );
             for item in snapshot.items {
@@ -86,38 +86,38 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
             }
         }
     } else {
-        let _ = writeln!(out, "\n待办事项：由于列表正忙，无法获取。");
+        let _ = writeln!(out, "\nTo-do: unavailable because the list is busy.");
     }
 
     if let Ok(plan) = app.plan_state.try_lock() {
         let snapshot = plan.snapshot();
         if !snapshot.is_empty() {
-            let _ = writeln!(out, "\n来自 update_plan 的可选策略元数据：");
-            write_plan_field(&mut out, "标题", snapshot.title.as_deref());
-            write_plan_field(&mut out, "目标", snapshot.objective.as_deref());
-            write_plan_field(&mut out, "上下文", snapshot.context_summary.as_deref());
-            write_plan_field(&mut out, "说明", snapshot.explanation.as_deref());
-            write_plan_list(&mut out, "来源", &snapshot.sources_used);
-            write_plan_list(&mut out, "关键文件", &snapshot.critical_files);
-            write_plan_list(&mut out, "约束条件", &snapshot.constraints);
+            let _ = writeln!(out, "\nOptional strategy metadata from update_plan:");
+            write_plan_field(&mut out, "Title", snapshot.title.as_deref());
+            write_plan_field(&mut out, "Objective", snapshot.objective.as_deref());
+            write_plan_field(&mut out, "Context", snapshot.context_summary.as_deref());
+            write_plan_field(&mut out, "Explanation", snapshot.explanation.as_deref());
+            write_plan_list(&mut out, "Source", &snapshot.sources_used);
+            write_plan_list(&mut out, "Critical file", &snapshot.critical_files);
+            write_plan_list(&mut out, "Constraint", &snapshot.constraints);
             write_plan_field(
                 &mut out,
-                "推荐方法",
+                "Recommended approach",
                 snapshot.recommended_approach.as_deref(),
             );
             write_plan_field(
                 &mut out,
-                "验证计划",
+                "Verification plan",
                 snapshot.verification_plan.as_deref(),
             );
             write_plan_field(
                 &mut out,
-                "风险和未知项",
+                "Risks and unknowns",
                 snapshot.risks_and_unknowns.as_deref(),
             );
             write_plan_field(
                 &mut out,
-                "交接包",
+                "Handoff packet",
                 snapshot.handoff_packet.as_deref(),
             );
             for item in snapshot.items {
@@ -127,40 +127,40 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
     } else {
         let _ = writeln!(
             out,
-            "\n策略元数据：由于计划状态正忙，无法获取。"
+            "\nStrategy metadata: unavailable because plan state is busy."
         );
     }
 
     let _ = writeln!(
         out,
-        "\n写入之前，检查当前对话上下文和所需的实时工具证据。不要编造测试结果、文件变更、阻塞项或决策。"
+        "\nBefore writing, inspect the current transcript context and any live tool evidence you need. Do not invent test results, file changes, blockers, or decisions."
     );
     let _ = writeln!(
         out,
-        "\n使用以下紧凑结构：\n\
+        "\nUse this compact structure:\n\
          # Session relay\n\
          \n\
          ## Goal\n\
-         [用户的目标和任何明确的约束]\n\
+         [the user's objective and any explicit constraints]\n\
          \n\
          ## Current work\n\
-         [当前的待办项、进度以及进行中的工作]\n\
+         [the active To-do item, progress, and what is mid-flight]\n\
          \n\
          ## Files and state\n\
-         [变更的文件、重要路径、子代理/RLM 会话、已运行的命令]\n\
+         [changed files, important paths, sub-agents/RLM sessions, commands run]\n\
          \n\
          ## Decisions\n\
-         [关键选择的原因]\n\
+         [why key choices were made]\n\
          \n\
          ## Verification\n\
-         [哪些测试通过、哪些失败、哪些未运行]\n\
+         [what passed, what failed, what was not run]\n\
          \n\
          ## Next action\n\
-         [下一个线程的一个具体行动]"
+         [one concrete action for the next thread]"
     );
     let _ = writeln!(
         out,
-        "\n除非会话确实需要更多，否则保持在约 900 词以内。写入后，报告路径和下一步行动。"
+        "\nKeep it under about 900 words unless the session genuinely needs more. After writing, report the path and the single next action."
     );
     out
 }
@@ -182,8 +182,8 @@ fn write_plan_list(out: &mut String, label: &str, values: &[String]) {
 
 fn plan_status_label(status: &crate::tools::plan::StepStatus) -> &'static str {
     match status {
-        crate::tools::plan::StepStatus::Pending => "待处理",
-        crate::tools::plan::StepStatus::InProgress => "进行中",
-        crate::tools::plan::StepStatus::Completed => "已完成",
+        crate::tools::plan::StepStatus::Pending => "pending",
+        crate::tools::plan::StepStatus::InProgress => "in_progress",
+        crate::tools::plan::StepStatus::Completed => "completed",
     }
 }

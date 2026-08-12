@@ -1,22 +1,24 @@
-//! 事务性持久化、原子写入以及 v0.8.67 宪章优先设置通道（#3410）的密钥脱敏。
+//! Transactional persistence, atomic writes, and secret redaction for the
+//! v0.8.67 constitution-first setup lane (#3410).
 //!
-//! 这是每个设置步骤下的安全层。一个设置会话可能涉及多个文件
-//!（设置状态侧车文件、用户全局宪章，以及——通过现有的保留注释的
-//! `ConfigStore`——`config.toml`）。此模块保证的契约：
+//! This is the safety layer under every setup step. A setup session may touch
+//! several files (the setup-state sidecar, the user-global constitution, and —
+//! through the existing comment-preserving `ConfigStore` — `config.toml`). The
+//! contract this module guarantees:
 //!
-//! - **预览不写入任何内容。** [`SetupTransaction::preview`] 报告将会有哪些更改，
-//!   而不触及文件系统。
-//! - **取消后文件保持不变。** 一个已暂存但未调用 [`SetupTransaction::commit`] 就
-//!   被丢弃的事务从不写入任何内容。
-//! - **保存是原子的。** 每个文件都通过临时文件 + 重命名写入
-//!   （[`atomic_write`]）；多文件提交要么完全应用，要么完全
-//!   回滚，因此部分失败绝不会留下半写入的文件。
-//! - **密钥从不泄漏。** [`redact_secrets`] 对可能回显配置文本的任何报告、
-//!   日志行或诊断信息中的密钥承载值进行脱敏。
+//! - **Preview writes nothing.** [`SetupTransaction::preview`] reports what
+//!   would change without touching the filesystem.
+//! - **Cancel leaves files unchanged.** A staged transaction that is dropped
+//!   without [`SetupTransaction::commit`] never wrote anything.
+//! - **Save is atomic.** Each file is written through a temp file + rename
+//!   ([`atomic_write`]); a multi-file commit either fully applies or fully
+//!   rolls back, so a partial failure never leaves a half-written file.
+//! - **Secrets never leak.** [`redact_secrets`] masks secret-bearing values for
+//!   any report, log line, or diagnostic that might echo config text.
 //!
-//! 此模块刻意只拥有写入/回滚/密钥契约。
-//! 每个设置步骤拥有*哪些*字段需要写入；参见 [`crate::setup_state`] 和
-//! [`crate::user_constitution`]。
+//! This module deliberately owns only the write / rollback / secret contract.
+//! Each setup step owns *which* fields it writes; see [`crate::setup_state`] and
+//! [`crate::user_constitution`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,63 +29,65 @@ use serde::Serialize;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-/// 设置所属文件的限制性文件模式（仅所有者读写）。
+/// Restrictive file mode for setup-owned files (owner read/write only).
 #[cfg(unix)]
 const SETUP_FILE_MODE: u32 = 0o600;
 
-/// 通过同级临时文件 + 重命名原子地将 `bytes` 写入 `path`。
+/// Atomically write `bytes` to `path` via a sibling temp file + rename.
 ///
-/// 临时文件在与 `path` 相同的目录中创建，以便最终的
-/// `rename` 在同一文件系统上是原子的。在 Unix 上，文件以
-/// `0o600` 权限创建，确保设置所属的状态永远不会被全局可读。
-/// 父目录按需创建。
+/// The temp file is created in the same directory as `path` so the final
+/// `rename` is atomic on the same filesystem. On Unix the file is created with
+/// `0o600` so setup-owned state never lands world-readable. Parent directories
+/// are created as needed.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     if let Some(parent) = parent {
         fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录 {} 失败", parent.display()))?;
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
     let dir = parent.unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("在 {} 中创建临时文件失败", dir.display()))?;
+        .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
 
     use std::io::Write as _;
     tmp.write_all(bytes)
-        .with_context(|| format!("写入 {} 的临时文件失败", path.display()))?;
+        .with_context(|| format!("failed to write temp file for {}", path.display()))?;
     tmp.flush()
-        .with_context(|| format("刷新 {} 的临时文件失败", path.display()))?;
+        .with_context(|| format!("failed to flush temp file for {}", path.display()))?;
 
     #[cfg(unix)]
     {
         let perms = fs::Permissions::from_mode(SETUP_FILE_MODE);
         tmp.as_file()
             .set_permissions(perms)
-            .with_context(|| format!("设置 {} 的权限失败", path.display()))?;
+            .with_context(|| format!("failed to set permissions for {}", path.display()))?;
     }
 
     tmp.persist(path)
         .map_err(|e| e.error)
-        .with_context(|| format!("持久化 {} 失败", path.display()))?;
+        .with_context(|| format!("failed to persist {}", path.display()))?;
     Ok(())
 }
 
-/// 原子地将 `value` 作为美化打印的 JSON 写入 `path`。
+/// Atomically write `value` as pretty-printed JSON to `path`.
 ///
-/// 追加尾随换行符，以便文件对面向行的工具和差异操作格式良好。
+/// A trailing newline is appended so the file is well-formed for line-oriented
+/// tooling and diffs.
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let mut body = serde_json::to_string_pretty(value)
-        .with_context(|| format!("序列化 {} 的 JSON 失败", path.display()))?;
+        .with_context(|| format!("failed to serialize JSON for {}", path.display()))?;
     body.push('\n');
     atomic_write(path, body.as_bytes())
 }
 
-/// 一个暂存的多文件写入，要么完全应用，要么完全回滚。
+/// A staged multi-file write that either fully applies or fully rolls back.
 ///
-/// 暂存设置步骤打算写入的每个文件，然后调用 [`commit`]。如果
-/// 任何单个写入失败，事务中每个已应用的写入都将恢复到其提交前
-/// 的内容（如果之前不存在则删除），并返回原始错误。一个未提交
-/// 就被丢弃的事务不触及文件系统。
+/// Stage every file the setup step intends to write, then call [`commit`]. If
+/// any single write fails, every already-applied write in the transaction is
+/// restored to its pre-commit contents (or removed if it did not previously
+/// exist), and the original error is returned. A transaction that is dropped
+/// without committing leaves the filesystem untouched.
 ///
 /// [`commit`]: SetupTransaction::commit
 #[derive(Debug, Default)]
@@ -97,25 +101,26 @@ struct StagedWrite {
     bytes: Vec<u8>,
 }
 
-/// 文件提交前状态的快照，以便 [`SetupTransaction`] 在回滚期间
-/// 可以恢复它。
+/// A snapshot of a file's pre-commit state, captured so [`SetupTransaction`]
+/// can restore it during rollback.
 struct Snapshot {
     path: PathBuf,
-    /// 原始字节，如果文件在提交前不存在则为 `None`。
+    /// Original bytes, or `None` if the file did not exist before commit.
     original: Option<Vec<u8>>,
 }
 
 impl SetupTransaction {
-    /// 创建一个空事务。
+    /// Create an empty transaction.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 暂存 `bytes` 以在 [`commit`](Self::commit) 时写入 `path`。
+    /// Stage `bytes` to be written to `path` on [`commit`](Self::commit).
     ///
-    /// 暂存不触及磁盘。后面同一路径的暂存会替换前面的，
-    /// 因此一个步骤可以在提交前修改其预期输出。
+    /// Staging touches nothing on disk. A later stage for the same path
+    /// replaces an earlier one, so a step can revise its intended output before
+    /// committing.
     pub fn stage(&mut self, path: impl Into<PathBuf>, bytes: impl Into<Vec<u8>>) -> &mut Self {
         let path = path.into();
         let bytes = bytes.into();
@@ -127,7 +132,7 @@ impl SetupTransaction {
         self
     }
 
-    /// 暂存 `value` 序列化为美化 JSON（带尾随换行符）。
+    /// Stage `value` serialized as pretty JSON (with trailing newline).
     pub fn stage_json<T: Serialize>(
         &mut self,
         path: impl Into<PathBuf>,
@@ -135,34 +140,34 @@ impl SetupTransaction {
     ) -> Result<&mut Self> {
         let path = path.into();
         let mut body = serde_json::to_string_pretty(value)
-            .with_context(|| format!("序列化 {} 的 JSON 失败", path.display()))?;
+            .with_context(|| format!("failed to serialize JSON for {}", path.display()))?;
         body.push('\n');
         Ok(self.stage(path, body.into_bytes()))
     }
 
-    /// [`commit`](Self::commit) 会写入的路径，按暂存顺序排列。
-    /// 不写入任何内容——这是预览表面。
+    /// The paths that [`commit`](Self::commit) would write, in staging order.
+    /// Writes nothing — this is the preview surface.
     #[must_use]
     pub fn preview(&self) -> Vec<&Path> {
         self.writes.iter().map(|w| w.path.as_path()).collect()
     }
 
-    /// 当没有暂存内容时为 true。
+    /// True when nothing is staged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.writes.is_empty()
     }
 
-    /// 原子地应用每个暂存的写入。
+    /// Apply every staged write atomically.
     ///
-    /// 成功后所有文件都更新。在第一次失败时，每个已经落地的写入
-    /// 都回滚到其捕获的提交前状态，并返回原始错误（回滚失败附加
-    /// 为上下文信息）。
+    /// On success all files are updated. On the first failure, every write that
+    /// already landed is rolled back to its captured pre-commit state and the
+    /// original error is returned (rollback failures are attached as context).
     pub fn commit(self) -> Result<()> {
         let mut snapshots: Vec<Snapshot> = Vec::with_capacity(self.writes.len());
 
         for write in &self.writes {
-            // 在修改前捕获提交前状态，以便可以恢复。
+            // Capture the pre-commit state before mutating, so we can restore it.
             let original = match fs::read(&write.path) {
                 Ok(bytes) => Some(bytes),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -170,7 +175,7 @@ impl SetupTransaction {
                     rollback(&snapshots);
                     return Err(e).with_context(|| {
                         format!(
-                            "在写入前读取现有 {} 失败；回滚了 {} 个先前的更改",
+                            "failed to read existing {} before write; rolled back {} prior change(s)",
                             write.path.display(),
                             snapshots.len()
                         )
@@ -184,12 +189,12 @@ impl SetupTransaction {
                     original,
                 }),
                 Err(err) => {
-                    // 此写入未落地（atomic_write 是全有或全无），
-                    // 因此只回滚之前的写入。
+                    // This write did not land (atomic_write is all-or-nothing),
+                    // so roll back only the writes that came before it.
                     rollback(&snapshots);
                     return Err(err).with_context(|| {
                         format!(
-                            "设置事务写入 {} 失败；回滚了 {} 个先前的更改",
+                            "setup transaction failed writing {}; rolled back {} prior change(s)",
                             write.path.display(),
                             snapshots.len()
                         )
@@ -202,9 +207,9 @@ impl SetupTransaction {
     }
 }
 
-/// 将每个快照恢复到其捕获的提交前状态。尽力而为：
-/// 回滚错误会被记录但不会中止其余恢复，因为让尽可能多的文件
-/// 保持其原始状态是目标。
+/// Restore every snapshot to its captured pre-commit state. Best-effort: a
+/// rollback error is logged but does not abort the remaining restores, because
+/// leaving as many files as possible in their original state is the goal.
 fn rollback(snapshots: &[Snapshot]) {
     for snap in snapshots.iter().rev() {
         let result = match &snap.original {
@@ -218,14 +223,14 @@ fn rollback(snapshots: &[Snapshot]) {
         if let Err(e) = result {
             tracing::error!(
                 target: "config::persistence",
-                "设置事务期间回滚 {} 失败: {e:#}",
+                "failed to roll back {} during setup transaction: {e:#}",
                 snap.path.display()
             );
         }
     }
 }
 
-/// 标记配置/JSON/环境键承载密钥值的子串。
+/// Substrings that mark a config/JSON/env key as carrying a secret value.
 const SENSITIVE_KEY_HINTS: &[&str] = &[
     "api_key",
     "apikey",
@@ -241,33 +246,36 @@ const SENSITIVE_KEY_HINTS: &[&str] = &[
     "private_key",
 ];
 
-/// 即使以裸值形式出现（不是 `key = value` 形式）也值得屏蔽的已知不透明令牌前缀。
-/// 有意保守：仅限已知的供应商/密钥形状。
+/// Known opaque-token prefixes worth masking even when they appear bare (not as
+/// `key = value`). Conservative on purpose: only well-known provider/key shapes.
 const SECRET_TOKEN_PREFIXES: &[&str] = &["sk-", "sk_", "ghp_", "gho_", "xoxb-", "xoxp-", "pk-"];
 
-/// 替换任何已脱敏的密钥值的占位符。
+/// The placeholder substituted for any redacted secret value.
 pub const REDACTED: &str = "[redacted]";
 
-/// 从任意文本中脱敏密钥承载值，使其安全地放入设置报告、
-/// 日志行、错误消息或测试快照中。
+/// Redact secret-bearing values from arbitrary text so it is safe to put in a
+/// setup report, log line, error message, or test snapshot.
 ///
-/// 两遍处理，均无依赖：
+/// Two passes, both dependency-free:
 ///
-/// 1. **键值赋值。** 形如 `key = value`、`key: value` 或 `key=value` 的行，
-///    其键（不区分大小写，忽略引号）包含 [`SENSITIVE_KEY_HINTS`] 子串的，
-///    其值被替换为 [`REDACTED`]。
-/// 2. **裸令牌。** 以已知 [`SECRET_TOKEN_PREFIXES`] 开头的空格分隔词被整体替换。
+/// 1. **Keyed assignments.** Lines shaped like `key = value`, `key: value`, or
+///    `key=value` whose key (case-insensitively, ignoring quotes) contains a
+///    [`SENSITIVE_KEY_HINTS`] substring have their value replaced with
+///    [`REDACTED`].
+/// 2. **Bare tokens.** Whitespace-delimited words beginning with a known
+///    [`SECRET_TOKEN_PREFIXES`] are replaced wholesale.
 ///
-/// 目标是纵深防御：设置状态和报告从一开始就由不包含密钥的安全摘要构建，
-/// 这是任何回显原始配置文本的后备防线。
+/// The goal is defense in depth: setup state and reports are built from safe
+/// summaries that never include secrets in the first place, and this is the
+/// backstop for anything that echoes raw config text.
 #[must_use]
 pub fn redact_secrets(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut first = true;
     for line in input.split_inclusive('\n') {
         if !first {
-            // split_inclusive 将换行符保留在前一个块上，因此我们
-            // 无需在此处重新添加分隔符。
+            // split_inclusive keeps the newline on the previous chunk, so we do
+            // not need to re-add separators here.
         }
         first = false;
         out.push_str(&redact_line(line));
@@ -275,9 +283,9 @@ pub fn redact_secrets(input: &str) -> String {
     out
 }
 
-/// 脱敏单行（可能包含尾随换行符）。
+/// Redact a single line (which may include a trailing newline).
 fn redact_line(line: &str) -> String {
-    // 保留任何尾随换行符，以便调用者保持其行结构。
+    // Preserve any trailing newline so callers keep their line structure.
     let (body, newline) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
@@ -287,7 +295,7 @@ fn redact_line(line: &str) -> String {
         return format!("{redacted}{newline}");
     }
 
-    // 裸令牌传递：屏蔽任何以已知前缀开头的空格分隔词。
+    // Bare-token pass: mask any whitespace-delimited word with a known prefix.
     let mut changed = false;
     let masked: Vec<String> = body
         .split(' ')
@@ -309,10 +317,10 @@ fn redact_line(line: &str) -> String {
     }
 }
 
-/// 如果 `body` 是带有敏感键的 `key <sep> value` 赋值，则返回
-/// 该行并脱敏值；否则返回 `None`。
+/// If `body` is a `key <sep> value` assignment with a sensitive key, return the
+/// line with the value redacted; otherwise `None`.
 fn redact_keyed_assignment(body: &str) -> Option<String> {
-    // 找到第一个分隔键值的 `=` 或 `:`。
+    // Find the first `=` or `:` that separates a key from a value.
     let sep_idx = body.find(['=', ':'])?;
     let (raw_key, rest) = body.split_at(sep_idx);
     let sep = &rest[..1];
@@ -326,18 +334,19 @@ fn redact_keyed_assignment(body: &str) -> Option<String> {
         return None;
     }
 
-    // 保留键的前导空格和原始分隔符间距，使脱敏后的行读起来自然。
+    // Keep leading whitespace of the key and the original separator spacing so
+    // the redacted line reads naturally.
     let key_lead_ws: String = raw_key.chars().take_while(|c| c.is_whitespace()).collect();
     let value_lead_ws: String = raw_value
         .chars()
         .take_while(|c| c.is_whitespace())
         .collect();
     let value_rest = raw_value.trim_start();
-    // 如果值为空，则无需隐藏。
+    // If the value is empty, there is nothing to hide.
     if value_rest.is_empty() {
         return None;
     }
-    // 保留周围引号，使结构化文件看起来仍可解析。
+    // Preserve surrounding quotes so structured files stay parseable-looking.
     let quoted = value_rest.starts_with('"') || value_rest.starts_with('\'');
     let replacement = if quoted {
         format!("\"{REDACTED}\"")
@@ -389,13 +398,13 @@ mod tests {
         atomic_write(&path, b"old").unwrap();
         atomic_write(&path, b"new").unwrap();
         assert_eq!(read(&path), "new");
-        // 不留残留的临时文件。
+        // No stray temp files left behind.
         let leftovers: Vec<_> = fs::read_dir(tmp.path())
             .unwrap()
             .filter_map(Result::ok)
             .filter(|e| e.file_name() != "state.json")
             .collect();
-        assert!(leftovers.is_empty(), "残留的临时文件: {leftovers:?}");
+        assert!(leftovers.is_empty(), "stray temp files: {leftovers:?}");
     }
 
     #[test]
@@ -419,7 +428,7 @@ mod tests {
         {
             let mut tx = SetupTransaction::new();
             tx.stage(a.clone(), b"staged".to_vec());
-            // tx 在此处被丢弃，未提交
+            // tx dropped here without commit
         }
         assert!(!a.exists());
     }
@@ -443,10 +452,10 @@ mod tests {
         let good = tmp.path().join("good.json");
         fs::write(&good, "ORIGINAL").unwrap();
 
-        // 第二个目标不可写：父路径是一个已存在的文件。
+        // Second target is unwritable: a path whose parent is an existing file.
         let blocker = tmp.path().join("blocker");
         fs::write(&blocker, "i am a file").unwrap();
-        let bad = blocker.join("child.json"); // 父路径是文件 → create_dir_all 失败
+        let bad = blocker.join("child.json"); // parent is a file → create_dir_all fails
 
         let mut tx = SetupTransaction::new();
         tx.stage(good.clone(), b"UPDATED".to_vec())
@@ -454,7 +463,7 @@ mod tests {
         let err = tx.commit().unwrap_err();
         assert!(format!("{err:#}").contains("rolled back"));
 
-        // 第一个文件必须恢复到其原始内容。
+        // The first file must be restored to its original contents.
         assert_eq!(read(&good), "ORIGINAL");
         assert!(!bad.exists());
     }
@@ -462,7 +471,7 @@ mod tests {
     #[test]
     fn transaction_rollback_removes_newly_created_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let fresh = tmp.path().join("fresh.json"); // 之前不存在
+        let fresh = tmp.path().join("fresh.json"); // did not exist before
         let blocker = tmp.path().join("blocker");
         fs::write(&blocker, "file").unwrap();
         let bad = blocker.join("child.json");
@@ -471,7 +480,7 @@ mod tests {
         tx.stage(fresh.clone(), b"created".to_vec())
             .stage(bad, b"x".to_vec());
         assert!(tx.commit().is_err());
-        // 新创建的文件必须在回滚时删除，而不是留下。
+        // The newly created file must be removed on rollback, not left behind.
         assert!(!fresh.exists());
     }
 
@@ -487,7 +496,7 @@ PASSWORD=hunter2hunter2";
         assert!(!out.contains("sk-supersecretvalue123"), "{out}");
         assert!(!out.contains("abc123def456ghi"), "{out}");
         assert!(!out.contains("hunter2hunter2"), "{out}");
-        // 非密钥值保持不变。
+        // Non-secret values survive untouched.
         assert!(out.contains("provider = \"openai\""));
         assert!(out.contains("model = \"mimo-ultraspeed\""));
         assert!(out.matches(REDACTED).count() >= 3, "{out}");
@@ -515,7 +524,7 @@ PASSWORD=hunter2hunter2";
     #[test]
     fn redact_leaves_plain_text_untouched() {
         let input = "the quick brown fox = jumps over";
-        // `fox` 键没有敏感提示 → 不变。
+        // `fox` key has no sensitive hint → unchanged.
         assert_eq!(redact_secrets(input), input);
     }
 }

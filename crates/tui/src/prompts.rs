@@ -1,24 +1,22 @@
 #![allow(dead_code)]
 //! System prompts for different modes.
 //!
-//! 提示词由编译时加载的可组合层组装而成:
+//! Prompts are assembled from composable layers loaded at compile time:
 //!   constitution.md + personality overlay → message[0] (byte-stable).
-//!   constitution.md（宪法）+ 人格叠加 → 发送给 LLM 的第一条系统消息（字节稳定，可被 KV 前缀缓存命中）
 //!   mode delta + tool taxonomy + approval policy → request-time runtime metadata.
-//!   模式差异（mode delta）+ 工具分类 + 审批策略 → 请求时的运行时元数据
 //!
 //! This keeps each concern in its own file and makes prompt tuning
 //! a single-file operation.
 
-use crate::models::SystemPrompt;    // SystemPrompt — 内部消息模型（可以是纯文本或结构化 Blocks）
-use crate::project_context::{ProjectContext, load_project_context_with_parents};    // 加载项目上下文（向上遍历目录查找 .codewhale/ 等）
-use crate::tui::app::AppMode;       // 应用模式枚举（Agent/Plan/Yolo/Operate）
-use std::path::{Path, PathBuf};     
-use std::sync::{LazyLock, Mutex};   // LazyLock — 延迟初始化（首次访问时才初始化，之后复用）
+use crate::models::SystemPrompt;
+use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::tui::app::AppMode;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct PromptSessionContext<'a> {
-    pub user_memory_block: Option<&'a str>,    // 用户记忆块（# remember 工具写入的持久化笔记）
+    pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
     pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in

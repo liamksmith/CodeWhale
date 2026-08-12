@@ -7,20 +7,22 @@ pub mod fleet;
 pub mod runtime;
 pub mod workroom;
 
-/// 协议层中生命周期状态枚举的通用 trait。
+/// Common trait for lifecycle status enums across the protocol layer.
 ///
-/// 每个状态枚举——线程、目标、集群运行、工作者和作业状态——
-/// 都实现此 trait，以便通用代码无需匹配所有变体即可询问三个通用问题。
+/// Every status enum — thread, goal, fleet run, worker, and job status —
+/// implements this trait so generic code can ask three universal questions
+/// without matching on every variant.
 pub trait Status {
-    /// 当此状态表示最终、不可继续推进的状态时返回 `true`
-    /// （例如 Completed、Failed、Cancelled、Archived、Retired）。
+    /// Returns `true` when this status represents a final, non-progressable state
+    /// (e.g. Completed, Failed, Cancelled, Archived, Retired).
     fn is_terminal(&self) -> bool;
 
-    /// 当工作正在执行中时返回 `true`
-    /// （例如 Running、Active、Busy、Queued、Pending）。
+    /// Returns `true` when work is currently in-flight
+    /// (e.g. Running, Active, Busy, Queued, Pending).
     fn is_active(&self) -> bool;
 
-    /// 当事项已被用户或系统显式暂停时返回 `true`（例如 Paused）。
+    /// Returns `true` when the item has been explicitly paused by the user
+    /// or system (e.g. Paused).
     fn is_paused(&self) -> bool;
 }
 
@@ -264,175 +266,177 @@ pub enum ThreadRequest {
     },
 }
 
-/// 对 [`ThreadRequest`] 的响应。
+/// Response to a [`ThreadRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadResponse {
-    /// 此响应所属的线程。
+    /// The thread this response pertains to.
     pub thread_id: String,
-    /// 人类可读的状态字符串（例如 `"ok"`、`"error"`）。
+    /// Human-readable status string (e.g. `"ok"`, `"error"`).
     pub status: String,
-    /// 返回单个线程时的线程详情。
+    /// The thread details, when a single thread is returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread: Option<Thread>,
-    /// 线程列表，由 `List` 请求填充。
+    /// List of threads, populated by `List` requests.
     #[serde(default)]
     pub threads: Vec<Thread>,
-    /// 由 get/set 目标请求返回的线程目标。
+    /// Thread goal returned by goal get/set requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal: Option<ThreadGoal>,
-    /// 线程使用的模型（如果适用）。
+    /// The model used for the thread, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 线程使用的模型供应商。
+    /// The model provider used for the thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_provider: Option<String>,
-    /// 线程的工作目录。
+    /// The working directory of the thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    /// 活跃的审批策略。
+    /// The active approval policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
-    /// 活跃的沙箱配置。
+    /// The active sandbox configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
-    /// 与此响应关联的流式事件。
+    /// Streaming events associated with this response.
     #[serde(default)]
     pub events: Vec<EventFrame>,
-    /// 任意附加响应数据。
+    /// Arbitrary additional response data.
     #[serde(default)]
     pub data: Value,
 }
 
-/// 不绑定到特定线程的应用级请求。
+/// Application-level requests that are not tied to a specific thread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppRequest {
-    /// 查询服务器能力。
+    /// Query the server's capabilities.
     Capabilities,
-    /// 按键读取配置值。
+    /// Read a configuration value by key.
     ConfigGet { key: String },
-    /// 设置配置键的值。
+    /// Set a configuration key to a value.
     ConfigSet { key: String, value: String },
-    /// 移除配置键。
+    /// Remove a configuration key.
     ConfigUnset { key: String },
-    /// 列出所有配置条目。
+    /// List all configuration entries.
     ConfigList,
-    /// 从磁盘重新加载配置并应用到运行时。
+    /// Reload configuration from disk and apply to the live runtime.
     ///
-    /// 重新读取 `config.toml` 和同级 `permissions.toml`，
-    /// 刷新运行时的 `Runtime.config` 和 `Runtime.exec_policy`，
-    /// 以便无头客户端无需重启即可拾取外部配置文件*和*权限规则的编辑。
+    /// Re-reads both `config.toml` and the sibling `permissions.toml`,
+    /// refreshing the live `Runtime.config` and `Runtime.exec_policy`
+    /// so headless clients can pick up external config-file *and*
+    /// permission-rule edits without restarting.
     ///
-    /// 镜像 TUI 的 `reload_runtime_config` 代码路径，覆盖无头 `Runtime`
-    /// 可触及的所有内容。MCP 服务器连接不会刷新——更改 `mcp_config_path`
-    /// 或引用的 `mcp.json` 仍需要重启，与 TUI 的 `mcp_restart_required`
-    /// 行为一致。
+    /// Mirrors the TUI `reload_runtime_config` codepath for everything
+    /// reachable from the headless `Runtime`. MCP server connections
+    /// are not refreshed — changing `mcp_config_path` or the referenced
+    /// `mcp.json` still requires a restart, matching the TUI's
+    /// `mcp_restart_required` behavior.
     ConfigReload,
-    /// 列出可用模型。
+    /// List available models.
     Models,
-    /// 列出当前加载到内存中的线程。
+    /// List threads that are currently loaded in memory.
     ThreadLoadedList,
-    /// 提交对先前 [`EventFrame::UserInputRequest`] 的答案。
+    /// Submit answers to a prior [`EventFrame::UserInputRequest`].
     ///
-    /// `request_id` 必须与待处理的澄清请求匹配。无头客户端
-    /// 使用此请求将用户的选择返回给运行时。
+    /// `request_id` must match a pending clarification request. Headless
+    /// clients use this to return the user's selections back to the runtime.
     SubmitUserInput {
         request_id: String,
         answers: Vec<UserInputAnswerEvent>,
     },
 }
 
-/// 对 [`AppRequest`] 的响应。
+/// Response to an [`AppRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppResponse {
-    /// 请求是否成功。
+    /// Whether the request succeeded.
     pub ok: bool,
-    /// 响应负载。
+    /// The response payload.
     pub data: Value,
-    /// 与此响应关联的流式事件。
+    /// Streaming events associated with this response.
     #[serde(default)]
     pub events: Vec<EventFrame>,
 }
 
-/// 一个简单的提示请求，向模型发送文本并返回输出。
+/// A simple prompt request that sends text to the model and returns output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptRequest {
-    /// 可选的提示线程上下文。
+    /// Optional thread context for the prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
-    /// 提示文本。
+    /// The prompt text.
     pub prompt: String,
-    /// 模型覆盖，省略时使用默认模型。
+    /// Model override, or the default if omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
-/// 对 [`PromptRequest`] 的响应。
+/// Response to a [`PromptRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResponse {
-    /// 模型的输出文本。
+    /// The model's output text.
     pub output: String,
-    /// 产生输出的模型。
+    /// The model that produced the output.
     pub model: String,
-    /// 与此响应关联的流式事件。
+    /// Streaming events associated with this response.
     #[serde(default)]
     pub events: Vec<EventFrame>,
 }
 
-/// 控制代理在执行前必须征求用户审批的策略。
+/// Policy controlling when the agent must ask the user for approval before acting.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AskForApproval {
-    /// 除非操作在可信路径/资源上，否则请求审批。
+    /// Ask for approval unless the action is on a trusted path/resource.
     UnlessTrusted,
-    /// 仅在工具调用失败后询问。
+    /// Only ask after a tool call fails.
     OnFailure,
-    /// 每次请求工具调用时都询问。
+    /// Ask every time a tool call is requested.
     OnRequest,
-    /// 不询问直接拒绝操作，并附上被阻止类别的详情。
+    /// Reject the action without asking, with details on which categories are blocked.
     Reject {
         sandbox_approval: bool,
         rules: bool,
         mcp_elicitations: bool,
     },
-    /// 从不询问；自动审批所有操作。
+    /// Never ask; auto-approve all actions.
     Never,
 }
 
-/// 工具调用来源的分类。
+/// Classification of tool invocation origin.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
-    /// 内置函数工具。
+    /// A built-in function tool.
     Function,
-    /// MCP（模型上下文协议）工具。
+    /// An MCP (Model Context Protocol) tool.
     Mcp,
 }
 
-/// 执行本地 shell 命令的参数。
+/// Parameters for executing a local shell command.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalShellParams {
-    /// 要执行的 shell 命令。
+    /// The shell command to execute.
     pub command: String,
-    /// 命令的工作目录。
+    /// Working directory for the command.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// 超时时间（毫秒）。
+    /// Timeout in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
 
-/// 工具调用的负载，按工具类型区分。
+/// The payload of a tool call, discriminated by tool type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolPayload {
-    /// 带有 JSON 编码参数的内置函数调用。
+    /// A built-in function call with JSON-encoded arguments.
     Function { arguments: String },
-    /// 带有自由格式输入字符串的自定义工具调用。
+    /// A custom tool invocation with a free-form input string.
     Custom { input: String },
-    /// 本地 shell 命令执行。
+    /// A local shell command execution.
     LocalShell { params: LocalShellParams },
-    /// 针对特定服务器和工具的 MCP 工具调用。
+    /// An MCP tool invocation targeting a specific server and tool.
     Mcp {
         server: String,
         tool: String,
@@ -442,323 +446,323 @@ pub enum ToolPayload {
     },
 }
 
-/// 工具调用的结果，按工具类型区分。
+/// The result of a tool call, discriminated by tool type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolOutput {
-    /// 内置函数调用的结果。
+    /// Result of a built-in function call.
     Function {
-        /// 输出主体（如果有的话）。
+        /// The output body, if any.
         #[serde(skip_serializing_if = "Option::is_none")]
         body: Option<Value>,
-        /// 调用是否成功。
+        /// Whether the call succeeded.
         success: bool,
     },
-    /// MCP 工具调用的结果。
+    /// Result of an MCP tool call.
     Mcp {
-        /// MCP 服务器返回的结果值。
+        /// The result value returned by the MCP server.
         result: Value,
     },
 }
 
-/// 网络策略规则要执行的操作。
+/// Action to take for a network policy rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicyRuleAction {
-    /// 允许网络访问该主机。
+    /// Allow network access to the host.
     Allow,
-    /// 拒绝网络访问该主机。
+    /// Deny network access to the host.
     Deny,
 }
 
-/// 针对特定主机的网络访问策略的提议修正。
+/// A proposed amendment to the network access policy for a specific host.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkPolicyAmendment {
-    /// 要修改策略的主机。
+    /// The host to amend the policy for.
     pub host: String,
-    /// 要应用的操作。
+    /// The action to apply.
     pub action: NetworkPolicyRuleAction,
 }
 
-/// 用户对审批请求的决定。
+/// A user's decision on an approval request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReviewDecision {
-    /// 批准操作。
+    /// Approve the action.
     Approved,
-    /// 批准并同时修改执行策略。
+    /// Approve and also amend the execution policy.
     ApprovedExecpolicyAmendment,
-    /// 仅在此会话剩余时间内批准。
+    /// Approve for the remainder of this session only.
     ApprovedForSession,
-    /// 批准并附带网络策略修正。
+    /// Approve with a network policy amendment.
     NetworkPolicyAmendment {
         host: String,
         action: NetworkPolicyRuleAction,
     },
-    /// 拒绝操作。
+    /// Deny the action.
     Denied,
-    /// 中止整个轮次。
+    /// Abort the entire turn.
     Abort,
 }
 
-/// MCP 服务器在启动过程中的状态。
+/// Status of an MCP server during startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpStartupStatus {
-    /// 服务器正在启动中。
+    /// The server is in the process of starting.
     Starting,
-    /// 服务器已准备好接收请求。
+    /// The server is ready to accept requests.
     Ready,
-    /// 服务器启动失败。
+    /// The server failed to start.
     Failed { error: String },
-    /// 启动已取消。
+    /// Startup was cancelled.
     Cancelled,
 }
 
-/// 单个 MCP 服务器启动的进度更新。
+/// A progress update for a single MCP server's startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpStartupUpdateEvent {
-    /// MCP 服务器名称。
+    /// Name of the MCP server.
     pub server_name: String,
-    /// 当前启动状态。
+    /// Current startup status.
     pub status: McpStartupStatus,
 }
 
-/// 启动失败的 MCP 服务器的详情。
+/// Details of an MCP server that failed to start.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpStartupFailure {
-    /// 启动失败的 MCP 服务器名称。
+    /// Name of the MCP server that failed.
     pub server_name: String,
-    /// 错误描述。
+    /// Error description.
     pub error: String,
 }
 
-/// 所有 MCP 服务器启动完成后发出的事件汇总。
+/// Summary event emitted once all MCP servers have finished starting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpStartupCompleteEvent {
-    /// 成功启动的服务器。
+    /// Servers that started successfully.
     pub ready: Vec<String>,
-    /// 启动失败的服务器。
+    /// Servers that failed to start.
     pub failed: Vec<McpStartupFailure>,
-    /// 启动已被取消的服务器。
+    /// Servers whose startup was cancelled.
     pub cancelled: Vec<String>,
 }
 
-/// 需要审批的网络访问请求的上下文。
+/// Context about a network access request that requires approval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkApprovalContext {
-    /// 正在访问的主机。
+    /// The host being accessed.
     pub host: String,
-    /// 网络协议（例如 `"https"`、`"tcp"`）。
+    /// The network protocol (e.g. `"https"`, `"tcp"`).
     pub protocol: String,
 }
 
-/// 在澄清问题中向用户展示的可选项。
+/// A selectable option presented to the user in a clarification question.
 ///
-/// `request_user_input` 模型工具的无头序列化形式，
-/// 镜像自 TUI 的 `UserInputOption`。由 [`EventFrame::UserInputRequest`]
-/// 帧和 [`AppRequest::SubmitUserInput`] 回复路径共享，
-/// 以便两个接口在问题模式上保持一致。
+/// Headless serialization shape for the `request_user_input` model tool,
+/// mirrored after the TUI's `UserInputOption`. Shared by the
+/// [`EventFrame::UserInputRequest`] frame and the [`AppRequest::SubmitUserInput`]
+/// reply path so both surfaces agree on the question schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputOptionEvent {
-    /// 选项的简短标签（也是选中时提交的值）。
+    /// Short label for the option (also the value submitted when picked).
     pub label: String,
-    /// 与标签一起显示的较长描述。
+    /// Longer description shown alongside the label.
     pub description: String,
 }
 
-/// 向用户提出的单个澄清问题。
+/// A single clarification question posed to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputQuestionEvent {
-    /// 作为问题标题显示的简洁标头。
+    /// Compact header shown as the question title.
     pub header: String,
-    /// 用于将答案关联到此问题的稳定标识符。
+    /// Stable identifier used to correlate answers back to this question.
     pub id: String,
-    /// 问题正文。
+    /// The question body.
     pub question: String,
-    /// 2-4 个建议答案。
+    /// 2-4 suggested answers.
     pub options: Vec<UserInputOptionEvent>,
-    /// 当为 `true` 时，客户端还应提供自由文本回答。
+    /// When `true`, the client should also offer a free-text response.
     #[serde(default)]
     pub allow_free_text: bool,
-    /// 当为 `true` 时，用户可以选择多个选项。
+    /// When `true`, the user may select more than one option.
     #[serde(default)]
     pub multi_select: bool,
 }
 
-/// 通过模型工具调用请求结构化用户输入的事件。
+/// An event requesting structured user input via a model-tool call.
 ///
-/// 与 [`ExecApprovalRequestEvent`] 同属澄清问题流程。
-/// 当模型在无头上下文中调用 `request_user_input` 时，
-/// 由 `Runtime::invoke_tool` 以 fire-and-return 方式发出。
+/// Sibling of [`ExecApprovalRequestEvent`] for the clarification-question
+/// flow. Emitted fire-and-return by `Runtime::invoke_tool` when the model
+/// invokes `request_user_input` in a headless context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputRequestEvent {
-    /// 请求输入的工具调用的标识符。
+    /// Identifier of the tool call requesting input.
     pub call_id: String,
-    /// 发起请求的轮次。
+    /// The turn during which the request was made.
     pub turn_id: String,
-    /// 此用户输入请求的唯一标识符（客户端使用它进行回复）。
+    /// Unique identifier for this user-input request (clients reply with it).
     pub request_id: String,
-    /// 1-3 个要展示的问题。
+    /// 1-3 questions to present.
     pub questions: Vec<UserInputQuestionEvent>,
 }
 
-/// 澄清问题的一个答案。
+/// One answer to a clarification question.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInputAnswerEvent {
-    /// 此答案对应问题的 `id`。
+    /// The `id` of the question this answer corresponds to.
     pub id: String,
-    /// 所选选项的标签，或自由文本回答的 `"Other"`。
+    /// The selected option's label, or `"Other"` for a free-text response.
     pub label: String,
-    /// 解析后的值（选项标签或输入的自由文本）。
+    /// The resolved value (option label, or the typed free-text).
     pub value: String,
 }
 
-/// 请求用户审批命令执行或补丁应用的事件。
+/// An event requesting user approval for a command execution or patch application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecApprovalRequestEvent {
-    /// 请求审批的工具调用的标识符。
+    /// Identifier of the tool call requesting approval.
     pub call_id: String,
-    /// 此审批请求的唯一标识符。
+    /// Unique identifier for this approval request.
     pub approval_id: String,
-    /// 发起请求的轮次。
+    /// The turn during which the request was made.
     pub turn_id: String,
-    /// 将要执行的命令。
+    /// The command that would be executed.
     pub command: String,
-    /// 命令的工作目录。
+    /// The working directory for the command.
     pub cwd: String,
-    /// 需要审批的人类可读原因。
+    /// Human-readable reason why approval is needed.
     pub reason: String,
-    /// 与此审批请求匹配的策略规则（如果有）。
+    /// Policy rule that matched this approval request, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_rule: Option<Box<str>>,
-    /// 如果审批涉及网络访问，则为网络上下文。
+    /// Network context if the approval involves network access.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_approval_context: Option<NetworkApprovalContext>,
-    /// 提议的执行策略规则修正。
+    /// Proposed execution policy rule amendments.
     #[serde(default)]
     pub proposed_execpolicy_amendment: Vec<String>,
-    /// 提议的网络策略修正。
+    /// Proposed network policy amendments.
     #[serde(default)]
     pub proposed_network_policy_amendments: Vec<NetworkPolicyAmendment>,
-    /// 正在请求的额外权限。
+    /// Additional permissions being requested.
     #[serde(default)]
     pub additional_permissions: Vec<String>,
-    /// 用户可以选择的决定集合。
+    /// The set of decisions the user can choose from.
     #[serde(default)]
     pub available_decisions: Vec<ReviewDecision>,
 }
 
-/// 响应增量被写入的信道。
+/// The channel a response delta is being written to.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseChannel {
-    /// 主要的可见文本输出。
+    /// The main visible text output.
     #[default]
     Text,
-    /// 内部推理/思维链输出。
+    /// Internal reasoning / chain-of-thought output.
     Reasoning,
 }
 
 impl ResponseChannel {
-    /// 如果这是 `Text` 信道则返回 `true`。
+    /// Returns `true` if this is the `Text` channel.
     pub const fn is_text(&self) -> bool {
         matches!(self, ResponseChannel::Text)
     }
 }
 
-/// 用户针对审批请求发出的审批决定。
+/// A user's approval decision sent in response to an approval request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalDecisionRequest {
-    /// 决定标识符（例如 `"approved"`、`"denied"`）。
+    /// The decision identifier (e.g. `"approved"`, `"denied"`).
     pub decision: String,
-    /// 是否记住此决定以便用于未来类似请求。
+    /// Whether to remember this decision for future similar requests.
     #[serde(default)]
     pub remember: bool,
 }
 
-/// 代理执行期间发出的单个流式事件帧。
+/// A single streaming event frame emitted during agent execution.
 ///
-/// 事件由 `event` 字段标记，涵盖一个轮次的完整生命周期：
-/// 响应流式传输、工具调用、MCP 生命周期、命令执行、
-/// 补丁应用、审批和错误。
+/// Events are tagged by the `event` field and cover the full lifecycle of a
+/// turn: response streaming, tool calls, MCP lifecycle, command execution,
+/// patch application, approvals, and errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventFrame {
-    /// 新的模型响应已开始。
+    /// A new model response has started.
     ResponseStart { response_id: String },
-    /// 进行中响应的增量文本。
+    /// A incremental text delta for an in-progress response.
     ResponseDelta {
         response_id: String,
         delta: String,
         #[serde(default, skip_serializing_if = "ResponseChannel::is_text")]
         channel: ResponseChannel,
     },
-    /// 模型响应已完成。
+    /// The model response has finished.
     ResponseEnd { response_id: String },
-    /// 工具调用已开始。
+    /// A tool call has begun.
     ToolCallStart {
         response_id: String,
         tool_name: String,
         arguments: Value,
     },
-    /// 工具调用已完成并产生结果。
+    /// A tool call has completed and produced a result.
     ToolCallResult {
         response_id: String,
         tool_name: String,
         output: Value,
     },
-    /// MCP 服务器启动的进度更新。
+    /// Progress update for an MCP server starting up.
     McpStartupUpdate { update: McpStartupUpdateEvent },
-    /// 所有 MCP 服务器已完成启动。
+    /// All MCP servers have finished starting.
     McpStartupComplete { summary: McpStartupCompleteEvent },
-    /// MCP 工具调用已开始。
+    /// An MCP tool call has begun.
     McpToolCallBegin {
         server_name: String,
         tool_name: String,
     },
-    /// MCP 工具调用已结束。
+    /// An MCP tool call has finished.
     McpToolCallEnd {
         server_name: String,
         tool_name: String,
         ok: bool,
     },
-    /// 需要用户审批以执行命令。
+    /// User approval is needed for a command execution.
     ExecApprovalRequest { request: ExecApprovalRequestEvent },
-    /// 需要用户审批以应用补丁。
+    /// User approval is needed for applying a patch.
     ApplyPatchApprovalRequest { request: ExecApprovalRequestEvent },
-    /// 模型工具正在请求用户的结构化澄清输入。
+    /// A model tool is requesting structured clarification input from the user.
     ///
-    /// TUI 的 `request_user_input` 模态流程的无头对应物。
-    /// `request_id` 与 [`AppRequest::SubmitUserInput`] 回复关联。
+    /// Headless sibling of the TUI's `request_user_input` modal flow.
+    /// `request_id` correlates with an [`AppRequest::SubmitUserInput`] reply.
     UserInputRequest { request: UserInputRequestEvent },
-    /// MCP 服务器正在请求用户输入（引导式询问）。
+    /// An MCP server is requesting user input (elicitation).
     ElicitationRequest {
         server_name: String,
         request_id: String,
         prompt: String,
     },
-    /// 命令已开始执行。
+    /// A command has started executing.
     ExecCommandBegin { command: String, cwd: String },
-    /// 运行中命令的增量输出。
+    /// Incremental output from a running command.
     ExecCommandOutputDelta { command: String, delta: String },
-    /// 命令已执行完毕。
+    /// A command has finished executing.
     ExecCommandEnd { command: String, exit_code: i32 },
-    /// 补丁已开始应用到文件。
+    /// A patch has started being applied to a file.
     PatchApplyBegin { path: String },
-    /// 补丁已应用完毕。
+    /// A patch has finished being applied.
     PatchApplyEnd { path: String, ok: bool },
-    /// 线程内已开始新的轮次。
+    /// A new turn has started within a thread.
     TurnStarted { turn_id: String },
-    /// 轮次已成功完成。
+    /// A turn has completed successfully.
     TurnComplete { turn_id: String },
-    /// 轮次在完成前被中止。
+    /// A turn was aborted before completion.
     TurnAborted { turn_id: String, reason: String },
-    /// 线程目标已设置或更新。
+    /// A thread goal was set or updated.
     ThreadGoalUpdated { goal: ThreadGoal },
-    /// 线程目标已清除。
+    /// A thread goal was cleared.
     ThreadGoalCleared { thread_id: String },
-    /// 处理过程中发生错误。
+    /// An error occurred during processing.
     Error {
         response_id: String,
         message: String,

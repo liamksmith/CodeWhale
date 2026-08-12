@@ -1,4 +1,4 @@
-//! 针对调色板模式、社区主题和终端深度的颜色适配。
+//! Color adaptation for palette mode, community themes, and terminal depth.
 
 use ratatui::style::Color;
 
@@ -136,46 +136,47 @@ fn adapt_bg_for_solarized_light_palette(color: Color) -> Color {
     }
 }
 
-// === 社区主题重映射 ===
+// === Community-theme remap ===
 //
-// 此 crate 中的绝大多数渲染点直接使用 `palette::TEXT_*`、
-// `palette::WHALE_BG`、`palette::BORDER_COLOR` 等，而不是
-// 查找 `app.ui_theme`。为了使社区主题预设（Catppuccin、
-// Tokyo Night……）在视觉上真正产生影响，我们在后端层截获颜色
-//（参见 `tui::color_compat::ColorCompatBackend`）并将每个
-// 已知暗调色板常量重映射到活跃预设的等效 UiTheme 槽位。
-// 对于 `System`、`Whale` 和 `WhaleLight`，重映射是无操作的——
-// 现有的暗/亮管线处理它们。
+// The vast majority of render sites in this crate reach for `palette::TEXT_*`,
+// `palette::WHALE_BG`, `palette::BORDER_COLOR`, etc. directly rather than
+// looking up `app.ui_theme`. To make community theme presets (Catppuccin,
+// Tokyo Night, …) actually move the needle visually we intercept colors at
+// the backend layer (see `tui::color_compat::ColorCompatBackend`) and remap
+// every well-known dark-palette constant to the equivalent UiTheme slot for
+// the active preset. For `System`, `Whale`, and `WhaleLight` the remap is a
+// no-op — the existing dark/light pipeline handles those.
 
-/// 每预设的绿色强调色，用于即使在主题化后也语义上*应*保持绿色的内容
-///（diff "+" 行、用户输入正文）。现在委托给活跃 UiTheme 的 diff_added_fg。
+/// Per-preset green accent used for things that semantically *should* stay
+/// green even after theming (diff "+" lines, user-input body). Now delegates
+/// to the active UiTheme's diff_added_fg.
 #[must_use]
 const fn theme_green(ui: &UiTheme) -> Color {
     ui.diff_added_fg
 }
 
-/// 每预设的红色强调色，用于 diff "−" 行前景色（当存在时）。
+/// Per-preset red accent, used for diff "−" line foreground when present.
 #[must_use]
 #[allow(dead_code)]
 const fn theme_red(ui: &UiTheme) -> Color {
     ui.diff_deleted_fg
 }
 
-/// 每预设的深绿色 diff 添加背景色调。
+/// Per-preset dark-green diff-added background tint.
 #[must_use]
 const fn theme_diff_added_bg(ui: &UiTheme) -> Color {
     ui.diff_added_bg
 }
 
-/// 每预设的深红色 diff 删除背景色调。
+/// Per-preset dark-red diff-deleted background tint.
 #[must_use]
 const fn theme_diff_deleted_bg(ui: &UiTheme) -> Color {
     ui.diff_deleted_bg
 }
 
-/// 如果预设参与单元格级重映射，则返回 `true`。默认
-/// Whale 和 System 主题不变地通过，因此整个阶段在
-/// 热路径上编译为单个加载+比较。
+/// Returns `true` if the preset participates in the cell-level remap. The
+/// default Whale and System themes pass through unchanged so this whole
+/// stage compiles down to a single load+compare on the hot path.
 #[inline]
 #[must_use]
 pub const fn theme_remap_active(theme: ThemeId) -> bool {
@@ -192,16 +193,17 @@ pub const fn theme_remap_active(theme: ThemeId) -> bool {
     )
 }
 
-/// 为社区主题预设重映射前景色。镜像了
-/// [`adapt_fg_for_palette_mode`] 的结构——相同的源集合，不同的
-/// 目的地，源自预设的 [`UiTheme`]。
+/// Remap a foreground color for a community theme preset. Mirrors the
+/// structure of [`adapt_fg_for_palette_mode`] — same source set, different
+/// destinations sourced from the preset's [`UiTheme`].
 ///
-/// `ui` 参数是 `App` 上携带的*活跃* UiTheme——
-/// `ThemeId.ui_theme()` 已应用用户的 `background_color` 覆盖。
-/// 将其传递进去（而不是在此函数内从 `theme` 重新解析）保留了
-/// 该覆盖；否则用户将 `background_color = "#..."` 与社区主题
-/// 结合使用，会在每次单元格重映射时看到其覆盖被预设的
-/// surface_bg 静默覆盖。
+/// The `ui` argument is the *active* UiTheme as carried on `App` —
+/// `ThemeId.ui_theme()` with the user's `background_color` override
+/// already applied. Passing it through (rather than re-resolving from
+/// `theme` inside this function) preserves that override; otherwise a
+/// user combining `background_color = "#..."` with a community theme
+/// would see their override silently overwritten by the preset's
+/// surface_bg on every cell remap.
 #[must_use]
 pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     if !theme_remap_active(theme) {
@@ -241,8 +243,8 @@ pub fn adapt_fg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     }
 }
 
-/// 为社区主题预设重映射背景色。参见
-/// `adapt_fg_for_theme` 上的 `ui` 说明——此处约定相同。
+/// Remap a background color for a community theme preset. See the
+/// `ui` note on [`adapt_fg_for_theme`] — same contract here.
 #[must_use]
 pub fn adapt_bg_for_theme(color: Color, theme: ThemeId, ui: &UiTheme) -> Color {
     if !theme_remap_active(theme) {
@@ -422,26 +424,26 @@ fn grayscale_bg_from_luma(luma: u8) -> Color {
 pub(crate) fn luma(r: u8, g: u8, b: u8) -> u8 {
     ((u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 + 500) / 1000) as u8
 }
-// === 颜色深度 + 亮度辅助函数（v0.6.6 UI 重新设计）===
+// === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
-/// 终端颜色深度，用于在无法忠实渲染它们的终端上
-/// 限制真彩色表面（例如思考背景色调）。
+/// Terminal color depth, used to gate truecolor surfaces (e.g. reasoning bg
+/// tints) on terminals that can't render them faithfully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorDepth {
-    /// 16 色终端（macOS Terminal.app 默认值、简陋的 tmux 设置）。
-    /// 背景色调会扭曲命名调色板映射，因此我们丢弃它们。
+    /// 16-color terminals (macOS Terminal.app default, dumb tmux setups).
+    /// Background tints distort the named-palette mapping, so we drop them.
     Ansi16,
-    /// 256 色终端——RGB→256 回退足够忠实。
+    /// 256-color terminals — RGB→256 fallback is faithful enough.
     Ansi256,
-    /// 真彩色（24 位）——逐字渲染调色板。
+    /// True-color (24-bit) — render the palette verbatim.
     TrueColor,
 }
 
 impl ColorDepth {
-    /// 检测活跃终端的颜色深度。首先检查 `COLORTERM`
-    ///（truecolor / 24bit），然后回退到 `TERM`。默认为
-    /// `TrueColor`，因为大多数现代终端支持它；保守的
-    /// 回退是 `Ansi16`，这样背景色调会安全消失。
+    /// Detect the active terminal's color depth. Honors `COLORTERM`
+    /// (truecolor / 24bit) first, then falls back to `TERM`. Defaults to
+    /// `TrueColor` because most modern terminals support it; the conservative
+    /// fallback is `Ansi16` so background tints disappear safely.
     #[must_use]
     pub fn detect() -> Self {
         if let Ok(ct) = std::env::var("COLORTERM") {
@@ -472,19 +474,19 @@ impl ColorDepth {
         } else if term.is_empty() || term == "dumb" {
             Self::Ansi16
         } else {
-            // 未知的 TERM 字符串默认不应接收 24 位 SGR。
-            // 较老的 macOS/远程终端可能将真彩色背景渲染为
-            // 亮青色块；256 色输出是更安全的折中。
+            // Unknown TERM strings should not receive 24-bit SGR by default.
+            // Older macOS/remote terminals can render truecolor backgrounds as
+            // bright cyan blocks; 256-color output is the safer compromise.
             Self::Ansi256
         }
     }
 }
 
-/// 适配前景色到终端的颜色深度。
+/// Adapt a foreground color to the terminal's color depth.
 ///
-/// 在 TrueColor 上，`color` 直接通过。在 Ansi256 上，我们让 ratatui 的
-/// 渲染器降级转换（它已经这样做了）。在 Ansi16 上，我们将 RGB 剥离为
-/// 接近的命名颜色，这样语义意图即使在旧终端上也能存活。
+/// On TrueColor, `color` passes through. On Ansi256 we let ratatui's renderer
+/// down-convert (it does this already). On Ansi16 we strip RGB to a near
+/// named color so semantic intent survives even on legacy terminals.
 #[allow(dead_code)]
 #[must_use]
 pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
@@ -496,9 +498,9 @@ pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
     }
 }
 
-/// 适配背景色。在 Ansi16 终端上，背景色调有噪声，
-/// 因此我们将其降为 `Color::Reset`，而不是尝试粗略的命名颜色
-/// 匹配——安静的背景比错误的背景更清晰。
+/// Adapt a background color. On Ansi16 terminals background tints are noisy,
+/// so we drop them to `Color::Reset` rather than attempt a coarse named-color
+/// match — a quiet background reads cleaner than a wrong one.
 #[allow(dead_code)]
 #[must_use]
 pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
@@ -510,9 +512,9 @@ pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
     }
 }
 
-/// 在 `alpha` 下混合两种 RGB 颜色（0.0 = `bg`，1.0 = `fg`）。
-/// 任何非 RGB 的颜色回退到 `fg`——在命名调色板条目上
-/// 没有有意义的 alpha 混合。
+/// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). Anything that's not
+/// RGB falls back to `fg` — there's no meaningful alpha blend on a named
+/// palette entry.
 #[allow(dead_code)]
 #[must_use]
 pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
@@ -530,9 +532,9 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
     }
 }
 
-/// 返回能忠实渲染背景色的终端的专用思考表面色调。
-/// ANSI-16 终端禁用此色调，因为最接近的命名背景
-/// 对于这种微妙的处理来说过于粗糙。
+/// Return the dedicated reasoning surface tint for terminals that can render
+/// background colors faithfully. ANSI-16 terminals disable the tint because
+/// the nearest named background is too coarse for this subtle treatment.
 #[must_use]
 pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     match depth {
@@ -541,13 +543,13 @@ pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     }
 }
 
-/// 基于 `now_ms`（纪元毫秒）在 2 秒周期上将 `color` 在
-/// 30% 和 100% 亮度之间脉冲。最小值使字形在低谷时保持可读；
-/// 最大值是原始源颜色。它们之间的线性插值看起来像
-/// 缓慢的心跳。
+/// Pulse `color` between 30% and 100% brightness on a 2s cycle keyed off
+/// `now_ms` (epoch ms). The minimum keeps the glyph readable at trough; the
+/// maximum is the source color verbatim. Linear interpolation between them
+/// reads as a slow heartbeat.
 #[must_use]
 pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
-    // 2 秒 = 2000 ms 完整周期；sin 给出平滑的 0..1..0 摆动。
+    // 2 s = 2000 ms full cycle; sin gives a smooth 0..1..0 swing.
     let phase = (now_ms % 2000) as f32 / 2000.0;
     let t = (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5; // 0..1
     let alpha = 0.30 + t * 0.70; // 30%..100%
@@ -560,10 +562,10 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
     }
 }
 
-/// 将 RGB 三元组映射到最接近的 ANSI-16 命名颜色。仅由
-/// `adapt_color` 在 Ansi16 终端上使用；我们依赖色调主导 +
-/// 亮度，使品牌颜色落在明显相关的命名条目上（天空→青色，
-/// 蓝色→蓝色，红色→红色等），而不是在灰色周围抖动。
+/// Map an RGB triple to its closest ANSI-16 named color. Only used by
+/// `adapt_color` on Ansi16 terminals; we lean on hue dominance + lightness so
+/// brand colors land on the obviously-related named entry (sky → cyan, blue →
+/// blue, red → red, etc.) rather than dithering around grey.
 #[allow(dead_code)]
 pub(crate) fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     let lum = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
@@ -628,9 +630,9 @@ pub(crate) fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
-/// 将 RGB 颜色映射到最近的 xterm 256 色调色板索引。我们只使用
-/// 稳定的 6x6x6 立方体和灰度斜坡（16..255），而不是终端的
-/// 用户可配置的 0..15 颜色。
+/// Map an RGB color to the nearest xterm 256-color palette index. We use only
+/// the stable 6x6x6 cube and grayscale ramp (16..255), not the terminal's
+/// user-configurable 0..15 colors.
 #[allow(dead_code)]
 pub(crate) fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];

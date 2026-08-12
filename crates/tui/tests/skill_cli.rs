@@ -1,12 +1,13 @@
-//! 社区技能 CLI 流程的集成测试（#140）。
+//! Integration tests for the community-skill CLI flows (#140).
 //!
-//! 保持此文件名不含 `install`：Windows 可能会将未经清单标记的测试二进制文件
-//! 视为需要提升权限的程序（因其类似于安装程序名称）。
+//! Keep this file name free of `install`: Windows can treat unmanifested test
+//! binaries with installer-like names as elevation-required programs.
 //!
-//! 这些测试针对一个微型进程内 HTTP 服务器执行完整的验证管道，
-//! 因此网络门控、下载上限、tarball 验证、原子重命名和 `.installed-from`
-//! 标记全部端到端运行。该模块通过 `#[path]` 包含引入（与 `integration_mock_llm.rs` 一致），
-//! 从而无需单独的库 crate 即可访问私有辅助函数。
+//! These tests exercise the full validation pipeline against a tiny in-process
+//! HTTP server, so the network gate, download cap, tarball validation, atomic
+//! rename, and `.installed-from` marker all run end-to-end. The module is
+//! pulled in via `#[path]` includes (matching `integration_mock_llm.rs`) so we
+//! get access to private helpers without a separate library crate.
 
 use std::io::Write;
 use std::path::Path;
@@ -16,11 +17,11 @@ use flate2::write::GzEncoder;
 use tempfile::TempDir;
 use tiny_http::{Method, Response, Server};
 
-// 将生产源代码文件引入此测试二进制文件，使测试无需专用库 crate
-// 即可触及 `install` 的公有接口。
+// Pull the production source files into this test binary so the test can
+// reach `install`'s public surface without a dedicated library crate.
 //
-// `install.rs` 仅引用 `crate::network_policy`，因此只需
-// 将该辅助模块与 `install` 本身一并引入即可。
+// `install.rs` only references `crate::network_policy` so we just need that
+// one helper module alongside `install` itself.
 #[path = "../src/network_policy.rs"]
 mod network_policy;
 
@@ -31,8 +32,8 @@ mod install;
 use crate::install::{InstallOutcome, InstallSource, UpdateResult};
 use crate::network_policy::{DecisionToml, NetworkPolicy};
 
-/// 从 `(path, body)` 对构建 gzip 压缩的 tarball。权限设为 0o644，
-/// 以确保不同平台的 umask 差异不会影响字节内容。
+/// Construct a gzipped tarball from `(path, body)` pairs. Permissions are set
+/// to 0o644 so umask differences across platforms don't perturb the bytes.
 fn make_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     {
@@ -88,8 +89,9 @@ fn prompt_all_policy() -> NetworkPolicy {
     }
 }
 
-/// 启动一个微型 HTTP 服务器，在任何路径上以 200 OK 响应提供 `bytes`，
-/// 并返回绑定的 URL。该服务器对*每个*请求都进行回复（同一测试中可在多次安装中复用）。
+/// Spawn a tiny HTTP server that serves `bytes` at any path with 200 OK and
+/// returns the bound URL. The server replies to *every* request (we re-use it
+/// across multiple installs in the same test).
 fn spawn_tarball_server(
     bytes: Vec<u8>,
 ) -> (
@@ -105,7 +107,7 @@ fn spawn_tarball_server(
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
         loop {
-            // 使用带小超时的轮询风格的 recv，以便可以干净地退出。
+            // Poll-style with a small recv timeout so we can break out cleanly.
             match server.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(Some(req)) => {
                     if req.method() != &Method::Get {
@@ -177,7 +179,8 @@ async fn install_happy_path_writes_skill_and_marker() {
 
 #[tokio::test]
 async fn install_rejects_path_traversal() {
-    // `tar::Builder::append_data` 本身会拒绝 `..`，因此我们通过 `append` 写入原始 header 字节来构造恶意条目。
+    // `tar::Builder::append_data` rejects `..` itself, so we craft the bad
+    // entry by writing the raw header bytes via `append`.
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     {
         let mut builder = tar::Builder::new(&mut gz);
@@ -190,13 +193,13 @@ async fn install_rejects_path_traversal() {
             .append_data(&mut hdr, "test-skill-main/SKILL.md", body.as_slice())
             .unwrap();
 
-        // 路径遍历条目。`tar` crate 的 `set_path` 本身会拒绝 `..`，
-        // 因此我们直接修改 header 中原始的 100 字节名称字段。
+        // Path-traversal entry. The `tar` crate's `set_path` rejects `..`
+        // itself, so we patch the raw 100-byte name field in the header.
         let evil_body: &[u8] = b"not gonna happen";
         let mut evil_hdr = tar::Header::new_gnu();
         evil_hdr.set_size(evil_body.len() as u64);
         evil_hdr.set_mode(0o644);
-        // 将带有 `..` 的名称直接写入传统的 "name" 字段。
+        // Write a name with a `..` directly into the legacy "name" field.
         let bytes = evil_hdr.as_old_mut();
         let evil_name = b"../etc/passwd";
         bytes.name[..evil_name.len()].copy_from_slice(evil_name);
@@ -481,7 +484,7 @@ async fn install_idempotent_then_uninstall_then_reinstall() {
     .await
     .expect("first install ok");
 
-    // 第二次安装时 `update = false` 必须拒绝。
+    // Second install with `update = false` must reject.
     let err = install::install(
         InstallSource::DirectUrl(url.clone()),
         tmp.path(),
@@ -497,7 +500,7 @@ async fn install_idempotent_then_uninstall_then_reinstall() {
         "expected already-installed error, got: {msg}"
     );
 
-    // 卸载后重新安装。
+    // Uninstall then reinstall.
     install::uninstall("idem-skill", tmp.path()).expect("uninstall ok");
     assert!(!tmp.path().join("idem-skill").exists());
 
@@ -533,7 +536,7 @@ async fn update_no_change_returns_nochange_without_overwriting() {
     .await
     .unwrap();
 
-    // 修改标记文件，使 update() 重新获取同一 URL。
+    // Patch the marker so update() re-fetches the same URL.
     let marker_path = tmp
         .path()
         .join("upd-skill")
@@ -543,7 +546,7 @@ async fn update_no_change_returns_nochange_without_overwriting() {
     marker_json["spec"] = serde_json::Value::String(url);
     std::fs::write(&marker_path, marker_json.to_string()).unwrap();
 
-    // 记录 mtime 以确认 SKILL.md 未被重写。
+    // Capture mtime so we can confirm SKILL.md wasn't rewritten.
     let skill_md_path = tmp.path().join("upd-skill").join("SKILL.md");
     let mtime_before = std::fs::metadata(&skill_md_path)
         .unwrap()
@@ -588,7 +591,7 @@ async fn install_with_deny_policy_returns_network_denied() {
         other => panic!("expected NetworkDenied, got {other:?}"),
     }
 
-    // 验证临时目录未被修改。
+    // Verify the temp dir is untouched.
     assert!(
         std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
         "temp dir must be untouched"
@@ -740,7 +743,7 @@ fn uninstall_refuses_system_skill() {
     let mut f = std::fs::File::create(dir.join("SKILL.md")).unwrap();
     f.write_all(b"---\nname: system-skill\ndescription: x\n---\n")
         .unwrap();
-    // 没有 `.installed-from` 标记——看起来像系统技能。
+    // No `.installed-from` marker — looks like a system skill.
 
     let err = install::uninstall("system-skill", tmp.path()).expect_err("must refuse");
     assert!(format!("{err:#}").contains("not installed via"));

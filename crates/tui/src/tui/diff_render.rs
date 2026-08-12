@@ -1,4 +1,4 @@
-//! TUI 预览的差异渲染辅助函数。
+//! Diff rendering helpers for TUI previews.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -481,11 +481,11 @@ diff --git a/src/a.rs b/src/a.rs
         assert!(text.iter().any(|line| line.contains("src/a.rs +1 -1")));
         assert!(
             text.iter().any(|line| line.contains(" + new")),
-            "添加行应带有 + 标记: {text:?}"
+            "added line should carry + gutter: {text:?}"
         );
         assert!(
             text.iter().any(|line| line.contains(" - old")),
-            "删除行应带有 - 标记: {text:?}"
+            "deleted line should carry - gutter: {text:?}"
         );
     }
 
@@ -519,13 +519,13 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert!(
             content.iter().any(|line| line == "    let y = 2;"),
-            "添加行应精确保持 4 空格缩进: {content:?}"
+            "added line should keep exact 4-space indent: {content:?}"
         );
         assert!(
             content
                 .iter()
                 .any(|line| line == "        println!(\"{y}\");"),
-            "添加行应精确保持 8 空格缩进: {content:?}"
+            "added line should keep exact 8-space indent: {content:?}"
         );
     }
 
@@ -535,7 +535,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let lines = wrap_text(&text, 16);
 
         for line in &lines {
-            assert!(line.width() <= 16, "行 {line:?} 超出宽度 16");
+            assert!(line.width() <= 16, "line {line:?} exceeds width 16");
         }
 
         assert_eq!(lines.join(""), text);

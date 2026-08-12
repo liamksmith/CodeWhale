@@ -1,13 +1,15 @@
-//! 已配置的提供商/模型湖外观（#3830, Wave 5b / #4188）。
+//! Configured provider/model lake facade (#3830, Wave 5b / #4188).
 //!
-//! 覆盖 Models.dev 目录层和与 `/provider` 共享的已配置提供商
-//! 谓词的单一切面。优先级为**实时 Models.dev > 捆绑离线快照 >
-//! 遗留硬编码回退**。选择器、热栏路由槽、[`crate::model_inventory::ModelInventory`]、
-//! 斜杠补全和子代理验证应从此处读取模型列表。
+//! Single seam over the Models.dev catalog layers and the configured-provider
+//! predicate shared with `/provider`. Precedence is **live Models.dev >
+//! bundled offline snapshot > legacy hardcoded fallback**. Pickers, hotbar
+//! route slots, [`crate::model_inventory::ModelInventory`], slash completions,
+//! and subagent validation should read model lists from here.
 //!
-//! [`crate::config::model_completion_names_for_provider`] 仅作为兼容性回退保留，
-//! 用于 Models.dev 不表示的仅 CodeWhale/本地提供商（以及在实时目录覆盖
-//! 它们之前的未捆绑网关）。
+//! [`crate::config::model_completion_names_for_provider`] is retained only as a
+//! compatibility fallback for CodeWhale-only / local providers that Models.dev
+//! does not represent (and for unbundled gateways until the live catalog covers
+//! them).
 
 use std::sync::RwLock;
 
@@ -19,8 +21,8 @@ use crate::config::{
 
 static BUNDLED_SNAPSHOT: std::sync::OnceLock<CatalogSnapshot> = std::sync::OnceLock::new();
 
-/// 可选的实时 Models.dev 快照（#4187）。当为 `None` 时，仅捆绑的
-/// 离线/过时回退行可见。
+/// Optional live Models.dev snapshot (#4187). When `None`, only the bundled
+/// offline/stale fallback rows are visible.
 static LIVE_SNAPSHOT: RwLock<Option<CatalogSnapshot>> = RwLock::new(None);
 
 fn bundled_snapshot() -> &'static CatalogSnapshot {
@@ -29,25 +31,25 @@ fn bundled_snapshot() -> &'static CatalogSnapshot {
     })
 }
 
-/// 设置实时目录快照。在后台刷新成功后调用此函数；
-/// 湖在下一次读取时将实时行合并到捆绑行之上。
-/// 过时或空的快照无害——`None` 仅表示"仅限捆绑"。
+/// Set the live-catalog snapshot. Call this after a background refresh
+/// succeeds; the lake merges live rows over bundled rows on the next read.
+/// Stale or empty snapshots are harmless — a `None` just means "bundled only."
 pub fn set_live_snapshot(snapshot: CatalogSnapshot) {
     if let Ok(mut guard) = LIVE_SNAPSHOT.write() {
         *guard = Some(snapshot);
     }
 }
 
-/// 清除实时快照（例如在缓存逐出或关闭时）。
+/// Clear the live snapshot (e.g. on cache eviction or shutdown).
 pub fn clear_live_snapshot() {
     if let Ok(mut guard) = LIVE_SNAPSHOT.write() {
         *guard = None;
     }
 }
 
-/// 合并的目录快照：实时行在 `(provider, wire_model_id)` 标识上
-/// 覆盖捆绑行（#4188）。当没有实时快照时，
-/// 这只是离线捆绑快照。
+/// The merged catalog snapshot: live rows override bundled rows on
+/// `(provider, wire_model_id)` identity (#4188). When no live snapshot is
+/// present, this is just the offline bundled snapshot.
 fn merged_snapshot() -> CatalogSnapshot {
     let live = LIVE_SNAPSHOT.read().ok().and_then(|guard| guard.clone());
     match live {
@@ -74,7 +76,7 @@ fn merged_snapshot() -> CatalogSnapshot {
     }
 }
 
-/// 将 [`ApiProvider`] 映射到其捆绑目录的提供商 ID。
+/// Maps an [`ApiProvider`] to its bundled-catalog provider id.
 fn catalog_provider_id(provider: ApiProvider) -> &'static str {
     match provider {
         ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic => "deepseek",
@@ -113,12 +115,13 @@ fn catalog_models_from_offerings<'a>(
     models
 }
 
-/// 一个提供商的目录支持的模型 ID（#4188）。
+/// Catalog-backed model ids for one provider (#4188).
 ///
-/// 优先级：实时 Models.dev 行（当已发布时）在 `(provider, wire_model_id)` 上
-/// 覆盖捆绑离线行；如果合并目录仍然没有该提供商的行，
-/// 回退到 [`crate::config::model_completion_names_for_provider`]，以便
-/// 仅 CodeWhale/本地提供商（以及尚未在离线种子中的网关）保持默认值。
+/// Precedence: live Models.dev rows (when published) override bundled offline
+/// rows on `(provider, wire_model_id)`; if the merged catalog still has no rows
+/// for the provider, fall back to
+/// [`crate::config::model_completion_names_for_provider`] so CodeWhale-only /
+/// local providers (and gateways not yet in the offline seed) keep defaults.
 #[must_use]
 pub fn all_catalog_models_for_provider(provider: ApiProvider) -> Vec<String> {
     let catalog_id = catalog_provider_id(provider);
@@ -132,11 +135,12 @@ pub fn all_catalog_models_for_provider(provider: ApiProvider) -> Vec<String> {
     models
 }
 
-/// 查找 `(provider, wire_model_id)` 的合并目录产品（#4115）。
+/// Look up a merged-catalog offering for `(provider, wire_model_id)` (#4115).
 ///
-/// 当存在时返回实时覆盖捆绑的行，以便选择器元数据（上下文、
-/// 定价、工具、推理、新鲜度）无需第二次目录遍历即可投影。
-/// 对没有 Models.dev 行的仅 CodeWhale/遗留回退 ID 返回 `None`。
+/// Returns the live-over-bundled row when present so picker metadata (context,
+/// pricing, tools, reasoning, freshness) can be projected without a second
+/// catalog walk. `None` for CodeWhale-only / legacy-fallback ids that have no
+/// Models.dev row.
 #[must_use]
 pub fn catalog_offering_for_model(
     provider: ApiProvider,
@@ -154,14 +158,14 @@ pub fn catalog_offering_for_model(
         .cloned()
 }
 
-/// 一个提供商的合并目录模型计数（目录视图/仪表板）。
+/// Count of merged-catalog models for one provider (catalog view / dashboard).
 #[must_use]
 pub fn catalog_model_count_for_provider(provider: ApiProvider) -> usize {
     all_catalog_models_for_provider(provider).len()
 }
 
-/// 用户已设置的提供商——活跃提供商、有效凭据/OAuth、
-/// 或显式的 `[providers.<name>]` 条目（#3830）。
+/// Providers the user has set up — active provider, working credentials/OAuth,
+/// or an explicit `[providers.<name>]` entry (#3830).
 #[must_use]
 pub fn configured_providers(config: &Config, active: ApiProvider) -> Vec<ApiProvider> {
     ApiProvider::sorted_for_display()
@@ -170,7 +174,7 @@ pub fn configured_providers(config: &Config, active: ApiProvider) -> Vec<ApiProv
         .collect()
 }
 
-/// 符合 `active` 已配置条件的提供商的目录模型。
+/// Catalog models for providers that qualify as configured for `active`.
 #[must_use]
 pub fn models_for_provider(
     config: &Config,
@@ -184,7 +188,7 @@ pub fn models_for_provider(
     }
 }
 
-/// 每个携带至少一个合并目录行的内置提供商。
+/// Every built-in provider that carries at least one merged-catalog row.
 #[must_use]
 #[allow(dead_code)]
 pub fn all_catalog_providers() -> Vec<ApiProvider> {
@@ -205,7 +209,7 @@ mod tests {
     use crate::config::{DEFAULT_TOGETHER_FLASH_MODEL, DEFAULT_TOGETHER_MODEL};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// 序列化修改进程级实时快照的测试。
+    /// Serialize tests that mutate the process-wide live snapshot.
     fn lock_live_snapshot() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -220,11 +224,11 @@ mod tests {
         let models = all_catalog_models_for_provider(ApiProvider::Together);
         assert!(
             models.contains(&DEFAULT_TOGETHER_MODEL.to_string()),
-            "缺少 Together pro: {models:?}"
+            "missing Together pro: {models:?}"
         );
         assert!(
             models.contains(&DEFAULT_TOGETHER_FLASH_MODEL.to_string()),
-            "缺少 Together flash: {models:?}"
+            "missing Together flash: {models:?}"
         );
     }
 
@@ -254,20 +258,25 @@ mod tests {
         );
     }
 
-    /// #4116 关键（已迁移消费者的不缩小保证）：目录支持的外观
-    /// 必须为每个具有非空遗留 `model_completion_names_for_provider` 表的提供商
-    /// 返回非空枚举。`all_catalog_models_for_provider` 在合并目录没有该提供商行时
-    /// 回退到该遗留表，因此按构造成立——并且它证明从子代理
-    /// `operator_model_for_subagent` 消费者中移除的原始遗留尾部（仅在
-    /// 外观为空时运行）在遗留非空时是不可到达的。因此已迁移的消费者
-    /// 是行为保持的：它总是有一个目录来源的模型可供选择，
-    /// 并且从不缩小到比遗留路径提供的更少选择。
+    /// #4116 CRITICAL (no-narrowing guarantee for the migrated consumer): the
+    /// catalog-backed facade must return a NON-EMPTY enumeration for every
+    /// provider that has a non-empty legacy `model_completion_names_for_provider`
+    /// table. `all_catalog_models_for_provider` falls back to that legacy table
+    /// whenever the merged catalog has no rows for the provider, so this holds by
+    /// construction — and it proves that the raw-legacy tail removed from the
+    /// subagent `operator_model_for_subagent` consumer (which only ran when the
+    /// facade was empty) was unreachable whenever legacy was non-empty. The
+    /// migrated consumer is therefore behavior-preserving: it always has a
+    /// catalog-sourced model to pick and never narrows to fewer choices than the
+    /// legacy path offered.
     ///
-    /// 注意：外观有意*以目录为权威*（实时 > 捆绑 > 遗留回退，#4188），
-    /// 因此对于一些目录取代遗留占位符表中过时条目的提供商
-    ///（例如 OpenRouter/MiniMax 修订版），外观不是每个遗留 ID 的严格超集。
-    /// 这种差异不影响子代理模型的*接受*，后者由 `validate_route` /
-    /// `requested_model_for_provider` 门控，而非此列表。
+    /// Note: the facade is intentionally *catalog-authoritative* (live >
+    /// bundled > legacy fallback, #4188), so for some providers whose catalog
+    /// supersedes stale entries in the legacy placeholder table (e.g.
+    /// OpenRouter/MiniMax revisions), the facade is not a strict superset of
+    /// every legacy id. That divergence does not affect subagent model
+    /// *acceptance*, which is gated by `validate_route` /
+    /// `requested_model_for_provider`, not by this list.
     #[test]
     fn catalog_facade_covers_every_provider_with_a_legacy_table() {
         let _live = lock_live_snapshot();
@@ -279,14 +288,15 @@ mod tests {
             }
             assert!(
                 !all_catalog_models_for_provider(provider).is_empty(),
-                "目录外观为 {provider:?} 返回空模型，尽管遗留表非空（{legacy_len} 个条目）：\
-                 操作者路由消费者将无可枚举内容"
+                "catalog facade returned no models for {provider:?} despite a \
+                 non-empty legacy table ({legacy_len} entries): the operator-route \
+                 consumer would have nothing to enumerate"
             );
         }
     }
 
-    /// #4188：仅 CodeWhale/本地提供商在 Models.dev（实时或捆绑）没有其行时
-    /// 通过遗留回退保持默认值。
+    /// #4188: CodeWhale-only / local providers keep defaults via the legacy
+    /// fallback when Models.dev (live or bundled) has no rows for them.
     #[test]
     fn codewhale_only_providers_keep_legacy_defaults() {
         let _live = lock_live_snapshot();
@@ -294,7 +304,7 @@ mod tests {
         let openai_codex = all_catalog_models_for_provider(ApiProvider::OpenaiCodex);
         assert!(
             !openai_codex.is_empty(),
-            "openai-codex 必须在离线状态下保持默认模型: {openai_codex:?}"
+            "openai-codex must keep a default model offline: {openai_codex:?}"
         );
         assert_eq!(
             openai_codex,
@@ -302,19 +312,20 @@ mod tests {
                 .iter()
                 .map(|m| (*m).to_string())
                 .collect::<Vec<_>>(),
-            "openai-codex 应来自兼容性回退表"
+            "openai-codex should come from the compatibility fallback table"
         );
 
-        // Ollama 有意具有空的遗留表（用户提供的 ID）；
-        // 湖仍然必须返回空而不是发明行。
+        // Ollama intentionally has an empty legacy table (user-supplied ids);
+        // the lake must still return empty rather than inventing rows.
         assert!(all_catalog_models_for_provider(ApiProvider::Ollama).is_empty());
         assert!(model_completion_names_for_provider(ApiProvider::Ollama).is_empty());
     }
 
-    /// #4116 / #4188（验收条件）：没有捆绑/实时目录覆盖的提供商必须
-    /// 按原样回退到遗留表，以便仅 CodeWhale 路由保持可用。
-    /// 我们为每个当前未捆绑但仍具有非空遗留列表的提供商断言这一点，
-    /// 并要求至少存在一个这样的提供商，以便实际执行回退路径。
+    /// #4116 / #4188 (AC): a provider with no bundled/live catalog coverage must
+    /// fall back to the legacy table verbatim, so CodeWhale-only routes stay
+    /// usable. We assert this for every currently-unbundled provider that still
+    /// carries a non-empty legacy list, and require at least one such provider
+    /// to exist so the fallback path is actually exercised.
     #[test]
     fn unbundled_provider_falls_back_to_legacy_table() {
         let _live = lock_live_snapshot();
@@ -328,32 +339,32 @@ mod tests {
             if has_catalog_rows || legacy.is_empty() {
                 continue;
             }
-            // 未捆绑 + 非空遗留：外观必须回显遗留列表。
+            // Unbundled + non-empty legacy: the facade must echo the legacy list.
             let facade = all_catalog_models_for_provider(provider);
             let expected: Vec<String> = legacy.iter().map(|m| m.to_string()).collect();
             assert_eq!(
                 facade, expected,
-                "未捆绑提供商 {provider:?} 未回退到遗留表"
+                "unbundled provider {provider:?} did not fall back to the legacy table"
             );
             exercised += 1;
         }
         assert!(
             exercised > 0,
-            "预期至少有一个未捆绑提供商执行遗留回退路径"
+            "expected at least one unbundled provider to exercise the legacy fallback path"
         );
     }
 
-    /// #4188：实时 Models.dev 行在标识上胜于捆绑行，清除
-    /// 实时快照恢复离线捆绑快照（离线启动仍然有效）。
+    /// #4188: live Models.dev rows win over bundled on identity, and clearing
+    /// live restores the offline bundled snapshot (offline startup still works).
     #[test]
     fn live_snapshot_merges_over_bundled() {
         let _live = lock_live_snapshot();
         clear_live_snapshot();
-        // 没有实时快照时，获得捆绑模型。
+        // With no live snapshot, we get bundled models.
         let bundled = all_catalog_models_for_provider(ApiProvider::Deepseek);
         assert!(!bundled.is_empty());
 
-        // 设置一个添加合成模型的实时快照。
+        // Set a live snapshot that adds a synthetic model.
         let live = CatalogSnapshot {
             offerings: vec![CatalogOffering {
                 provider: "deepseek".to_string(),
@@ -365,7 +376,7 @@ mod tests {
         set_live_snapshot(live);
         let merged = all_catalog_models_for_provider(ApiProvider::Deepseek);
         assert!(merged.contains(&"deepseek-v4-synthetic".to_string()));
-        // 捆绑模型仍然存在。
+        // The bundled model is still present.
         assert!(merged.iter().any(|m| bundled.contains(m)));
 
         clear_live_snapshot();
@@ -373,9 +384,9 @@ mod tests {
         assert_eq!(after_clear, bundled);
     }
 
-    /// #4188：实时 > 捆绑 > 遗留回退优先级，包括实时
-    /// 覆盖捆绑线路 ID 以及在别名规范化后没有重复行
-    ///（`moonshotai` → `moonshot`）。
+    /// #4188: live > bundled > legacy fallback precedence, including live
+    /// override of a bundled wire id and no duplicate rows after alias
+    /// normalization (`moonshotai` → `moonshot`).
     #[test]
     fn live_over_bundled_over_legacy_precedence_and_alias_dedupe() {
         let _live = lock_live_snapshot();
@@ -384,11 +395,11 @@ mod tests {
         let bundled_moonshot = all_catalog_models_for_provider(ApiProvider::Moonshot);
         assert!(
             !bundled_moonshot.is_empty(),
-            "离线捆绑 Moonshot 种子必需: {bundled_moonshot:?}"
+            "offline bundled Moonshot seed required: {bundled_moonshot:?}"
         );
 
-        // 实时行使用 Models.dev 别名 ID；湖合并必须规范化为
-        // CodeWhale `moonshot` 并且不留并行的 `moonshotai` 桶。
+        // Live rows use the Models.dev alias id; lake merge must normalize onto
+        // CodeWhale `moonshot` and not leave a parallel `moonshotai` bucket.
         let live = CatalogSnapshot {
             offerings: vec![
                 CatalogOffering {
@@ -398,7 +409,7 @@ mod tests {
                     default_for_provider: true,
                     ..Default::default()
                 },
-                // 与典型捆绑 Moonshot 默认值相同标识——实时胜出。
+                // Same identity as a typical bundled Moonshot default — live wins.
                 CatalogOffering {
                     provider: "moonshot".to_string(),
                     wire_model_id: bundled_moonshot[0].clone(),
@@ -416,20 +427,20 @@ mod tests {
             moonshot_rows
                 .iter()
                 .any(|r| r.wire_model_id == "kimi-k2.5-live"),
-            "仅实时的 Moonshot 行缺失: {moonshot_rows:?}"
+            "live-only Moonshot row missing: {moonshot_rows:?}"
         );
         let overridden = moonshot_rows
             .iter()
             .find(|r| r.wire_model_id == bundled_moonshot[0])
-            .expect("捆绑 Moonshot ID 在实时合并后仍应存在");
+            .expect("bundled Moonshot id should still exist after live merge");
         assert_eq!(
             overridden.family.as_deref(),
             Some("live-override"),
-            "实时行必须用相同的线路 ID 替换捆绑事实"
+            "live row must replace bundled facts on the same wire id"
         );
         assert!(
             merged.offerings_for_provider("moonshotai").is_empty(),
-            "别名规范化的提供商不得留下重复的 moonshotai 桶"
+            "alias-normalized providers must not leave a duplicate moonshotai bucket"
         );
 
         let models = all_catalog_models_for_provider(ApiProvider::Moonshot);
@@ -437,29 +448,29 @@ mod tests {
         for model in &models {
             assert!(
                 seen.insert(model.to_ascii_lowercase()),
-                "别名合并后重复的 Moonshot 模型行: {model}"
+                "duplicate Moonshot model row after alias merge: {model}"
             );
         }
         assert!(models.contains(&"kimi-k2.5-live".to_string()));
 
-        // 当目录行存在时跳过遗留回退（即使遗留列表包含额外 ID）——
-        // 目录一旦非空即为权威。
+        // Legacy fallback is skipped when catalog rows exist (even if legacy
+        // lists additional ids) — catalog is authoritative once non-empty.
         assert!(
             !model_completion_names_for_provider(ApiProvider::Moonshot).is_empty(),
-            "遗留 Moonshot 表仍应作为回退文档存在"
+            "legacy Moonshot table should still exist as fallback documentation"
         );
 
         clear_live_snapshot();
         assert_eq!(
             all_catalog_models_for_provider(ApiProvider::Moonshot),
             bundled_moonshot,
-            "清除实时必须恢复离线捆绑 Moonshot 行"
+            "clearing live must restore offline bundled Moonshot rows"
         );
     }
 
-    /// #4188：当实时 Models.dev 为同一提供商同时发出别名 ID 和 CodeWhale ID
-    /// 时，通过 `live_offerings_from_models_dev` 编译然后合并到湖中
-    /// 不得产生重复的模型行。
+    /// #4188: when live Models.dev emits both an alias id and the CodeWhale id
+    /// for the same provider, compiling through `live_offerings_from_models_dev`
+    /// then merging into the lake must not produce duplicate model rows.
     #[test]
     fn alias_normalized_live_rows_do_not_duplicate_in_lake() {
         let _live = lock_live_snapshot();
@@ -501,7 +512,7 @@ mod tests {
         );
         assert!(
             live_rows.iter().all(|r| r.provider == "moonshot"),
-            "moonshotai 和 moonshot 都必须规范化为 moonshot: {:?}",
+            "both moonshotai and moonshot must normalize onto moonshot: {:?}",
             live_rows
                 .iter()
                 .map(|r| r.provider.as_str())
@@ -515,7 +526,7 @@ mod tests {
         let kimi_count = models.iter().filter(|m| m.as_str() == "kimi-k2.5").count();
         assert_eq!(
             kimi_count, 1,
-            "别名规范化的提供商不得重复 kimi-k2.5: {models:?}"
+            "alias-normalized providers must not duplicate kimi-k2.5: {models:?}"
         );
         assert!(
             merged_snapshot()

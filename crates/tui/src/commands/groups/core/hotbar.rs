@@ -1,4 +1,4 @@
-//! `/hotbar` 命令。
+//! `/hotbar` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;
@@ -25,9 +25,9 @@ impl RegisterCommand for HotbarCmd {
             None | Some("setup" | "edit" | "configure" | "config") => {
                 CommandResult::action(AppAction::OpenHotbarSetup)
             }
-            // 隐藏快捷栏：持久化 `hotbar = []` 并清除活动插槽。
+            // Hide the Hotbar: persist `hotbar = []` and clear the live slots.
             Some("off" | "disable" | "hide") => CommandResult::action(AppAction::DisableHotbar),
-            // 恢复默认推荐插槽（显式重置）。
+            // Restore the default recommended slots (explicit reset).
             Some("on" | "reset" | "defaults" | "default") => {
                 CommandResult::action(AppAction::RestoreHotbarDefaults)
             }

@@ -1,17 +1,21 @@
-//! 沙箱化 VM 与子代理引擎之间的驱动层接缝。
+//! The driver seam between the sandboxed VM and the subagent engine.
 //!
-//! QuickJS VM 运行在专用线程上，其 `'js` 值永远不能跨越 `.await` 到另一个线程，
-//! 因此离开 VM 的所有内容都是纯 `Send` 数据：[`TaskRequest`] 发出，
-//! [`TaskCompletion`] 通过 oneshot 返回。[`WorkflowDriver`] trait 是主机端合约，
-//! tui 布线通过 `SubAgentManager` 实现（在那里 spawn 即 fire-and-forget；
-//! 驱动器的完成泵从邮箱中解析由 `agent_id` 键控的 `Completed` 信号，
-//! 然后通过 `get_result` 读取完整的未截断文本）。测试使用
-//! [`crate::testing::FakeDriver`] 实现。
+//! The QuickJS VM lives on a dedicated thread and its `'js` values can never
+//! cross an `.await` onto another thread, so everything that leaves the VM is
+//! plain `Send` data: a [`TaskRequest`] goes out, a [`TaskCompletion`] comes
+//! back over a oneshot. The [`WorkflowDriver`] trait is the host-side contract
+//! the tui wiring implements over `SubAgentManager` (spawn is fire-and-forget
+//! there; the driver's completion pump resolves the oneshot from the mailbox
+//! `Completed` signal keyed by `agent_id`, then reads the full untruncated
+//! text via `get_result`). Tests implement it with
+//! [`crate::testing::FakeDriver`].
 //!
-//! 预算所有权：令牌记账和 §5.3 保留语义完全在驱动器端（管理器的预算范围）。
-//! VM 只读取 [`BudgetSnapshot`]——它在生成前执行快速失败的 `spent >= total` 检查，
-//! 并将数字以 `budget.*` 暴露给 JS，但从不自行保留或扣减令牌。
-//! 批准生成的驱动器是权威；其拒绝表现为对应 `task()` 调用上的 JS throw。
+//! Budget ownership: token accounting and the §5.3 reservation semantics live
+//! entirely on the driver side (the manager's budget scopes). The VM only
+//! reads [`BudgetSnapshot`]s — it performs a fast-fail `spent >= total` check
+//! before spawning and exposes the numbers to JS as `budget.*`, but it never
+//! reserves or debits tokens itself. A driver that admits a spawn is the
+//! authority; its rejection surfaces as a JS throw on that `task()` call.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -19,150 +23,155 @@ use tokio::sync::oneshot;
 
 use crate::error::DriverError;
 
-/// 一次 `task()` 调用，在 VM 端完全解析和验证。
+/// One `task()` invocation, fully resolved and validated on the VM side.
 ///
-/// 字段语义镜像 `agent` 工具的 spawn 选项。
+/// Field semantics mirror the `agent` tool's spawn options.
 ///
-/// 步骤标识为 fleet `role`（首选）和/或 `profile`（#4177）。两个令牌都使用与
-/// `crates/workflow` 叶子 profile 相同的规则规范化为（修剪 + 小写）。
-/// 名单成员资格由驱动器（tui）在 spawn 时解析——此 crate 从未看到保存的 Fleet 名单。
-/// Provider/model 仍然是可选覆盖，不是必需的身份字段。
+/// Step identity is fleet `role` (preferred) and/or `profile` (#4177). Both
+/// tokens are normalized (trimmed + lowercased) with the same rule as
+/// `crates/workflow` leaf profiles. Roster membership is resolved by the
+/// driver (tui) at spawn time — this crate never sees the saved Fleet roster.
+/// Provider/model remain optional overrides, not required identity fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskRequest {
-    /// 子提示（JS `prompt`，回退到 `description`；必需）。
+    /// The child prompt (JS `prompt`, falling back to `description`; required).
     pub description: String,
-    /// 子代理类型（JS `subagentType` 或 `type`）；`None` 让驱动器
-    /// 应用其默认值（`general`）。
+    /// Subagent type (JS `subagentType` or `type`); `None` lets the driver
+    /// apply its default (`general`).
     pub subagent_type: Option<String>,
-    /// Fleet 角色名称（JS `role`），例如 `scout` / `implementer`（#4177）。
+    /// Fleet role name (JS `role`), e.g. `scout` / `implementer` (#4177).
     pub role: Option<String>,
-    /// Fleet profile 令牌，已规范化（修剪、小写）并已验证。
-    /// 在 spawn 时显式 profile 优先于角色映射。
+    /// Fleet profile token, normalized (trimmed, lowercased) and validated.
+    /// Explicit profile wins over role mapping at spawn time.
     pub profile: Option<String>,
-    /// 显式模型覆盖；始终优先于 `model_strength`。
+    /// Explicit model override; always wins over `model_strength`.
     pub model: Option<String>,
-    /// 相对模型强度（`same`/`faster`，以及驱动器端别名）。
+    /// Relative model strength (`same`/`faster`, plus driver-side aliases).
     pub model_strength: Option<String>,
-    /// 推理努力度（`inherit`/`off`/`low`/`medium`/`high`/`max`）。
+    /// Reasoning effort (`inherit`/`off`/`low`/`medium`/`high`/`max`).
     pub thinking: Option<String>,
-    /// 在新的 git worktree 中运行子任务以进行并行编辑。
+    /// Run the child in a fresh git worktree for parallel edits.
     pub worktree: bool,
-    /// 显式工具允许列表；`custom` 角色需要驱动器提供。
+    /// Explicit tool allowlist; required by the driver for `custom` roles.
     pub allowed_tools: Option<Vec<String>>,
-    /// 每次调用的 spawn 深度覆盖（驱动器限制在其上限内）。
+    /// Per-call spawn-depth override (driver clamps to its ceiling).
     pub max_depth: Option<u32>,
-    /// 显式令牌预算：在驱动器端分叉一个隔离池。
-    /// 省略则使子任务继承（并扣减）共享运行池。
+    /// Explicit token budget: forks an isolated pool on the driver side.
+    /// Omit it so the child inherits (and debits) the shared run pool.
     pub token_budget: Option<u64>,
-    /// 回复必须满足的 JSON schema；在驱动器返回原始文本后在 VM 中验证
-    /// （解码规则参见 [`crate`] 文档）。
+    /// JSON schema the reply must satisfy; validated in the VM after the
+    /// driver returns the raw text (see [`crate`] docs for decode rules).
     pub response_schema: Option<serde_json::Value>,
-    /// 用于进度展示的简短人类可读标签。
+    /// Short human label for progress surfaces.
     pub label: Option<String>,
-    /// 此任务所属的阶段名称，用于进度分组。
+    /// Phase name this task belongs to, for progress grouping.
     pub phase: Option<String>,
 }
 
-/// 一个已生成任务的最终结果，通过完成 oneshot 传递。
-/// 除 `Completed` 之外的所有内容都变为等待 `task()` 调用上的 JS throw。
+/// Terminal outcome of one spawned task, delivered over the completion
+/// oneshot. Everything except `Completed` becomes a JS throw on the awaiting
+/// `task()` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskCompletion {
-    /// 子任务已完成；`text` 是完整的未截断结果。
+    /// The child finished; `text` is the full, untruncated result.
     Completed { text: String },
-    /// 子任务失败（错误结果、超时等）。
+    /// The child failed (error result, timeout, ...).
     Failed { message: String },
-    /// 子任务已被取消（级联或显式）。
+    /// The child was cancelled (cascade or explicit).
     Cancelled,
-    /// 子任务的预算范围在运行中耗尽。
+    /// The child's budget scope drained mid-flight.
     BudgetExhausted { message: String },
 }
 
-/// 一个成功受理的 spawn：驱动器分配的任务 ID（引擎的 `agent_id`）
-/// 加上驱动器在完成时解析的 oneshot。
+/// A successfully admitted spawn: the driver-assigned task id (the engine's
+/// `agent_id`) plus the oneshot the driver resolves on completion.
 ///
-/// 丢弃接收器不得阻塞驱动器；驱动器应将已关闭的完成通道视为
-/// "没有人在监听"并继续处理。
+/// Dropping the receiver must not wedge the driver; drivers should treat a
+/// closed completion channel as "nobody is listening" and move on.
 #[derive(Debug)]
 pub struct SpawnedTask {
-    /// 驱动器分配的 ID，在运行内唯一（引擎 `agent_id`）。
+    /// Driver-assigned id, unique within the run (engine `agent_id`).
     pub task_id: String,
-    /// 仅解析一次，带有最终的 [`TaskCompletion`]。
+    /// Resolved exactly once with the terminal [`TaskCompletion`].
     pub completion: oneshot::Receiver<TaskCompletion>,
 }
 
-/// 运行共享令牌池的实时视图，由驱动器拥有。
+/// Live view of the run's shared token pool, owned by the driver.
 ///
-/// `total == None` 表示未配置上限；JS 随后看到
-/// `budget.total === null` 且 `budget.remaining() === Infinity`。
+/// `total == None` means no ceiling is configured; JS then sees
+/// `budget.total === null` and `budget.remaining() === Infinity`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BudgetSnapshot {
-    /// 池上限（以令牌为单位），如果有配置的话。
+    /// Pool ceiling in tokens, if one is configured.
     pub total: Option<u64>,
-    /// 池中已花费的令牌（加上驱动器端预留）。
+    /// Tokens spent (plus driver-side reservations) against the pool.
     pub spent: u64,
 }
 
 impl BudgetSnapshot {
-    /// 到达上限前剩余的令牌数；池无限制时返回 `None`。
+    /// Tokens left before the ceiling; `None` when the pool is unbounded.
     pub fn remaining(&self) -> Option<u64> {
         self.total.map(|total| total.saturating_sub(self.spent))
     }
 
-    /// 当池有上限且已完全消耗时返回 true。
+    /// True once the pool has a ceiling and it is fully consumed.
     pub fn exhausted(&self) -> bool {
         matches!(self.total, Some(total) if self.spent >= total)
     }
 }
 
-/// 脚本发出的进度事件（`log(..)` / `phase(..)`），
-/// 同步且按脚本顺序传递给驱动器。
+/// Progress events emitted by the script (`log(..)` / `phase(..)`), delivered
+/// to the driver synchronously and in script order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgressEvent {
-    /// `log(msg)` — UI 的叙述行。
+    /// `log(msg)` — a narrator line for the UI.
     Log {
-        /// 字符串化后的消息。
+        /// The stringified message.
         message: String,
     },
-    /// `phase(title)` — 脚本进入了一个命名的阶段。
+    /// `phase(title)` — the script entered a named phase.
     Phase {
-        /// 阶段标题。
+        /// The phase title.
         title: String,
     },
-    /// 一个已完成的子任务返回了未能通过调用方 `responseSchema` 的文本。
-    /// VM 在将验证错误抛回脚本之前发出此事件，以便主机端回执可以将该叶子标记为
-    /// 失败，而不是报告一个成功的子任务旁边有一个 `null` 结果。
+    /// A completed child returned text that failed the caller's
+    /// `responseSchema`. The VM emits this before throwing the validation
+    /// error back into the script so host-side receipts can mark the leaf as
+    /// failed instead of reporting a successful child beside a `null` result.
     TaskSchemaValidationFailed {
-        /// 驱动器分配的任务 ID（引擎 `agent_id`）。
+        /// Driver-assigned task id (engine `agent_id`).
         task_id: String,
-        /// 已传递给 JS 的验证错误。
+        /// The validation error already surfaced to JS.
         message: String,
     },
 }
 
-/// Workflow 运行的主机端执行器。
+/// Host-side executor for a Workflow run.
 ///
-/// 实现必须能够从 VM 线程廉价调用：`spawn_task` 受理任务并立即返回
-/// （fire-and-forget spawn——永远不要内联等待子任务），而 `budget`、
-/// `progress` 和 `cancel_all` 是同步的。`cancel_all` 必须是幂等的；
-/// 它在脚本出错时、运行 future 被丢弃时被调用，且多调用一次也无妨。
+/// Implementations must be cheap to call from the VM thread: `spawn_task`
+/// admits the task and returns immediately (fire-and-forget spawn — never
+/// await the child inline), while `budget`, `progress`, and `cancel_all` are
+/// synchronous. `cancel_all` must be idempotent; it is invoked when the
+/// script errors, when the run future is dropped, and once more never hurts.
 #[async_trait]
 pub trait WorkflowDriver: Send + Sync {
-    /// 受理并启动一个任务。错误表现为对应 `task()` 调用上的 JS throw。
+    /// Admit and start one task. Errors surface as a JS throw on the
+    /// corresponding `task()` call.
     async fn spawn_task(&self, request: TaskRequest) -> Result<SpawnedTask, DriverError>;
 
-    /// 取消属于此运行的所有进行中的任务。幂等。
+    /// Cancel every in-flight task belonging to this run. Idempotent.
     fn cancel_all(&self);
 
-    /// 运行共享令牌池的当前快照。
+    /// Current snapshot of the run's shared token pool.
     fn budget(&self) -> BudgetSnapshot;
 
-    /// 接收脚本进度事件（有序，同步）。
+    /// Receive a script progress event (ordered, synchronous).
     fn progress(&self, event: ProgressEvent);
 }
 
-/// 规范化并验证 Fleet profile 令牌：修剪、小写，然后应用与
-/// `crates/workflow` 的 `validate_leaf_profile` 相同的令牌规则——
-/// 非空、无空白字符，且不含 `"`、`'`、`` ` ``、`=`。
+/// Normalize and validate a Fleet profile token: trim, lowercase, then apply
+/// the same token rule as `crates/workflow`'s `validate_leaf_profile` —
+/// non-empty, no whitespace, and none of `"`, `'`, `` ` ``, `=`.
 pub fn normalize_profile(raw: &str) -> Result<String, String> {
     let normalized = raw.trim().to_lowercase();
     let invalid = normalized.is_empty()

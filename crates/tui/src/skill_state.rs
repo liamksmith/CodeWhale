@@ -1,19 +1,19 @@
-//! 运行时 API 技能列表的持久化启用/禁用状态。
+//! Persistent enable/disable state for runtime API skill listings.
 //!
-//! 支撑 `GET /v1/skills`（每个技能的 `enabled` 字段）和
-//! `POST /v1/skills/{name}`（切换）。这与基于文件系统发现的
-//! `SkillRegistry` 是分离的：注册表告诉我们磁盘上有哪些技能，
-//! 而这个存储告诉 API 客户端哪些被标记为启用。
+//! Backs `GET /v1/skills` (`enabled` field per skill) and
+//! `POST /v1/skills/{name}` (toggle). This is separate from the
+//! filesystem-discovered `SkillRegistry`: the registry tells us which skills
+//! exist on disk, and this store tells API clients which ones are marked active.
 //!
-//! 存储格式（TOML，位于 `~/.codewhale/skills_state.toml`，旧版 `~/.deepseek/skills_state.toml`）：
+//! Storage shape (TOML at `~/.codewhale/skills_state.toml`, legacy `~/.deepseek/skills_state.toml`):
 //!
 //! ```toml
 //! disabled = ["skill-name-1", "skill-name-2"]
 //! ```
 //!
-//! 默认状态（文件不存在时）：空列表（所有技能启用）。
-//! 损坏的文件会被记录并视为默认状态，这样升级操作就不会
-//! 意外隐藏所有技能。
+//! Default state when the file does not exist: empty list (everything enabled).
+//! A corrupt file is logged and treated as the default, so upgrades never
+//! accidentally hide every skill.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -51,12 +51,12 @@ impl SkillStateStore {
         }
 
         let raw = fs::read_to_string(&path)
-            .with_context(|| format!("读取 {} 处的技能状态", path.display()))?;
+            .with_context(|| format!("read skill state at {}", path.display()))?;
         let parsed: OnDiskState = match toml::from_str(&raw) {
             Ok(v) => v,
             Err(err) => {
                 tracing::warn!(
-                    "{} 处的 skills_state.toml 格式错误（{}）；将所有技能视为启用",
+                    "skills_state.toml at {} is malformed ({}); treating all skills as enabled",
                     path.display(),
                     err
                 );
@@ -98,25 +98,25 @@ impl SkillStateStore {
         let on_disk = OnDiskState {
             disabled: self.disabled.iter().cloned().collect(),
         };
-        let body = toml::to_string_pretty(&on_disk).context("序列化技能状态")?;
+        let body = toml::to_string_pretty(&on_disk).context("serialize skill state")?;
         atomic_write(path, body.as_bytes())
     }
 }
 
 fn default_state_path() -> Result<PathBuf> {
     let dir = codewhale_config::ensure_state_dir(".")
-        .context("无法解析或创建 CodeWhale 状态目录")?;
+        .context("could not resolve or create CodeWhale state directory")?;
     Ok(dir.join(STATE_FILE_NAME))
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("为 {} 创建父目录", path.display()))?;
+            .with_context(|| format!("create parent dir for {}", path.display()))?;
     }
     let tmp = path.with_extension("toml.tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("写入临时文件 {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("重命名临时文件为 {}", path.display()))?;
+    fs::write(&tmp, bytes).with_context(|| format!("write tmp at {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("rename tmp into {}", path.display()))?;
     Ok(())
 }
 

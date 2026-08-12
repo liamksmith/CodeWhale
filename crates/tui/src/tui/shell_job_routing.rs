@@ -1,4 +1,4 @@
-//! 斜杠命令和分页器的后台 Shell 任务中心辅助函数。
+//! Background shell job-center helpers for slash commands and pagers.
 
 use crate::tools::shell::{ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus};
 use crate::tui::app::App;

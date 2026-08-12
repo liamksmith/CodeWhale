@@ -1,23 +1,25 @@
-//! 舰队代理配置文件的一次性模型起草（`/fleet setup` → `m`）。
+//! One-shot model drafting for fleet agent profiles (`/fleet setup` → `m`).
 //!
-//! 将宪章起草契约（参见 `model_draft.rs`）推广到
-//! `.codewhale/agents/<id>.toml` 配置文件表面：
+//! Generalizes the constitution drafting contract (see `model_draft.rs`) to
+//! the `.codewhale/agents/<id>.toml` profile surface:
 //!
-//! - **最小化出站负载。** 请求仅携带两个向导答案（角色、目标模型）、
-//!   UI 语言标签和可选的脱敏工作空间指纹（固定词汇清单/语言
-//!   名称、测试命令名称、分支名称、脏文件计数——绝不包含文件
-//!   内容、环境值、密钥或绝对路径；参见
-//!   [`workspace_fingerprint`]）——没有配置、环境、仓库内容、密钥或
-//!   记忆。[`profile_drafting_user_prompt`] 是这些输入的纯函数，
-//!   测试固定其完整文本。
-//! - **不可信入站负载。** 仅读取 `Text` 块；回复必须通过
-//!   [`FleetProfileDraft::from_untrusted_json`]——`deny_unknown_fields`
-//!   解析、权限升级拒绝、清洗、边界检查——然后才能预览。
-//!   任何类型的失败都降级为手动编写流程；
-//!   它从不阻塞向导。
-//! - **起草不等于批准。** 调用者显示精确渲染的 TOML，
-//!   仍需显式的批准按键才能写入任何内容；
-//!   磁盘上的字节是从验证后的结构体渲染的，而不是从模型输出。
+//! - **Minimal payload out.** The request carries exactly the two wizard
+//!   answers (role, target model), the UI language tag, and an optional
+//!   redacted workspace fingerprint (fixed-vocabulary manifest/language
+//!   names, test-command names, branch name, dirty count — never file
+//!   contents, env values, secrets, or absolute paths; see
+//!   [`workspace_fingerprint`]) — no config, env, repo contents, keys, or
+//!   memory. [`profile_drafting_user_prompt`] is a pure function of those
+//!   inputs and tests pin its full text.
+//! - **Untrusted payload in.** Only `Text` blocks are read; the reply must
+//!   pass [`FleetProfileDraft::from_untrusted_json`] — `deny_unknown_fields`
+//!   parse, escalation rejection, sanitization, bounding — before anyone
+//!   previews it. Failure of any kind degrades to the manual authoring flow;
+//!   it never blocks the wizard.
+//! - **Drafting is not ratifying.** The caller shows the exact rendered TOML
+//!   and still requires the explicit ratify keypress before anything is
+//!   written; the on-disk bytes are rendered from the validated struct, never
+//!   from model output.
 
 use std::path::Path;
 
@@ -26,17 +28,18 @@ use crate::llm_client::LlmClient;
 use crate::localization::Locale;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
-/// 一次性配置文件草稿的输出预算。配置文件很小；
-/// 这是行为异常提供商的真正上限，不是目标。
+/// Output budget for the one-shot profile draft. Profiles are small; this is
+/// a real ceiling on a misbehaving provider, not a target.
 pub(crate) const PROFILE_DRAFT_MAX_TOKENS: u32 = 1200;
 
-/// 附加到起草用户提示中的脱敏工作空间指纹的硬上限。
+/// Hard ceiling on the redacted workspace fingerprint appended to the
+/// drafting user prompt.
 pub(crate) const WORKSPACE_FINGERPRINT_MAX_CHARS: usize = 1000;
 
-/// 探测存在的根级清单名称（仅存在性——内容
-/// 从不读取）。每个条目携带语言和它暗示的主要测试
-/// 命令；两者都是固定词汇字符串，因此工作空间控制的内容
-/// 无法通过它们泄漏。
+/// Root-level manifest names probed for presence (presence only — contents
+/// are never read). Each entry carries the language and the primary test
+/// command it implies; both are fixed-vocabulary strings, so nothing
+/// workspace-controlled can leak through them.
 const MANIFEST_PROBES: &[(&str, Option<&str>, Option<&str>)] = &[
     ("Cargo.toml", Some("rust"), Some("cargo test")),
     (
@@ -58,9 +61,10 @@ const MANIFEST_PROBES: &[(&str, Option<&str>, Option<&str>)] = &[
     ("CLAUDE.md", None, None),
 ];
 
-/// 仅保留在分支名称令牌内安全的字符；其他任何字符
-///（空格、引号、控制字符）被丢弃，结果被截断。
-/// 指纹中唯一工作空间控制字符串的纵深防御。
+/// Keep only characters that are safe inside a branch-name token; anything
+/// else (spaces, quotes, control chars) is dropped, and the result is
+/// truncated. Defense in depth for the one workspace-controlled string in the
+/// fingerprint.
 fn sanitize_branch_name(branch: &str) -> String {
     branch
         .chars()
@@ -69,7 +73,7 @@ fn sanitize_branch_name(branch: &str) -> String {
         .collect()
 }
 
-/// 在 `workspace` 中运行 git 查询，成功时返回修剪后的 stdout。
+/// Run a git query in `workspace` and return trimmed stdout on success.
 fn git_stdout(workspace: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -83,15 +87,15 @@ fn git_stdout(workspace: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// 为配置文件起草者构建一个脱敏的、有界的工作空间指纹。
+/// Build a REDACTED, bounded workspace fingerprint for the profile drafter.
 ///
-/// 指纹告诉起草模型配置文件将服务于哪种工作空间——
-/// 检测到的语言和清单（仅存在性）、主要测试命令名称，
-/// 以及粗略的仓库状态（分支名称、脏文件计数）。
-/// 它绝不包含密钥、环境值、API 配置、文件内容
-/// 或绝对路径：除 git 分支名称外，每个发出的令牌都来自
-/// 固定词汇表，分支名称已被清洗和截断。当未检测到任何内容时
-/// 返回空字符串。
+/// The fingerprint tells the drafting model what kind of workspace the
+/// profile will serve — detected languages and manifests (presence only),
+/// primary test-command names, and coarse repo state (branch name, dirty file
+/// count). It NEVER includes secrets, env values, API config, file contents,
+/// or absolute paths: every emitted token comes from a fixed vocabulary
+/// except the git branch name, which is sanitized and truncated. Returns an
+/// empty string when nothing is detected.
 pub(crate) fn workspace_fingerprint(workspace: &Path) -> String {
     let mut languages: Vec<&str> = Vec::new();
     let mut manifests: Vec<&str> = Vec::new();
@@ -148,8 +152,9 @@ pub(crate) fn workspace_fingerprint(workspace: &Path) -> String {
         .collect()
 }
 
-/// 配置文件起草者的系统提示。无论 UI 语言环境如何始终为英文
-///（语言标签指示输出语言）；确定性以便测试可以固定安全护栏。
+/// System prompt for the profile drafter. English regardless of UI locale
+/// (the language tag directs the output language); deterministic so tests can
+/// pin the guardrails.
 fn profile_drafting_system_prompt() -> String {
     concat!(
         "You are helping a CodeWhale user draft a fleet agent profile: a small, ",
@@ -179,8 +184,8 @@ fn profile_drafting_system_prompt() -> String {
     .to_string()
 }
 
-/// 用户提示：两个向导答案、语言标签和（当存在时）
-/// 脱敏的工作空间指纹——作为数据追加，绝不作为指令。
+/// User prompt: the two wizard answers, the language tag, and (when present)
+/// the redacted workspace fingerprint — appended as data, never instructions.
 fn profile_drafting_user_prompt(
     role: &str,
     model: &str,
@@ -203,7 +208,7 @@ fn profile_drafting_user_prompt(
     prompt
 }
 
-/// 为 `request_model` 构建一次性配置文件起草请求。
+/// Build the one-shot profile drafting request for `request_model`.
 pub(crate) fn profile_drafting_request(
     request_model: &str,
     role: &str,
@@ -233,8 +238,8 @@ pub(crate) fn profile_drafting_request(
     }
 }
 
-/// 仅从回复中提取 `Text` 块；思考块永远不会到达
-/// 解析器（与宪章起草者相同的纪律）。
+/// Join only `Text` blocks from the reply; thinking blocks never reach the
+/// parser (same discipline as the constitution drafter).
 fn profile_draft_response_text(content: &[ContentBlock]) -> String {
     let mut out = String::new();
     for block in content {
@@ -248,9 +253,9 @@ fn profile_draft_response_text(content: &[ContentBlock]) -> String {
     out
 }
 
-/// 请求 `client` 根据向导答案起草舰队配置文件。返回
-/// 清洗过的、有界的草稿，或在任何失败时返回简短的人类可读原因。
-/// 调用者拥有超时、预览和批准门控。
+/// Ask `client` to draft a fleet profile for the wizard's answers. Returns
+/// the sanitized, bounded draft, or a short human-facing reason on any
+/// failure. The caller owns timeout, preview, and the ratify gate.
 pub(crate) async fn draft_fleet_profile_with_model<C: LlmClient>(
     client: &C,
     request_model: &str,
@@ -264,13 +269,13 @@ pub(crate) async fn draft_fleet_profile_with_model<C: LlmClient>(
     let response = client
         .create_message(request)
         .await
-        .map_err(|err| format!("请求失败: {err:#}"))?;
+        .map_err(|err| format!("request failed: {err:#}"))?;
     let text = profile_draft_response_text(&response.content);
     match FleetProfileDraft::from_untrusted_json(&text) {
         UntrustedProfileParse::Drafted(draft) => Ok(draft),
-        UntrustedProfileParse::Empty => Err("草稿未携带可用内容".to_string()),
+        UntrustedProfileParse::Empty => Err("the draft carried no usable content".to_string()),
         UntrustedProfileParse::Invalid(err) => {
-            Err(format!("回复不是有效的配置文件 ({err})"))
+            Err(format!("the reply was not a valid profile ({err})"))
         }
     }
 }
@@ -308,12 +313,12 @@ mod tests {
         assert_eq!(request.stream, Some(false));
         assert!(request.tools.is_none());
 
-        // 用户负载是精确的字节：两个答案加上语言标签。
+        // The user payload is byte-exact: two answers plus the language tag.
         let [message] = request.messages.as_slice() else {
-            panic!("预期恰好一个用户消息");
+            panic!("expected exactly one user message");
         };
         let [ContentBlock::Text { text, .. }] = message.content.as_slice() else {
-            panic!("预期恰好一个文本块");
+            panic!("expected exactly one text block");
         };
         assert_eq!(
             text,
@@ -322,7 +327,7 @@ mod tests {
         assert!(text.contains("Language tag: en"));
         assert!(text.contains("role: reviewer"));
         assert!(text.contains("target model: cheap"));
-        // 没有指纹时，该部分完全不存在。
+        // With no fingerprint the section is absent entirely.
         assert!(!text.contains("Workspace fingerprint"));
     }
 
@@ -336,10 +341,10 @@ mod tests {
             "languages: rust; manifests: Cargo.toml; test commands: cargo test",
         );
         let [message] = request.messages.as_slice() else {
-            panic!("预期恰好一个用户消息");
+            panic!("expected exactly one user message");
         };
         let [ContentBlock::Text { text, .. }] = message.content.as_slice() else {
-            panic!("预期恰好一个文本块");
+            panic!("expected exactly one text block");
         };
         assert!(
             text.contains(
@@ -347,7 +352,7 @@ mod tests {
             ),
             "{text}"
         );
-        // 结束指令仍然在指纹部分之后。
+        // The closing directive still follows the fingerprint section.
         assert!(text.ends_with("Draft the fleet agent profile JSON now. JSON only."));
     }
 
@@ -367,7 +372,7 @@ mod tests {
         assert!(fingerprint.contains("just"), "{fingerprint}");
         assert!(
             fingerprint.chars().count() <= WORKSPACE_FINGERPRINT_MAX_CHARS,
-            "指纹必须保持有界: {} 字符",
+            "fingerprint must stay bounded: {} chars",
             fingerprint.chars().count()
         );
     }
@@ -380,10 +385,10 @@ mod tests {
 
     #[test]
     fn workspace_fingerprint_never_carries_secret_markers_or_paths() {
-        // 镜像起草负载测试的无密钥纪律：
-        // 使用看似秘密的文件和环境样式内容种子化工作空间；
-        // 其中任何一个都不能出现，因为指纹只发出
-        // 固定词汇令牌（加上清洗过的分支名称）。
+        // Mirror the no-secrets discipline of the drafting payload tests:
+        // seed the workspace with secret-looking files and env-style content;
+        // none of it may surface because the fingerprint only ever emits
+        // fixed-vocabulary tokens (plus a sanitized branch name).
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join(".env"),
@@ -415,13 +420,13 @@ mod tests {
         ] {
             assert!(
                 !fingerprint.contains(marker),
-                "指纹泄漏了标记 {marker:?}: {fingerprint}"
+                "fingerprint leaked marker {marker:?}: {fingerprint}"
             );
         }
-        // 没有绝对路径——甚至不包括工作空间自身的。
+        // No absolute paths — not even the workspace's own.
         assert!(
             !fingerprint.contains(&tmp.path().display().to_string()),
-            "指纹泄漏了工作空间路径: {fingerprint}"
+            "fingerprint leaked the workspace path: {fingerprint}"
         );
     }
 
@@ -433,7 +438,7 @@ mod tests {
         );
         assert_eq!(
             sanitize_branch_name("evil branch\n$(rm -rf); `x` \"quoted\""),
-            "evilbranchrmrfxquoted"
+            "evilbranchrm-rfxquoted"
         );
         assert!(sanitize_branch_name(&"a".repeat(200)).chars().count() <= 60);
     }
@@ -464,12 +469,12 @@ mod tests {
             "",
         )
         .await
-        .expect("有效草稿应能解析");
+        .expect("valid draft should parse");
 
         assert_eq!(draft.id, "reviewer");
         assert_eq!(draft.role_hint, "reviewer");
         assert_eq!(draft.model.as_deref(), Some("glm-5-air"));
-        let sent = mock.last_request().expect("请求已捕获");
+        let sent = mock.last_request().expect("request captured");
         assert_eq!(sent.model, "glm-5.2");
     }
 
@@ -489,7 +494,7 @@ mod tests {
             "",
         )
         .await
-        .expect_err("权限走私必须使解析失败");
+        .expect_err("permission smuggling must fail the parse");
         assert!(err.contains("not a valid profile"), "{err}");
     }
 
@@ -507,7 +512,7 @@ mod tests {
             "",
         )
         .await
-        .expect_err("不含 JSON 的散文必须被拒绝");
+        .expect_err("prose without JSON must be rejected");
         assert!(err.contains("not a valid profile"), "{err}");
     }
 
@@ -536,7 +541,7 @@ mod tests {
             "",
         )
         .await
-        .expect("文本块应能解析");
+        .expect("text block should parse");
         assert_eq!(draft.id, "real");
     }
 }

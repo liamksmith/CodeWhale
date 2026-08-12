@@ -1,4 +1,4 @@
-//! `/models` 命令。
+//! `/models` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

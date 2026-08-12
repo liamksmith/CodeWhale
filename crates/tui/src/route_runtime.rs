@@ -223,7 +223,8 @@ mod tests {
         let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
             .expect("custom provider should resolve");
 
-        // Endpoint + model 来自命名的表；带前缀的模型 id 原样保留为线路 id（不进行提供商前缀嗅探）。
+        // Endpoint + model come from the named table; the prefixed model id is
+        // preserved verbatim as the wire id (no provider-prefix sniffing).
         assert_eq!(
             route.candidate.endpoint.base_url,
             "https://api.example.com/v1"
@@ -234,10 +235,10 @@ mod tests {
         );
         assert_eq!(route.model, "vendor/custom-model-v1");
         assert_eq!(route.candidate.protocol, RequestProtocol::ChatCompletions);
-        // HTTPS endpoint：路由有效，无不安全 HTTP 警告。
+        // HTTPS endpoint: route is valid with no insecure-http advisory.
         assert!(route.candidate.validation.ok);
         assert!(route.candidate.validation.messages.is_empty());
-        // 选定的提供商名称被保留（不会被覆盖为 "custom"）。
+        // The selected provider name is preserved (not overwritten with "custom").
         assert_eq!(route.config.provider.as_deref(), Some("my_thing"));
     }
 
@@ -277,8 +278,8 @@ mod tests {
         let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
             .expect("custom http provider should resolve");
 
-        // 仅建议性质：路由仍然验证通过（ok == true）但警告凭证将
-        // 通过非回环 http URL 以明文形式发送。
+        // Advisory only: the route still validates (ok == true) but warns that
+        // credentials would be sent in plaintext over a non-loopback http URL.
         assert!(route.candidate.validation.ok);
         assert!(
             route

@@ -1,4 +1,4 @@
-//! `/export` 命令。
+//! `/export` command.
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::MessageId;

@@ -1,19 +1,21 @@
-//! 仓库法律保护的不可变性的机械强制执行。
+//! Mechanical enforcement of repo-law protected invariants.
 //!
-//! `.codewhale/constitution.json` 的不可变项以前是渲染到提示词中的建议性散文。
-//! 现在，带有 `paths` 通配符的条目还会编译为在引擎工具门控中评估的写入保持
-//! ——法律变成机制，附带命名不可变项的收据。
+//! `.codewhale/constitution.json` invariants were previously advisory prose
+//! rendered into the prompt. Entries that carry `paths` globs now also
+//! compile into write holds evaluated in the engine's tool gate — the law
+//! becomes mechanism, with a receipt naming the invariant.
 //!
-//! 契约镜像了项目覆盖规则（"覆盖只能收紧"）：
+//! The contract mirrors the project-overlay rule ("overrides may only
+//! tighten"):
 //!
-//! - 法律只能添加保持。模式中没有允许/放宽的形状，因此
-//!   精心构造的 constitution 不能授予权限。
-//! - `ask` 在所有模式下强制提示，包括 YOLO——如同内置安全基线，
-//!   法律不能被模式绕过。`block` 直接拒绝。
-//! - 任何失败（文件缺失、解析错误、通配符错误）会降级为更少或
-//!   零条规则——绝不会产生被毒化的门控，绝不会对未受保护的路径进行保持。
-//! - 只有仓库本地的 constitution 参与。用户全局的
-//!   constitution 保持为建议性散文，永远不会到达此模块。
+//! - Law can only ADD holds. There is no allow/widen shape in the schema, so
+//!   a crafted constitution cannot grant authority.
+//! - `ask` force-prompts in every mode, including YOLO — like the built-in
+//!   safety floor, law is not bypassable by mode. `block` denies outright.
+//! - Any failure (missing file, parse error, bad glob) degrades to fewer or
+//!   zero rules — never a poisoned gate, never a hold on unprotected paths.
+//! - Only the repo-local constitution participates. The user-global
+//!   constitution stays advisory prose and never reaches this module.
 
 use std::path::Path;
 
@@ -21,23 +23,24 @@ use serde_json::Value;
 
 use crate::project_context::{RepoLawAction, RepoLawRule, load_repo_law_rules};
 
-/// 其输入指定了我们可以保持的文件系统写入目标的工具。任何
-/// 具有写入能力的工具都必须在列表中——门控对于它不认识的工具会开放失败，
-/// 因此没有条目的新写入工具会静默逃避仓库法律。
-/// `fim_edit` 就是这样一个漏洞（它声明 WritesFiles，接受一个 `path`，
-/// 并对其执行 `fs::write`），直到它被添加到这里。
+/// Tools whose inputs name filesystem write targets we can hold. Any
+/// write-capable tool MUST be listed here — the gate fails open for tools it
+/// does not recognize, so a new write tool without an entry silently evades
+/// repo law. `fim_edit` was such a hole (it declares WritesFiles, takes a
+/// `path`, and `fs::write`s to it) until it was added here.
 const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "apply_patch", "fim_edit"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RepoLawPlanDecision {
-    /// 在所有模式下强制提示批准，命名该法律。
+    /// Force an approval prompt naming the law, in every mode.
     ForcePrompt(String),
-    /// 直接拒绝该调用，命名该法律。
+    /// Deny the call outright, naming the law.
     Block(String),
 }
 
-/// 针对提议的工具调用评估工作区的仓库法律。对于没有写入目标的工具、
-/// 没有可执行法律的工作区以及每个受保护通配符之外的写入返回 `None`。
+/// Evaluate the workspace's repo law against a proposed tool call. Returns
+/// `None` for tools without write targets, workspaces without enforceable
+/// law, and writes outside every protected glob.
 pub(crate) fn repo_law_plan_decision(
     workspace: &Path,
     tool_name: &str,
@@ -55,7 +58,7 @@ pub(crate) fn repo_law_plan_decision(
         return None;
     }
 
-    // 最强操作在所有（规则，目标）匹配中胜出。
+    // Strongest action wins across all (rule, target) matches.
     let mut hold: Option<(&RepoLawRule, &str)> = None;
     for rule in &rules {
         for target in &targets {
@@ -82,13 +85,13 @@ pub(crate) fn repo_law_plan_decision(
     })
 }
 
-/// 从工具输入中提取相对于工作区的写入目标。覆盖
-/// `path`/`target`/`destination`/`file_path` 参数、`changes[].path` 以及
-/// 补丁工具接受的每个 unified-diff / codex-envelope 头部形状——
-/// 旧（`--- `）和新（`+++ `）路径，有或没有 `a/`/`b/` 前缀，
-/// 去掉制表符时间戳后缀，`/dev/null`（删除）回退到对应路径。
-/// 遗漏任何工具支持的形状都会导致保持绕过，
-/// 因此这故意过度收集候选路径。
+/// Extract workspace-relative write targets from a tool input. Covers the
+/// `path`/`target`/`destination`/`file_path` params, `changes[].path`, and
+/// every unified-diff / codex-envelope header shape the patch tools accept —
+/// old (`--- `) and new (`+++ `) paths, with or without an `a/`/`b/` prefix,
+/// tab-timestamp suffixes stripped, and `/dev/null` (deletion) falling back
+/// to the counterpart path. Missing any shape the tool honors is a hold
+/// bypass, so this deliberately over-collects candidate paths.
 fn write_target_paths(workspace: &Path, input: &Value) -> Vec<String> {
     let mut targets = Vec::new();
     for key in ["path", "target", "destination", "file_path"] {
@@ -113,8 +116,8 @@ fn write_target_paths(workspace: &Path, input: &Value) -> Vec<String> {
             } else if let Some(rest) = line.strip_prefix("*** Delete File: ") {
                 push_normalized(&mut targets, workspace, rest.trim());
             } else if let Some(rest) = line.strip_prefix("--- ") {
-                // 旧路径：记住它，以便 `+++ /dev/null` 删除仍然
-                // 保持对被删除文件的保护。
+                // Old path: remember it so a `+++ /dev/null` deletion still
+                // holds the file being removed.
                 pending_old = diff_header_path(rest);
                 if let Some(ref p) = pending_old {
                     push_normalized(&mut targets, workspace, p);
@@ -122,7 +125,7 @@ fn write_target_paths(workspace: &Path, input: &Value) -> Vec<String> {
             } else if let Some(rest) = line.strip_prefix("+++ ") {
                 match diff_header_path(rest) {
                     Some(new_path) => push_normalized(&mut targets, workspace, &new_path),
-                    // `+++ /dev/null` → 删除；目标是旧路径。
+                    // `+++ /dev/null` → deletion; the target is the old path.
                     None => {
                         if let Some(old) = pending_old.take() {
                             push_normalized(&mut targets, workspace, &old);
@@ -137,10 +140,10 @@ fn write_target_paths(workspace: &Path, input: &Value) -> Vec<String> {
     targets
 }
 
-/// 解析 unified-diff 头部路径：去掉可选的 `a/`/`b/` 前缀和
-/// 制表符分隔的时间戳后缀。对于 `/dev/null`（不存在）返回 `None`。
+/// Parse a unified-diff header path: strip an optional `a/`/`b/` prefix and a
+/// tab-delimited timestamp suffix. Returns `None` for `/dev/null` (absence).
 fn diff_header_path(rest: &str) -> Option<String> {
-    // 头部可能带有 "\t<timestamp>" 后缀；路径是第一个字段。
+    // Headers may carry a "\t<timestamp>" suffix; the path is the first field.
     let path = rest.split('\t').next().unwrap_or(rest).trim();
     if path.is_empty() || path == "/dev/null" {
         return None;
@@ -152,32 +155,33 @@ fn diff_header_path(rest: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
-/// 规范化为正斜杠、相对于工作区的字符串，以便编写为 `crates/x/**` 的通配符
-/// 无论工具如何拼写路径都能匹配。关键的是，这以与写入工具的
-/// `resolve_path` 相同的方式折叠 `.`/`..` 路径组件，因此内部的
-/// `crates/./protocol/x` 或 `x/../crates/protocol/x` 无法绕过通配符
-///（在此之前已有确认的绕过）。
+/// Normalize to a forward-slash, workspace-relative string so globs written
+/// as `crates/x/**` match regardless of how the tool spelled the path. Crucially
+/// this collapses `.`/`..` path components the same way the write tools'
+/// `resolve_path` does, so an interior `crates/./protocol/x` or
+/// `x/../crates/protocol/x` cannot spell its way past a glob (a confirmed
+/// bypass before this).
 fn push_normalized(targets: &mut Vec<String>, workspace: &Path, raw: &str) {
     let trimmed = raw.trim().replace('\\', "/");
     if trimmed.is_empty() {
         return;
     }
-    // 当工具给出工作区内的绝对路径时，使其相对于工作区。
+    // Make workspace-relative when the tool gave an absolute path inside it.
     let path = Path::new(&trimmed);
     let relative = path.strip_prefix(workspace).unwrap_or(path);
 
-    // 词法上折叠 CurDir（`.`）和 ParentDir（`..`）组件，并
-    // 去掉任何前导的根/空组件。工作区外的绝对路径
-    // 保留其尾部（例如 `/etc/passwd` -> `etc/passwd`），以便
-    // `**/passwd` 通配符仍然匹配，而工作区锚定的通配符则不匹配。
+    // Lexically collapse CurDir (`.`) and ParentDir (`..`) components, and
+    // drop any leading root/empty component. An absolute path outside the
+    // workspace keeps its tail (e.g. `/etc/passwd` -> `etc/passwd`) so a
+    // `**/passwd` glob still matches while a workspace-anchored glob does not.
     let mut parts: Vec<String> = Vec::new();
     for component in relative.to_string_lossy().split('/') {
         match component {
             "" | "." => {}
             ".." => {
-                // 弹出到根目录之上的 `..` 逃逸出工作区；保留
-                // 一个显式标记，使其永远无法匹配工作区相对的通配符，
-                // 而普通的批准/沙箱门控仍然约束它。
+                // A `..` that pops above the root escapes the workspace; keep
+                // an explicit marker so it can never match a workspace-relative
+                // glob, and the ordinary approval/sandbox gates still govern it.
                 if parts.pop().is_none() {
                     parts.push("..".to_string());
                 }
@@ -290,21 +294,21 @@ mod tests {
     fn apply_patch_targets_are_extracted_from_all_shapes() {
         let tmp = TempDir::new().unwrap();
         write_law(tmp.path(), LAW);
-        // changes[].path 形状
+        // changes[].path shape
         let decision = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",
             &json!({"changes": [{"path": "crates/protocol/msg.rs"}]}),
         );
         assert!(matches!(decision, Some(RepoLawPlanDecision::Block(_))));
-        // unified diff 形状
+        // unified diff shape
         let decision = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",
             &json!({"patch": "--- a/crates/protocol/msg.rs\n+++ b/crates/protocol/msg.rs\n@@\n"}),
         );
         assert!(matches!(decision, Some(RepoLawPlanDecision::Block(_))));
-        // codex 信封形状
+        // codex envelope shape
         let decision = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",
@@ -422,7 +426,7 @@ mod tests {
     fn apply_patch_header_variants_are_all_extracted() {
         let tmp = TempDir::new().unwrap();
         write_law(tmp.path(), LAW);
-        // 没有 a/ 或 b/ 前缀
+        // no a/ or b/ prefix
         let d = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",
@@ -432,7 +436,7 @@ mod tests {
             matches!(d, Some(RepoLawPlanDecision::Block(_))),
             "no-prefix: {d:?}"
         );
-        // 删除：+++ /dev/null，目标是旧路径
+        // deletion: +++ /dev/null, target is the old path
         let d = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",
@@ -442,7 +446,7 @@ mod tests {
             matches!(d, Some(RepoLawPlanDecision::Block(_))),
             "deletion: {d:?}"
         );
-        // 头部上的制表符时间戳后缀
+        // tab-timestamp suffix on the header
         let d = repo_law_plan_decision(
             tmp.path(),
             "apply_patch",

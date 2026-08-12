@@ -154,7 +154,7 @@ impl LogicalModelRef {
     #[must_use]
     pub fn namespace_hint(&self) -> Option<NamespaceHint> {
         let raw = self.raw();
-        // 顺序很重要：`deepseek-ai/` 必须在 `deepseek/` 之前匹配。
+        // Order matters: `deepseek-ai/` must be matched before `deepseek/`.
         if raw.starts_with("deepseek-ai/") {
             Some(NamespaceHint::DeepseekAi)
         } else if raw.starts_with("deepseek/") {

@@ -1,34 +1,35 @@
-//! 审批指纹键（§5.A）。
+//! Approval fingerprint keys (§5.A).
 //!
-//! 与其仅按工具名称缓存（这会让已批准的 `exec_shell "cat foo"` 静默通过
-//! `exec_shell "rm -rf /"`），审批流程使用 **调用指纹**——
-//! 工具名称及其语义相关参数部分的摘要。
+//! Instead of caching by tool name alone (which would let an approved
+//! `exec_shell "cat foo"` silently pass `exec_shell "rm -rf /"`), the
+//! approval flow uses a **call fingerprint** — a digest of the tool name
+//! and the semantically‑relevant portion of its arguments.
 //!
-//! ## 两种指纹形状
+//! ## Two fingerprint shapes
 //!
-//! 有两种键类型，用于决策的对立面：
+//! There are two key flavours, used for opposite sides of the decision:
 //!
-//! * [`build_approval_key`] —— 完整参数的 **精确** 摘要。
-//!   用于划分 *拒绝* 的作用域，以便拒绝一个调用（例如 `rm -rf /tmp/x`）
-//!   不会同时抑制对同一工具的后续不同调用（#1617）。
+//! * [`build_approval_key`] — an **exact** digest of the full arguments.
+//!   Used to scope *denials* so that denying one call (e.g. `rm -rf /tmp/x`)
+//!   does not also suppress a later, different call to the same tool (#1617).
 //!
-//!   | 工具         | 精确键                                   |
-//!   |-------------|------------------------------------------|
-//!   | 文件写入     | `file:<tool_name>:<参数哈希>`               |
-//!   | shell 工具   | `shell:<tool_name>:<参数哈希>`              |
-//!   | `fetch_url`  | `net:<主机名>`                             |
-//!   | 其他所有     | `tool:<tool_name>:<输入哈希>`               |
-//!
-//! * [`build_approval_grouping_key`] —— **松散/arity 感知的** 摘要。
-//!   用于划分 *批准* 的作用域，以便批准会话中的 `cargo build`
-//!   也覆盖 `cargo build --release`（v0.8.37 行为）。
-//!
-//!   | 工具           | 分组键                                   |
+//!   | Tool           | Exact key                                |
 //!   |---------------|------------------------------------------|
-//!   | `apply_patch`  | `patch:<文件路径哈希>`                     |
-//!   | shell 工具    | `shell:<命令前缀>`                        |
-//!   | `fetch_url`    | `net:<主机名>`                             |
-//!   | 其他所有      | `tool:<tool_name>:<输入哈希>`              |
+//!   | file writes    | `file:<tool_name>:<hash of args>`        |
+//!   | shell tools    | `shell:<tool_name>:<hash of args>`       |
+//!   | `fetch_url`    | `net:<hostname>`                         |
+//!   | everything else| `tool:<tool_name>:<hash of input>`       |
+//!
+//! * [`build_approval_grouping_key`] — a **lossy / arity-aware** digest.
+//!   Used to scope *approvals* so that approving `cargo build` for the
+//!   session also covers `cargo build --release` (the v0.8.37 behaviour).
+//!
+//!   | Tool           | Grouping key                             |
+//!   |---------------|------------------------------------------|
+//!   | `apply_patch`  | `patch:<hash of file paths>`             |
+//!   | shell tools    | `shell:<command prefix>`                 |
+//!   | `fetch_url`    | `net:<hostname>`                         |
+//!   | everything else| `tool:<tool_name>:<hash of input>`       |
 //!
 use std::fmt::Write as _;
 
@@ -37,16 +38,16 @@ use sha2::{Digest, Sha256};
 
 use crate::command_safety::classify_command;
 
-/// 工具调用的指纹——足够稳定以匹配重复调用，
-/// 但足够具体以避免权限混淆。
+/// The fingerprint of a tool call — stable enough to match repeated
+/// calls but specific enough to avoid privilege confusion.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApprovalKey(pub String);
 
-/// 构建工具调用的审批缓存键。
+/// Build the approval‑cache key for a tool call.
 ///
-/// 键包含工具名称和参数的标准摘要，
-/// 以便拒绝一个调用会抑制完全相同的重试，而不是
-/// 同一工具不同参数的后续调用。
+/// The key incorporates the tool name and a canonical digest of the
+/// arguments so that denying one call suppresses exact retries, not later
+/// invocations of the same tool with different parameters.
 #[must_use]
 pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> ApprovalKey {
     let fingerprint = match tool_name {
@@ -70,12 +71,12 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
     ApprovalKey(fingerprint)
 }
 
-/// 构建工具调用的 **分组** 审批键。
+/// Build the **grouping** approval key for a tool call.
 ///
-/// 与 [`build_approval_key`] 不同，这将同一命令族的参数变体
-/// 折叠到一个键上（v0.8.37 行为），以便"批准本次会话"的决策
-/// 覆盖后续仅标志不同的调用。拒绝必须继续使用
-/// 精确的 [`build_approval_key`]。
+/// Unlike [`build_approval_key`], this collapses argument variants of the
+/// same command family onto one key (the v0.8.37 behaviour) so that an
+/// "approve for session" decision covers later invocations that differ only
+/// by flags. Denials must keep using the exact [`build_approval_key`].
 #[must_use]
 pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -> ApprovalKey {
     let fingerprint = match tool_name {
@@ -101,11 +102,11 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
     ApprovalKey(fingerprint)
 }
 
-/// 返回 `input` 中 shell 命令的标准命令前缀。
+/// Return the canonical command prefix for the shell command in `input`.
 ///
-/// 使用来自 arity 字典的 [`classify_command`]，以便批准
-/// `git status` 也覆盖 `git status -s` / `git status --porcelain`，
-/// 而不会同时覆盖 `git push`。
+/// Uses [`classify_command`] from the arity dictionary so that approving
+/// `git status` also covers `git status -s` / `git status --porcelain`
+/// without also covering `git push`.
 fn command_prefix(input: &serde_json::Value) -> String {
     let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
@@ -115,7 +116,7 @@ fn command_prefix(input: &serde_json::Value) -> String {
     classify_command(&tokens)
 }
 
-/// 对补丁输入引用的文件路径的排序集进行哈希。
+/// Hash the sorted set of file paths referenced by a patch input.
 fn hash_patch_paths(input: &serde_json::Value) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -150,7 +151,7 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
     format!("{:x}", hasher.finish())
 }
 
-/// 从 URL 输入中解析主机部分。
+/// Parse the host portion from a URL input.
 fn parse_host(input: &serde_json::Value) -> String {
     let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -182,7 +183,7 @@ fn push_canonical_json(value: &Value, out: &mut String) {
         }
         Value::Number(value) => {
             out.push_str("number:");
-            // 避免通过 value.to_string() 分配。
+            // Avoid allocating via value.to_string().
             if let Some(n) = value.as_f64() {
                 let _ = write!(out, "{n}");
             } else if let Some(n) = value.as_i64() {
@@ -195,7 +196,7 @@ fn push_canonical_json(value: &Value, out: &mut String) {
         }
         Value::String(value) => {
             out.push_str("string:");
-            // 无中间分配地发出 JSON 编码的字符串。
+            // Emit JSON-encoded string without an intermediate allocation.
             out.push('"');
             for ch in value.chars() {
                 match ch {

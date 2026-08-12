@@ -1,23 +1,24 @@
-//! 进程级成本累加侧信道 (#526)。
+//! Process-wide cost-accrual side-channel (#526).
 //!
-//! 主回合完成路径之外的背景 LLM 调用
-//!（压缩摘要、接缝重新压缩）
-//! 过去会丢弃其令牌使用量——仪表板的
-//! 会话成本只看到父回合的令牌，因此长时间
-//! 触发压缩的会话会低估背景调用消耗的令牌成本。
+//! Background LLM calls outside the main turn-complete path
+//! (compaction summaries, seam recompaction) used
+//! to drop their token usage on the floor — the dashboard's
+//! session-cost only saw the parent turn's tokens, so a long
+//! session that triggered compaction under-reported
+//! cost by however many tokens those background calls consumed.
 //!
-//! 镜像了 [`crate::retry_status`] 模式：背景调用者在每次
-//! `client.create_message` 后调用 [`report`]，TUI
-//! 渲染循环每帧调用 [`drain`]，任何排出的金额
-//! 都会被纳入 `App::accrue_subagent_cost_estimate`。
+//! Mirrors the [`crate::retry_status`] pattern: background callers
+//! call [`report`] after each `client.create_message`, the TUI
+//! render loop calls [`drain`] every frame, and any drained amount
+//! gets folded into `App::accrue_subagent_cost_estimate`.
 //!
-//! 为什么使用侧信道而不是管道回调：泄漏的调用者
-//!（`compaction.rs`、`seam_manager.rs`）是
-//! 引擎内部机制，没有直接操作 `App` 或
-//! 引擎事件通道的句柄。侧信道使变更面
-//! 极小——每个调用点只需新增一个 `report` 行——并且任何
-//! 未来的背景调用者（摘要器、检索助手）都
-//! 无需额外管道即可自动累加成本。
+//! Why a side-channel and not a plumbed callback: the leaky callers
+//! (`compaction.rs`, `seam_manager.rs`) are
+//! engine-internal machinery without a direct handle to `App` or
+//! the engine's event channel. A side-channel keeps the change
+//! surface tiny — one new `report` line per call site — and any
+//! future background caller (summarizers, retrieval helpers) gets
+//! accrued for free without further plumbing.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -30,10 +31,10 @@ fn cell() -> &'static Mutex<CostEstimate> {
     PENDING.get_or_init(|| Mutex::new(CostEstimate::default()))
 }
 
-/// 背景调用者在此报告其 LLM 使用量。通过
-/// [`crate::pricing::calculate_turn_cost_estimate_from_usage`] 计算成本并
-/// 添加到待处理池中。开销很小；持有一个短生命周期的锁后
-/// 返回。对于定价表未知的模型不执行任何操作。
+/// Background callers report their LLM usage here. Computes the
+/// cost via [`crate::pricing::calculate_turn_cost_estimate_from_usage`] and
+/// adds it to the pending pool. Cheap; takes a short-lived lock
+/// and returns. No-op on models the pricing table doesn't know.
 pub fn report(model: &str, usage: &Usage) {
     let Some(cost) = crate::pricing::calculate_turn_cost_estimate_from_usage(model, usage) else {
         return;
@@ -41,26 +42,26 @@ pub fn report(model: &str, usage: &Usage) {
     if !cost.is_positive() {
         return;
     }
-    // 从中毒的锁中恢复——前一个持有者 panic 了，但
-    // 累积的数据仍然有效。
+    // Recover from poisoned lock — a previous holder panicked but the
+    // accumulated data is still valid.
     let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
     pending.usd += cost.usd;
     pending.cny += cost.cny;
 }
 
-/// 排出待处理的成本。返回累积的金额并将
-/// 池重置为零。由 TUI 渲染/事件循环每帧调用；
-/// 任何非零结果都会被纳入 `accrue_subagent_cost_estimate`。
+/// Drain the pending cost. Returns the accumulated amount and resets
+/// the pool to zero. Called by the TUI render / event loop on each
+/// frame; any non-zero result gets folded into `accrue_subagent_cost_estimate`.
 pub fn drain() -> CostEstimate {
-    // 从中毒的锁中恢复——前一个持有者 panic 了，但
-    // 累积的数据仍然有效。
+    // Recover from poisoned lock — a previous holder panicked but the
+    // accumulated data is still valid.
     let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
     std::mem::take(&mut *pending)
 }
 
-/// 将池重置为零而不消耗。测试专用的辅助函数，
-/// 供那些共享静态变量且需要从已知状态开始的测试套件使用。
-/// 生产代码应始终使用 [`drain`]。
+/// Reset the pool to zero without consuming. Test-only helper for
+/// suites that share the static and need to start from a known
+/// state. Production code should always use [`drain`].
 #[cfg(test)]
 pub fn reset_for_tests() {
     let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
@@ -79,8 +80,9 @@ mod tests {
         }
     }
 
-    /// 测试并行运行并共享静态变量——通过此互斥锁序列化
-    /// 那些访问池的测试，使并发的 `report`/`drain` 不会导致断言竞态。
+    /// Tests run in parallel and share the static — serialize the
+    /// ones that touch the pool through this mutex so concurrent
+    /// `report`/`drain` doesn't make assertions racy.
     fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
         static M: OnceLock<Mutex<()>> = OnceLock::new();
         M.get_or_init(|| Mutex::new(()))
@@ -104,7 +106,7 @@ mod tests {
     fn report_skips_unknown_models() {
         let _g = serial_lock();
         reset_for_tests();
-        // NIM 托管的模型有意没有 DeepSeek 定价。
+        // NIM-hosted models intentionally have no DeepSeek pricing.
         report("deepseek-ai/deepseek-v4-pro", &small_usage());
         assert_eq!(drain(), CostEstimate::default());
     }
@@ -116,7 +118,7 @@ mod tests {
         report("deepseek-v4-flash", &small_usage());
         report("deepseek-v4-flash", &small_usage());
         let total = drain();
-        // 两次相同的报告——总金额必须是单次报告的 2 倍。
+        // Two equal reports — total must be 2× a single report.
         let single = crate::pricing::calculate_turn_cost_estimate_from_usage(
             "deepseek-v4-flash",
             &small_usage(),

@@ -1,4 +1,4 @@
-//! 持久化网络允许/拒绝列表的斜杠命令。
+//! Slash commands for the persistent network allow/deny list.
 
 use std::fs;
 use std::path::Path;
@@ -311,7 +311,7 @@ mod tests {
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
 
-            // 安全性：由全局互斥锁保护的仅测试环境变量修改。
+            // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", home.as_os_str());
                 env::set_var("USERPROFILE", home.as_os_str());
@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn restore_env(key: &str, value: Option<OsString>) {
-        // 安全性：由全局互斥锁保护的仅测试环境变量修改。
+        // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
             if let Some(value) = value {
                 env::set_var(key, value);

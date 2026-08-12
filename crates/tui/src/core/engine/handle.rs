@@ -1,11 +1,12 @@
-//! 公开的 `EngineHandle` 方法。
+//! Public `EngineHandle` methods.
 //!
-//! 结构体本身位于相邻的 `engine.rs` 中，因为两个构造点（`Engine::new` 和仅测试用的
-//! `mock_engine_handle`）需要访问其私有的 mpsc 通道。
-//! 方法接口 — `send`、`cancel*`、`is_cancelled`、
-//! `approve_tool_call` / `deny_tool_call` / `retry_tool_with_policy`、
-//! `submit_user_input` / `cancel_user_input` 和 `steer` — 移至此处，
-//! 以便代理循环的邮箱 API 可独立审查。
+//! The struct itself lives next door in `engine.rs` because two
+//! construction sites (`Engine::new` and the test-only
+//! `mock_engine_handle`) need access to its private mpsc channels.
+//! The method surface — `send`, `cancel*`, `is_cancelled`,
+//! `approve_tool_call` / `deny_tool_call` / `retry_tool_with_policy`,
+//! `submit_user_input` / `cancel_user_input`, and `steer` — moves here
+//! so the agent loop's mailbox API is reviewable on its own.
 
 use anyhow::Result;
 
@@ -13,28 +14,31 @@ use super::approval::{ApprovalDecision, UserInputDecision};
 use super::{CancelReason, EngineHandle, Op, UserInputResponse};
 
 impl EngineHandle {
-    /// 向引擎发送一个操作
+    /// Send an operation to the engine
     pub async fn send(&self, op: Op) -> Result<()> {
         self.tx_op.send(op).await?;
         Ok(())
     }
 
-    /// 尝试非阻塞地发送一个操作。
+    /// Try to send an operation without blocking.
     ///
-    /// 如果通道已满或已关闭，则返回 `Err`。将此用于非关键性的刷新类型操作
-    /// （例如 `Op::ListSubAgents`），这些操作可以被安全地丢弃并在下一个排空周期重新请求。
+    /// Returns `Err` if the channel is full or closed.  Use this for
+    /// non-critical, refresh-type ops (e.g. `Op::ListSubAgents`) that can
+    /// safely be dropped and re-requested on the next drain cycle.
     pub fn try_send(&self, op: Op) -> Result<()> {
         self.tx_op.try_send(op)?;
         Ok(())
     }
 
-    /// 取消当前请求（用户发起路径 — 保持公开的 `cancel()` 签名稳定）。
-    /// 等同于 `cancel_with_reason(CancelReason::User)`。
+    /// Cancel the current request (user-initiated path — keeps the
+    /// public `cancel()` signature stable). Equivalent to
+    /// `cancel_with_reason(CancelReason::User)`.
     pub fn cancel(&self) {
         self.cancel_with_reason(CancelReason::User);
     }
 
-    /// 取消当前请求并锁存原因，以便下游的"请求已取消"错误消息能够指明原因。
+    /// Cancel the current request and latch the reason so downstream
+    /// "request cancelled" error messages can name a cause.
     pub fn cancel_with_reason(&self, reason: CancelReason) {
         match self.cancel_reason.lock() {
             Ok(mut slot) => *slot = Some(reason),
@@ -47,7 +51,7 @@ impl EngineHandle {
         crate::retry_status::clear();
     }
 
-    /// 检查请求当前是否已取消
+    /// Check if a request is currently cancelled
     #[must_use]
     #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {
@@ -57,7 +61,7 @@ impl EngineHandle {
         }
     }
 
-    /// 暂停或恢复当前可暂停的命令。
+    /// Pause or resume the current pausable command.
     pub fn set_paused(&self, paused: bool) {
         match self.shared_paused.lock() {
             Ok(mut slot) => *slot = paused,
@@ -65,7 +69,7 @@ impl EngineHandle {
         }
     }
 
-    /// 检查引擎暂停门是否已设置。
+    /// Check whether the engine pause gate is set.
     #[cfg(test)]
     #[must_use]
     pub fn is_paused(&self) -> bool {
@@ -75,7 +79,7 @@ impl EngineHandle {
         }
     }
 
-    /// 批准一个待处理的工具调用
+    /// Approve a pending tool call
     pub async fn approve_tool_call(&self, id: impl Into<String>) -> Result<()> {
         self.tx_approval
             .send(ApprovalDecision::Approved { id: id.into() })
@@ -83,7 +87,7 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// 拒绝一个待处理的工具调用
+    /// Deny a pending tool call
     pub async fn deny_tool_call(&self, id: impl Into<String>) -> Result<()> {
         self.tx_approval
             .send(ApprovalDecision::Denied { id: id.into() })
@@ -91,7 +95,7 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// 使用提升的沙箱策略重试一个工具调用。
+    /// Retry a tool call with an elevated sandbox policy.
     pub async fn retry_tool_with_policy(
         &self,
         id: impl Into<String>,
@@ -106,7 +110,7 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// 为 request_user_input 提交响应。
+    /// Submit a response for request_user_input.
     pub async fn submit_user_input(
         &self,
         id: impl Into<String>,
@@ -121,7 +125,7 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// 取消一个 request_user_input 提示。
+    /// Cancel a request_user_input prompt.
     pub async fn cancel_user_input(&self, id: impl Into<String>) -> Result<()> {
         self.tx_user_input
             .send(UserInputDecision::Cancelled { id: id.into() })
@@ -129,14 +133,15 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// 使用额外的用户输入引导正在进行中的回合。
+    /// Steer an in-flight turn with additional user input.
     pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
         self.tx_steer.send(content.into()).await?;
         Ok(())
     }
 
-    /// 请求当前会话状态的快照。
-    /// 通过 oneshot 通道直接返回快照，避免与 mpsc 接收器上的 SSE 事件流竞争。
+    /// Request a snapshot of the current session state.
+    /// Returns the snapshot directly via a oneshot channel, avoiding
+    /// competition with the SSE event stream on the mpsc receiver.
     pub async fn get_session_snapshot(&self) -> Result<crate::core::ops::SessionSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
@@ -145,7 +150,7 @@ impl EngineHandle {
             .map_err(|_| anyhow::anyhow!("Engine dropped session snapshot oneshot"))
     }
 
-    /// 请求活跃的提供者请求并发状态。
+    /// Request active provider request concurrency state.
     pub async fn get_provider_runtime_status(
         &self,
     ) -> Result<crate::core::ops::ProviderRuntimeStatus> {

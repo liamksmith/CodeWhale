@@ -13,13 +13,14 @@ use super::{
 pub(super) struct StreamableHttpTransport {
     pub(super) client: reqwest::Client,
     pub(super) url: String,
-    /// 出站 POST 的请求时身份验证和自定义头部解析器。
+    /// Request-time auth and custom header resolver for outbound POSTs.
     pub(super) auth: McpHttpAuth,
     pending_messages: VecDeque<Vec<u8>>,
-    /// 服务器在第一次响应（通常是 `initialize` 响应）中返回的
-    /// 规范的 MCP 会话标识符。附加为每个后续出站请求的
-    /// `Mcp-Session-Id` 头部，以便服务器可以关联同一
-    /// 会话内的消息。
+    /// Per-spec MCP session identifier returned by the server in the
+    /// first response (typically the `initialize` response). Attached
+    /// as the `Mcp-Session-Id` header on every subsequent outbound
+    /// request so the server can correlate messages within the same
+    /// session.
     pub(super) session_id: Option<String>,
 }
 
@@ -45,8 +46,8 @@ impl StreamableHttpTransport {
         &mut self,
         msg: Vec<u8>,
     ) -> std::result::Result<(), StreamableSendError> {
-        // 在协议框架后应用用户配置的自定义头部，这样保留的
-        // Accept / Content-Type 覆写可以被过滤掉。
+        // Apply user-configured custom headers after protocol framing so
+        // reserved Accept / Content-Type overrides can be filtered out.
         let headers = self
             .auth
             .resolved_headers()
@@ -56,8 +57,9 @@ impl StreamableHttpTransport {
             with_default_mcp_http_headers(self.client.post(&self.url), true),
             &headers,
         );
-        // 根据 Streamable HTTP 规范附加任何先前捕获的会话 ID，
-        // 以便服务器可以将此请求关联到现有会话。
+        // Attach any previously captured session ID per the Streamable
+        // HTTP spec so the server can correlate this request to the
+        // existing session.
         if let Some(ref sid) = self.session_id {
             request = request.header("Mcp-Session-Id", sid.as_str());
         }
@@ -69,9 +71,9 @@ impl StreamableHttpTransport {
 
         let status = response.status();
 
-        // 从任何响应（2xx、202、4xx……）中捕获会话 ID。
-        // 服务器可能会在 `initialize` 响应或下面的
-        // 尽力 GET 预检中返回它。
+        // Capture session ID from any response (2xx, 202, 4xx, ...). The
+        // server may return it on the `initialize` response or on a
+        // best-effort GET preflight below.
         if let Some(sid) = response
             .headers()
             .get("Mcp-Session-Id")
@@ -79,7 +81,7 @@ impl StreamableHttpTransport {
             && self.session_id.as_deref() != Some(sid)
         {
             let session_ref = crate::utils::redacted_identifier_for_log(sid);
-            tracing::debug!(target: "mcp", session = %session_ref, "捕获到 MCP 会话 ID");
+            tracing::debug!(target: "mcp", session = %session_ref, "captured MCP session ID");
             self.session_id = Some(sid.to_string());
         }
         if status == StatusCode::ACCEPTED || status == StatusCode::NO_CONTENT {
@@ -101,7 +103,7 @@ impl StreamableHttpTransport {
                 )));
             }
             return Err(StreamableSendError::Other(anyhow::anyhow!(
-                "MCP Streamable HTTP 被拒绝（transport=http url={} status={}）：{}",
+                "MCP Streamable HTTP rejected (transport=http url={} status={}): {}",
                 mask_url_secrets(&self.url),
                 status,
                 body_excerpt,
@@ -113,14 +115,15 @@ impl StreamableHttpTransport {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        // 在读取任何内容之前拒绝过大的声明体（快速路径），
-        // 然后限制读取本身，这样分块/无长度的响应也无法导致 OOM——
-        // 仅靠 Content-Length 无法防止不声明长度就进行流式传输的服务器。
+        // Reject an over-large declared body before reading anything (fast
+        // path), then bound the read itself so chunked / length-less
+        // responses cannot OOM us either — Content-Length alone does not
+        // protect against a server that streams without declaring a length.
         if let Some(len) = response.content_length()
             && len > super::MAX_MCP_RESPONSE_BYTES as u64
         {
             return Err(StreamableSendError::Other(anyhow::anyhow!(
-                "MCP 响应 Content-Length {len} 超过了 {} 字节——正在中止",
+                "MCP response Content-Length {len} exceeds {} bytes — aborting",
                 super::MAX_MCP_RESPONSE_BYTES
             )));
         }
@@ -134,7 +137,7 @@ impl StreamableHttpTransport {
     pub(super) async fn recv(&mut self) -> Result<Vec<u8>> {
         self.pending_messages
             .pop_front()
-            .context("MCP Streamable HTTP 响应队列为空")
+            .context("MCP Streamable HTTP response queue is empty")
     }
 
     fn store_response_body(&mut self, content_type: Option<&str>, body: &str) -> Result<()> {
@@ -160,10 +163,11 @@ impl StreamableHttpTransport {
     }
 }
 
-/// 通过字节流读取响应体，一旦超出 `max_bytes` 就失败。
-/// 这像限制声明的长度一样限制分块和缺少 Content-Length 的响应
-///（`send` 中的声明长度快速路径仅覆盖诚实声明其大小的服务器）。
-/// MCP 体是 JSON 或 SSE，因此 lossy UTF-8 与 `.text()` 行为匹配。
+/// Read a response body through the byte stream, failing as soon as it
+/// exceeds `max_bytes`. This bounds chunked and missing-Content-Length
+/// responses exactly like declared ones (the declared-length fast path in
+/// `send` only covers servers honest enough to announce their size).
+/// MCP bodies are JSON or SSE, so lossy UTF-8 matches `.text()` behavior.
 pub(super) async fn read_body_capped(
     response: reqwest::Response,
     max_bytes: usize,
@@ -173,9 +177,9 @@ pub(super) async fn read_body_capped(
     let mut stream = response.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("读取 MCP 响应体失败")?;
+        let chunk = chunk.context("failed to read MCP response body")?;
         if buf.len().saturating_add(chunk.len()) > max_bytes {
-            anyhow::bail!("MCP 响应体超过 {max_bytes} 字节——正在中止");
+            anyhow::bail!("MCP response body exceeds {max_bytes} bytes — aborting");
         }
         buf.extend_from_slice(&chunk);
     }

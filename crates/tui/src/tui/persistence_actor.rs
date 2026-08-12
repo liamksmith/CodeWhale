@@ -1,24 +1,28 @@
-//! 专门的持久化 Actor，用于会话保存/检查点 I/O。
+//! Dedicated persistence actor for session save / checkpoint I/O.
 //!
-//! ## 动机
+//! ## Motivation
 //!
-//! 在本模块之前，`persist_checkpoint` 和 `persist_session_snapshot`
-//! 在驱动 TUI 事件循环的 tokio 工作线程上同步运行。
-//! 每次调用都将所有 API 消息序列化为 JSON、写入临时文件、然后
-//! 原子性地重命名——在此期间阻塞键盘输入。`save_session` 还额外调用
-//! `cleanup_old_sessions`，它会列出所有会话文件、解析每个文件的元数据、
-//! 排序并删除最旧的——每个轮次的开销为 O(会话字节 + 文件数)。
+//! Before this module, `persist_checkpoint` and `persist_session_snapshot` ran
+//! synchronously on the tokio worker thread that drives the TUI event loop.
+//! Each call serialised all API messages to JSON, wrote a temp file, and
+//! renamed it atomically — blocking keyboard input for the duration.
+//! `save_session` additionally called `cleanup_old_sessions`, which listed all
+//! session files, parsed metadata from every one, sorted, and deleted the
+//! oldest — scaling O(session-bytes + file-count) with every turn.
 //!
-//! ## 设计
+//! ## Design
 //!
-//! - 在 TUI 启动时**生成一个专用的 tokio 任务**。所有磁盘 I/O 都移到
-//!   这个任务中。UI 仅通过 `try_send` 发送请求（非阻塞、有界通道丢弃）
-//!   并立即返回——击键永远不会等待写入完成。
-//! - **最新胜出合并**：当多个 `Checkpoint`、`SessionSnapshot` 或离线队列
-//!   请求在 Actor 的下一个写入周期之前堆积时，只写入最新的一个。
-//!   `ClearCheckpoint` 请求正常累积（它们廉价且可交换）。
-//! - **无界通道**确保 `try_send` 始终成功；Actor 通过生成池自然地进行
-//!   背压。通道中少量未完成的 `SavedSession` 值（< 1 MB）压力可忽略。
+//! - **One dedicated tokio task** spawned at TUI startup. All disk I/O moves
+//!   to this task. The UI merely `try_send`s a request (non-blocking,
+//!   bounded-channel drop) and returns immediately — keystrokes are never
+//!   gated on write completion.
+//! - **Latest-wins coalescing**: when multiple `Checkpoint`,
+//!   `SessionSnapshot`, or offline-queue requests pile up before the actor's
+//!   next write cycle, only the most recent one is written. `ClearCheckpoint`
+//!   requests accumulate normally (they're cheap and commutative).
+//! - **Unbounded channel** for `try_send` to always succeed; the actor
+//!   naturally backpressures via the spawn pool. A few outstanding
+//!   `SavedSession` values in the channel (< 1 MB) is negligible pressure.
 
 use std::sync::OnceLock;
 
@@ -28,26 +32,26 @@ use crate::session_manager::{OfflineQueueState, SavedSession, SessionManager};
 use crate::utils::spawn_supervised;
 
 // ---------------------------------------------------------------------------
-// 请求类型
+// Request type
 // ---------------------------------------------------------------------------
 
-/// 发送给 Actor 的持久化工作项。
+/// Persistence work item sent to the actor.
 #[derive(Debug)]
 pub enum PersistRequest {
-    /// 写入崩溃恢复检查点（进行中的轮次状态）。
+    /// Write a crash-recovery checkpoint (in-flight turn state).
     Checkpoint(SavedSession),
-    /// 写入完整的会话快照（完成的轮次，持久保存）。
+    /// Write a full session snapshot (completed turn, durable save).
     SessionSnapshot(SavedSession),
-    /// 写入排队的/草稿离线输入，用于崩溃恢复。
+    /// Write queued/draft offline input for crash recovery.
     OfflineQueue {
         state: OfflineQueueState,
         session_id: Option<String>,
     },
-    /// 移除排队的/草稿离线输入文件。
+    /// Remove the queued/draft offline input file.
     ClearOfflineQueue,
-    /// 移除崩溃恢复检查点文件。
+    /// Remove the crash-recovery checkpoint file.
     ClearCheckpoint,
-    /// 优雅关闭——刷新挂起的写入，然后退出 Actor 循环。
+    /// Graceful shutdown — flush pending writes, then exit the actor loop.
     Shutdown,
 }
 
@@ -61,37 +65,38 @@ enum PendingOfflineQueue {
 }
 
 // ---------------------------------------------------------------------------
-// 句柄（由 TUI 持有）
+// Handle (held by the TUI)
 // ---------------------------------------------------------------------------
 
-/// UI 持有的轻量级句柄，用于排队持久化工作。
+/// Lightweight handle that the UI holds to queue persistence work.
 #[derive(Debug, Clone)]
 pub struct PersistActorHandle {
     tx: mpsc::UnboundedSender<PersistRequest>,
 }
 
 impl PersistActorHandle {
-    /// 排队一个持久化请求而不阻塞。如果 Actor 的通道已关闭
-    ///（已关闭完毕），则静默丢弃请求。
+    /// Queue a persistence request without blocking. If the actor's channel is
+    /// closed (shutdown has already happened) the request is silently dropped.
     pub fn try_send(&self, request: PersistRequest) {
         let _ = self.tx.send(request);
     }
 }
 
 // ---------------------------------------------------------------------------
-// 全局单例（避免通过 App 传递）
+// Global singleton (avoid threading through App)
 // ---------------------------------------------------------------------------
 
 static ACTOR_TX: OnceLock<PersistActorHandle> = OnceLock::new();
 
-/// 初始化全局持久化 Actor 句柄。必须在启动时、事件循环开始前
-/// 调用一次。
+/// Initialise the global persistence actor handle. Must be called once at
+/// startup, before the event loop starts.
 pub fn init_actor(handle: PersistActorHandle) {
     let _ = ACTOR_TX.set(handle);
 }
 
-/// 通过全局句柄排队持久化请求。当 Actor 尚未初始化时是空操作
-///（静默忽略）——这可能在测试或早期启动时发生。
+/// Queue a persistence request through the global handle. No-op (silently
+/// ignored) when the actor hasn't been initialised yet — this can happen in
+/// tests or early startup before the actor is ready.
 pub fn persist(request: PersistRequest) {
     if let Some(handle) = ACTOR_TX.get() {
         handle.try_send(request);
@@ -99,13 +104,14 @@ pub fn persist(request: PersistRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// Actor 生成
+// Actor spawn
 // ---------------------------------------------------------------------------
 
-/// 生成持久化 Actor 任务并返回调用者存储和初始化的句柄。
+/// Spawn the persistence actor task and return a handle for the caller to
+/// store and initialise.
 ///
-/// 返回的句柄应传递给 [`init_actor`]，以便 `persist()` 自由函数
-/// 可以从 TUI 的任何位置访问它。
+/// The returned handle should be passed to [`init_actor`] so that the
+/// `persist()` free function can reach it from anywhere in the TUI.
 pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<PersistRequest>();
     let handle = PersistActorHandle { tx };
@@ -120,13 +126,14 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
             let mut should_clear: bool = false;
 
             loop {
-                // 排空所有等待中的请求，每类只保留最新的。
+                // Drain everything waiting, keeping only the latest of each kind.
                 while let Ok(req) = rx.try_recv() {
                     match req {
                         PersistRequest::Checkpoint(session) => {
-                            // 最后写入者胜出：新的检查点取代挂起的清除，
-                            // 因此两者不会在一次排空中同时生效（之前会导致先清除
-                            // 然后重写过时检查点，从而撤销清除）。
+                            // Last-writer-wins: a fresh checkpoint supersedes a
+                            // pending clear so the two never both apply in one
+                            // drain (which previously cleared then re-wrote the
+                            // stale checkpoint, undoing the clear).
                             latest_checkpoint = Some(session);
                             should_clear = false;
                         }
@@ -141,7 +148,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                             latest_offline_queue = Some(PendingOfflineQueue::Clear);
                         }
                         PersistRequest::ClearCheckpoint => {
-                            // 清除取代挂起的检查点写入。
+                            // A clear supersedes a pending checkpoint write.
                             should_clear = true;
                             latest_checkpoint = None;
                         }
@@ -158,7 +165,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                     }
                 }
 
-                // 写入合并后的工作。
+                // Write coalesced work.
                 if should_clear {
                     let _ = manager.clear_checkpoint();
                     should_clear = false;
@@ -173,7 +180,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                     apply_offline_queue_request(&manager, request);
                 }
 
-                // 阻塞直到下一个请求到达。
+                // Block until the next request arrives.
                 match rx.recv().await {
                     Some(PersistRequest::Checkpoint(session)) => {
                         latest_checkpoint = Some(session);
@@ -204,7 +211,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                         return;
                     }
                     None => {
-                        // 通道关闭——最终刷新并退出。
+                        // Channel closed — final flush and exit.
                         flush_inner(
                             &manager,
                             latest_checkpoint.as_ref(),
@@ -222,7 +229,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
     handle
 }
 
-/// 将所有挂起的工作写入磁盘（在关闭时使用）。
+/// Write any pending work to disk (used on shutdown).
 fn flush_inner(
     manager: &SessionManager,
     checkpoint: Option<&SavedSession>,
@@ -270,7 +277,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "等待持久化 Actor 超时"
+                "timed out waiting for persistence actor"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

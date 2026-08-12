@@ -1,8 +1,8 @@
-//! 规范的 [`ProviderKind`] 枚举（#3311）：内置供应商类型的集合、
-//! 它们的 serde 别名以及标识辅助函数（`all`、`as_str`、`parse`、
-//! `provider`）。从 `lib.rs` 原样提取，将供应商标识
-//! 与配置 schema/加载分开；在 crate 根目录重新导出，因此
-//! `codewhale_config::ProviderKind` 保持不变。行为相同。
+//! The canonical [`ProviderKind`] enum (#3311): the set of built-in provider
+//! kinds, their serde aliases, and identity helpers (`all`, `as_str`, `parse`,
+//! `provider`). Extracted verbatim from `lib.rs` to separate provider identity
+//! from config schema/loading; re-exported at the crate root so
+//! `codewhale_config::ProviderKind` is unchanged. Behavior is identical.
 
 use serde::{Deserialize, Serialize};
 
@@ -116,13 +116,13 @@ pub enum ProviderKind {
     Meta,
     #[serde(alias = "x-ai", alias = "x_ai", alias = "grok")]
     Xai,
-    /// 用户定义的 OpenAI 兼容端点（#1519）。
+    /// User-defined OpenAI-compatible endpoint (#1519).
     ///
-    /// 一个用于任意 `[providers.<name>] kind="openai-compatible"` 条目的
-    /// 单一动态标识。它使用 OpenAI Chat Completions
-    /// 线路协议，且不携带内置的 base URL/模型——具体的
-    /// 端点和模型通过配置（`base_url` / `model`）和
-    /// 路由的 `base_url_override` 提供，绝不从此静态描述符获取。
+    /// A single dynamic identity for arbitrary `[providers.<name>]
+    /// kind="openai-compatible"` entries. It speaks the OpenAI Chat Completions
+    /// wire protocol and carries no built-in base URL/model — the concrete
+    /// endpoint and model arrive via config (`base_url` / `model`) and the
+    /// route's `base_url_override`, never from this static descriptor.
     Custom,
 }
 
@@ -199,10 +199,10 @@ impl ProviderKind {
         matches!(self, Self::Siliconflow | Self::SiliconflowCN)
     }
 
-    /// 返回此供应商的内置元数据条目。
+    /// Return the built-in metadata entry for this provider.
     ///
-    /// 这只是元数据基础；运行时路由仍然通过
-    /// [`crate::ConfigToml::resolve_runtime_options`] 解析。
+    /// This is a metadata foundation only; runtime routing still resolves
+    /// through [`crate::ConfigToml::resolve_runtime_options`].
     #[must_use]
     pub fn provider(self) -> &'static dyn provider::Provider {
         provider::provider_for_kind(self)

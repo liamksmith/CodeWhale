@@ -1,4 +1,4 @@
-//! Act / Plan / Operate 的 `/mode` 选择器。
+//! `/mode` picker for Act / Plan / Operate.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -144,7 +144,8 @@ impl ModalView for ModePickerView {
             };
             let pointer = if is_cursor { ">" } else { " " };
             let name = mode.display_name_localized(self.locale);
-            // 按终端列宽填充，而不是字符数，这样宽字符（CJK）模式名称能保持提示列对齐。
+            // Pad by terminal columns, not scalar count, so wide (CJK) mode
+            // names keep the hint column aligned.
             let pad = " ".repeat(7usize.saturating_sub(UnicodeWidthStr::width(&*name)));
 
             lines.push(Line::from(vec![
@@ -184,20 +185,23 @@ mod tests {
         }
     }
 
-    /// v0.8.66 模态拦截器 (#3732) 要求每个覆盖层在这些终端尺寸下保持可读和完全可操作的四个尺寸。
+    /// The four terminal sizes the v0.8.66 modal blocker (#3732) requires
+    /// every overlay to remain readable and fully operable at.
     const BLOCKER_SIZES: [(u16, u16); 4] = [(80, 24), (100, 30), (120, 32), (160, 40)];
 
     fn render_at(width: u16, height: u16) -> (Buffer, Rect) {
         use crate::tui::views::ViewStack;
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        // 预填充一个标记，这样任何组合模态未能绘制到的单元格（透漏）可通过残留的 'X' 检测出来。
+        // Pre-fill with a sentinel so any cell the composited modal fails to
+        // paint (bleed-through) is detectable as a surviving 'X'.
         for y in 0..height {
             for x in 0..width {
                 buf[(x, y)].set_symbol("X");
             }
         }
-        // 通过 ViewStack 渲染，这样共享的不透明背景与生产环境中的绘制方式完全一致。
+        // Render through the ViewStack so the shared opaque backdrop is painted
+        // exactly as it is in production.
         let mut stack = ViewStack::new();
         stack.push(ModePickerView::new(AppMode::Agent, Locale::En));
         stack.render(area, &mut buf);
@@ -220,12 +224,13 @@ mod tests {
             let (buf, area) = render_at(w, h);
             let text = rows(&buf, area).join("\n");
 
-            // 操作标签存在（页脚从不丢弃操作）。
+            // Action labels are present (footer never drops an action).
             assert!(text.contains("move"), "{w}x{h}: missing 'move' hint");
             assert!(text.contains("select"), "{w}x{h}: missing 'select' hint");
             assert!(text.contains("cancel"), "{w}x{h}: missing 'cancel' hint");
 
-            // 组合框架完全不透明：没有残留的标记，每个单元格都带有模态/背景的墨水背景。
+            // Composited frame is fully opaque: no sentinel survives and every
+            // cell carries the modal/backdrop ink background.
             assert!(
                 !text.contains('X'),
                 "{w}x{h}: background bleed-through into modal surface"
@@ -237,7 +242,7 @@ mod tests {
                 "{w}x{h}: modal interior must be opaque"
             );
 
-            // 没有行超出框架宽度（无水平溢出）。
+            // No row exceeds the frame width (no horizontal overflow).
             for (y, row) in rows(&buf, area).iter().enumerate() {
                 assert!(
                     UnicodeWidthStr::width(row.trim_end()) <= w as usize,
@@ -249,7 +254,7 @@ mod tests {
 
     #[test]
     fn number_keys_select_modes() {
-        // 可见的名册：1 Act、2 Plan、3 Operate。没有 Multitask / YOLO / 间隔。
+        // Visible roster: 1 Act, 2 Plan, 3 Operate. No Multitask / YOLO / gap.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
         match action {
@@ -259,12 +264,12 @@ mod tests {
             other => panic!("expected ModeSelected, got {other:?}"),
         }
 
-        // 选择器不提供旧版 YOLO 快捷方式 (4)。
+        // Legacy YOLO shorthand (4) is not offered by the picker.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::None));
 
-        // 旧版 Operate 编号 (5) 已消失——没有数字间隔。
+        // Old Operate number (5) is gone — no numeric gaps.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::None));
